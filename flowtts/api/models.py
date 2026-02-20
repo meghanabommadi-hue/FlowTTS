@@ -27,9 +27,14 @@ class AudioMessage(BaseModel):
     type: MessageType = Field(default=MessageType.AUDIO)
     call_id: str
     text_id: str
-    audio_base64: str = Field(..., description="Base64-encoded WAV PCM data")
-    sample_rate: int = Field(..., description="Sample rate of the WAV data")
+    # Raw LLM token output (always present when decode is skipped)
+    audio_tokens: Optional[str] = Field(default=None, description="Raw LLM audio token string")
+    # Decoded audio (present when decoder is enabled)
+    audio_base64: Optional[str] = Field(default=None, description="Base64-encoded WAV PCM data")
+    sample_rate: Optional[int] = Field(default=None, description="Sample rate of the WAV data")
     is_final: bool = Field(default=True)
+    llm_s: Optional[float] = Field(default=None, description="LLM generation time in seconds")
+    decode_s: Optional[float] = Field(default=None, description="Decoder time in seconds")
 
 
 class ErrorMessage(BaseModel):

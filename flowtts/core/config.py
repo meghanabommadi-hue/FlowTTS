@@ -2,6 +2,7 @@
 
 This is intentionally similar in spirit to ``litranscriber.core.config``,
 but trimmed down to the essentials needed for a single-process prototype.
+Uses sglang Engine for inference (see TTSIntegration/ws_server.py).
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,8 +13,22 @@ from typing import Literal
 class TtsModelSettings(BaseModel):
     """TTS model configuration."""
 
-    model_dir: str = "Shubhangi7/mira_hindi_second_round"
+    model_dir: str = "/root/CleanTTSData/inference/models/MeghanaKap-MiraTTSTelugu"
+    ref_audio: str = "/root/CleanTTSData/data/cropped_20260206output.wav"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+
+    # sglang engine parameters (mirrors TTSIntegration/ws_server.py)
+    mem_fraction_static: float = 0.8
+    attention_backend: str = "flashinfer"
+    chunked_prefill_size: int = -1
+
+    # Generation / sampling parameters
+    max_tokens: int = 1024
+    temperature: float = 0.0
+    top_p: float = 0.95
+    top_k: int = 50
+    repetition_penalty: float = 1.2
+    min_p: float = 0.05
 
 
 class DecoderSettings(BaseModel):
@@ -25,7 +40,11 @@ class DecoderSettings(BaseModel):
     model_gpu_id: int = 0
     decoder_gpu_id: int = 0
 
-    # ncodec / TTSCodec settings could go here if needed.
+    sample_rate: int = 48000
+
+    # Set to False to skip ncodec decoding and forward raw LLM tokens instead.
+    # Useful for latency profiling and when decoder is not yet ready.
+    enabled: bool = False
 
 
 class WebSocketSettings(BaseModel):
@@ -59,4 +78,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

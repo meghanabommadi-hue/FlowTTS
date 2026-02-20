@@ -7,14 +7,13 @@ Follows the FlowTTS data-flow:
 - buffers/reassembles token chunks, decodes to audio, and streams WAV
   back to the client.
 
-The structure mirrors LITranscriber’s gateway (ConnectionManager +
+The structure mirrors LITranscriber's gateway (ConnectionManager +
 WebSocket endpoint), adapted for TTS.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from typing import Any, Dict
@@ -31,18 +30,25 @@ from flowtts.api.models import (
 )
 from flowtts.core.config import settings
 from flowtts.decoder.buffer import TokenBufferManager
-from flowtts.decoder.decoder import decoder as audio_decoder
+from flowtts.decoder.manager import DecoderManager
+from flowtts.monitoring.metrics import (
+    record_decode_latency,
+    record_ws_connection_open,
+    record_ws_connection_close,
+)
 
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
+_decoder_manager = DecoderManager()
+
 
 class ConnectionManager:
     """Manages WebSocket connections for FlowTTS.
 
-    This mirrors LITranscriber’s ConnectionManager structure, adapted for
+    This mirrors LITranscriber's ConnectionManager structure, adapted for
     TTS (no Redis/audio buffers here; a future version can add them).
     """
 
@@ -71,12 +77,15 @@ class ConnectionManager:
         """Accept a new WebSocket connection and register it by call_id."""
         await websocket.accept()
         self.active_connections[call_id] = websocket
+        record_ws_connection_open(call_id)
         logger.info("websocket_connected", call_id=call_id)
 
         # Ensure Redis client is ready and start result listener
         await self.initialize_redis()
         # Create a token buffer manager for this call
         self.token_buffers[call_id] = TokenBufferManager()
+        # Register decoder lifecycle
+        _decoder_manager.acquire(call_id)
         task = asyncio.create_task(self._listen_for_results(call_id))
         self.connection_tasks[call_id] = task
 
@@ -98,11 +107,13 @@ class ConnectionManager:
             await pubsub.unsubscribe()
             await pubsub.aclose()  # type: ignore[func-returns-value]
 
-        # Drop token buffer
+        # Drop token buffer and release decoder
         self.token_buffers.pop(call_id, None)
+        _decoder_manager.release(call_id)
 
         ws = self.active_connections.pop(call_id, None)
         if ws is not None:
+            record_ws_connection_close(call_id)
             logger.info("websocket_disconnected", call_id=call_id)
 
     async def send_message(self, call_id: str, message: dict) -> None:
@@ -178,32 +189,68 @@ class ConnectionManager:
                     audio_tokens = data["audio_tokens"]
                     text_id = data.get("text_id", "")
                     is_final = data.get("is_final", True)
+                    llm_s = data.get("llm_s")
 
-                    buffer = self.token_buffers.setdefault(call_id, TokenBufferManager())
-                    full_tokens = buffer.add_chunk(text_id, audio_tokens, is_final)
-
-                    # Only decode once we have the full token sequence.
-                    if full_tokens is None:
+                    if not audio_tokens:
+                        logger.warning(
+                            "empty_audio_tokens_received",
+                            call_id=call_id,
+                            text_id=text_id,
+                        )
+                        await self.send_error(call_id, text_id, "Synthesis returned empty audio tokens")
                         continue
 
-                    decoded = audio_decoder.decode_to_wav(full_tokens)
-                    audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
+                    if settings.decoder.enabled:
+                        # --- Decode path: buffer chunks, decode to WAV, send audio_base64 ---
+                        from flowtts.decoder.decoder import decoder as audio_decoder  # lazy: only when enabled
+                        buffer = self.token_buffers.setdefault(call_id, TokenBufferManager())
+                        full_tokens = buffer.add_chunk(text_id, audio_tokens, is_final)
 
-                    resp = AudioMessage(
-                        call_id=call_id,
-                        text_id=text_id,
-                        audio_base64=audio_b64,
-                        sample_rate=decoded.sample_rate,
-                        is_final=is_final,
-                    )
+                        # Only decode once we have the full token sequence.
+                        if full_tokens is None:
+                            continue
+
+                        t_decode = time.time()
+                        decoded = audio_decoder.decode_to_wav(full_tokens)
+                        decode_latency = time.time() - t_decode
+                        record_decode_latency(call_id, decode_latency)
+
+                        audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
+
+                        resp = AudioMessage(
+                            call_id=call_id,
+                            text_id=text_id,
+                            audio_tokens=audio_tokens,
+                            audio_base64=audio_b64,
+                            sample_rate=decoded.sample_rate,
+                            is_final=is_final,
+                            llm_s=llm_s,
+                            decode_s=round(decode_latency, 4),
+                        )
+                        logger.debug(
+                            "result_forwarded_to_client",
+                            call_id=call_id,
+                            text_id=text_id,
+                            is_final=is_final,
+                            decode_latency=round(decode_latency, 3),
+                        )
+                    else:
+                        # --- No-decode path: forward raw LLM tokens directly ---
+                        resp = AudioMessage(
+                            call_id=call_id,
+                            text_id=text_id,
+                            audio_tokens=audio_tokens,
+                            is_final=is_final,
+                            llm_s=llm_s,
+                        )
+                        logger.debug(
+                            "result_forwarded_to_client_no_decode",
+                            call_id=call_id,
+                            text_id=text_id,
+                            is_final=is_final,
+                        )
+
                     await self.send_audio(call_id, resp)
-
-                    logger.debug(
-                        "result_forwarded_to_client",
-                        call_id=call_id,
-                        text_id=text_id,
-                        is_final=is_final,
-                    )
                 except Exception as e:  # noqa: BLE001
                     logger.error("result_processing_failed", call_id=call_id, error=str(e))
 
@@ -229,6 +276,12 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str) -> None:
                     raise ValueError("Unsupported message type")
 
                 req = SynthesizeRequest(**payload)
+
+                # Cross-validate: call_id in URL must match call_id in body
+                if req.call_id != call_id:
+                    raise ValueError(
+                        f"call_id mismatch: URL has '{call_id}', body has '{req.call_id}'"
+                    )
             except Exception as e:  # noqa: BLE001
                 await manager.send_error(call_id, None, f"Bad request: {e}")
                 continue
@@ -251,4 +304,3 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str) -> None:
         logger.info("websocket_disconnect", call_id=call_id)
     finally:
         await manager.disconnect(call_id)
-

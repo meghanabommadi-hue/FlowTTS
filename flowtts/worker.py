@@ -15,6 +15,7 @@ import redis.asyncio as redis
 import structlog
 
 from flowtts.core.config import settings
+from flowtts.monitoring.metrics import record_synthesis_latency
 from flowtts.synthesis.engine import synthesis_service
 
 
@@ -43,7 +44,11 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
         if not synthesis_service.is_initialized:
             await synthesis_service.initialize()
 
+        t0 = time.time()
         audio_tokens = await synthesis_service.synthesize(text)
+        synth_latency = time.time() - t0
+
+        record_synthesis_latency(call_id, text_id, synth_latency)
 
         payload = {
             "call_id": call_id,
@@ -51,6 +56,7 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
             "audio_tokens": audio_tokens,
             "is_final": True,
             "generated_at": time.time(),
+            "llm_s": round(synth_latency, 4),
         }
         channel = f"{settings.redis.results_channel_prefix}:{call_id}"
         await client.publish(channel, json.dumps(payload))  # type: ignore[func-returns-value]
@@ -60,6 +66,7 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
             call_id=call_id,
             text_id=text_id,
             token_length=len(audio_tokens),
+            synth_latency=round(synth_latency, 3),
         )
     except Exception as e:  # noqa: BLE001
         logger.error("worker_job_failed", error=str(e))
@@ -123,8 +130,11 @@ class SynthesizerWorker:
     async def shutdown(self) -> None:
         """Gracefully shutdown the worker."""
         self.running = False
-        if self.processing_tasks:
-            await asyncio.gather(*self.processing_tasks, return_exceptions=True)
+        # Snapshot the set before awaiting so done-callbacks don't mutate it
+        # while asyncio.gather is iterating over it.
+        pending = list(self.processing_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
         if self.redis_client:
             await self.redis_client.aclose()
@@ -161,11 +171,7 @@ class SynthesizerWorker:
             audio_tokens = await synthesis_service.synthesize(text)
             synth_latency_val = time.time() - start_synth
 
-            try:
-                chunks_synthesized.inc()
-                synthesis_latency.observe(synth_latency_val)
-            except Exception:
-                pass
+            record_synthesis_latency(call_id, text_id, synth_latency_val)
 
             payload = {
                 "call_id": call_id,
@@ -207,5 +213,3 @@ class SynthesizerWorker:
             except Exception as e:  # noqa: BLE001
                 logger.error("worker_loop_error", error=str(e))
                 await asyncio.sleep(1.0)
-
-
