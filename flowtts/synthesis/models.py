@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import numpy as np
 import structlog
 
 from flowtts.core.config import settings
@@ -33,6 +32,9 @@ class FlowTtsSynthesizer:
 
     async def initialize(self) -> None:
         """Load model. Mirrors main() in TTSIntegration/ws_server.py."""
+        if self._engine is not None:
+            return  # already initialized — don't reload
+
         cfg = settings.tts_model
         model_path = cfg.model_dir
 
@@ -49,13 +51,7 @@ class FlowTtsSynthesizer:
         ref_speech_tokens = None
         if ref_path and os.path.isfile(ref_path):
             try:
-                import librosa
-                ref_audio, _ = librosa.load(ref_path, sr=16000, dtype=np.float32)
-                ref_audio, _ = librosa.effects.trim(ref_audio, top_db=20)
-                max_samples = 5 * 16000
-                if len(ref_audio) > max_samples:
-                    ref_audio = ref_audio[:max_samples]
-                ref_enc = tts_codec.encode(ref_audio)
+                ref_enc = tts_codec.encode(ref_path)
                 if isinstance(ref_enc, tuple) and len(ref_enc) == 2:
                     ref_speech_tokens, context_tokens = ref_enc[0], ref_enc[1]
                 else:

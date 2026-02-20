@@ -23,7 +23,7 @@ class TtsModelSettings(BaseModel):
     chunked_prefill_size: int = -1
 
     # Generation / sampling parameters
-    max_tokens: int = 1024
+    max_tokens: int = 512
     temperature: float = 0.0
     top_p: float = 0.95
     top_k: int = 50
