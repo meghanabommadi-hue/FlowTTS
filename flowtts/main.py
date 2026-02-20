@@ -12,12 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from flowtts.api.websockets import router as websocket_router
 from flowtts.core.config import settings
+from flowtts.monitoring.logging import configure_logging
 
 
 logger = structlog.get_logger(__name__)
 
 
 def create_app() -> FastAPI:
+    # Configure structured logging once at startup.
+    configure_logging()
     app = FastAPI(
         title="FlowTTS",
         description="Simple text-to-speech gateway over WebSocket.",

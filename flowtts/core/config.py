@@ -44,6 +44,19 @@ class Settings(BaseSettings):
     tts_model: TtsModelSettings = TtsModelSettings()
     decoder: DecoderSettings = DecoderSettings()
 
+    # Redis queue / pubsub configuration
+    class RedisSettings(BaseModel):
+        host: str = "localhost"
+        port: int = 6379
+        db: int = 0
+        password: str | None = None
+
+        tts_queue_name: str = "flowtts:tts_queue"
+        results_channel_prefix: str = "flowtts:audio"
+        worker_concurrency: int = 32
+
+    redis: RedisSettings = RedisSettings()
+
 
 settings = Settings()
 
