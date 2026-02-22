@@ -118,8 +118,7 @@ def _collect_json_inputs(bench_root: Path) -> list[dict]:
 
 def _one_request(
     req_id: int,
-    codec_idx: int,          # pinned codec — strictly 1-to-1
-    codec_name: str,
+    codec_idx: int,          # pinned by index — unambiguous even when names cycle
     audio_tokens: str,
     source: str,
     sock_path: str,
@@ -127,8 +126,8 @@ def _one_request(
 ) -> dict:
     t0 = time.perf_counter()
     try:
-        # Pin by name — server resolves name → index
-        resp = send_decode_request(audio_tokens, codec_name=codec_name, sock_path=sock_path)
+        # Pin by index — works correctly even when n_codecs > len(CODEC_NAMES)
+        resp = send_decode_request(audio_tokens, codec_idx=codec_idx, sock_path=sock_path)
         wall_s = time.perf_counter() - t0
 
         if resp.get("ok"):
@@ -142,7 +141,7 @@ def _one_request(
             return {
                 "req_id":     req_id,
                 "codec_idx":  resp.get("codec_idx", codec_idx),
-                "codec_name": resp.get("codec_name", codec_name),
+                "codec_name": resp.get("codec_name", str(codec_idx)),
                 "ok":         True,
                 "decode_s":   resp.get("decode_s"),
                 "wall_s":     wall_s,
@@ -154,7 +153,7 @@ def _one_request(
             return {
                 "req_id":     req_id,
                 "codec_idx":  codec_idx,
-                "codec_name": codec_name,
+                "codec_name": resp.get("codec_name", str(codec_idx)),
                 "ok":         False,
                 "error":      resp.get("error"),
                 "wall_s":     wall_s,
@@ -164,7 +163,7 @@ def _one_request(
         return {
             "req_id":     req_id,
             "codec_idx":  codec_idx,
-            "codec_name": codec_name,
+            "codec_name": str(codec_idx),
             "ok":         False,
             "error":      str(exc),
             "wall_s":     time.perf_counter() - t0,
@@ -186,14 +185,6 @@ def send_requests(
     """
     info = query_pool_info(sock_path)
     n_codecs = info["n_codecs"]
-    # Build index → name list for all codec indices (handles duplicate names when
-    # n_codecs > len(CODEC_NAMES) by cycling)
-    name_map = info.get("names", {})  # name → idx (may have fewer entries than n_codecs)
-    # Reconstruct per-index list: idx → name, cycling through available names
-    codec_names_list = sorted(name_map.keys(), key=lambda n: name_map[n])
-    n_unique = len(codec_names_list)
-    # For each codec index, derive its name the same way the server does
-    by_index = [(codec_names_list[i % n_unique], i) for i in range(n_codecs)]
 
     print(f"Server has {n_codecs} codec(s)")
     print(f"Sending {n_requests} parallel requests — round-robin across codecs.\n")
@@ -202,12 +193,13 @@ def send_requests(
     if not all_records:
         raise RuntimeError(f"No JSON benchmark files found under {bench_root}.")
 
-    # Build jobs: assign codec round-robin, pick random input per request
+    # Build jobs: assign codec round-robin by INDEX (avoids name-collision when
+    # n_codecs > number of unique names). Server routes by codec_idx unambiguously.
     jobs = []
     for i in range(n_requests):
-        name, idx = by_index[i % n_codecs]
+        idx = i % n_codecs
         rec = random.choice(all_records)
-        jobs.append((i, idx, name, rec["audio_tokens"], rec.get("source", "?")))
+        jobs.append((i, idx, rec["audio_tokens"], rec.get("source", "?")))
 
     results: list[dict] = [{}] * n_requests
     completed = 0
@@ -217,21 +209,21 @@ def send_requests(
         future_to_id = {
             executor.submit(
                 _one_request,
-                req_id, codec_idx, codec_name, audio_tokens, source,
+                req_id, codec_idx, audio_tokens, source,
                 sock_path, out_dir,
             ): req_id
-            for req_id, codec_idx, codec_name, audio_tokens, source in jobs
+            for req_id, codec_idx, audio_tokens, source in jobs
         }
         for future in as_completed(future_to_id):
             req_id = future_to_id[future]
             try:
                 res = future.result()
             except Exception as exc:
-                _, codec_idx, codec_name, _, source = jobs[req_id]
+                _, codec_idx, _, source = jobs[req_id]
                 res = {
                     "req_id":     req_id,
                     "codec_idx":  codec_idx,
-                    "codec_name": codec_name,
+                    "codec_name": str(codec_idx),
                     "ok":         False,
                     "error":      str(exc),
                     "wall_s":     0.0,

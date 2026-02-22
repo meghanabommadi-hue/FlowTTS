@@ -67,11 +67,26 @@ def _name(idx: int) -> str:
 
 # ── Codec worker process ──────────────────────────────────────────────────────
 
-def _codec_process(idx: int, req_q: mp.Queue, res_q: mp.Queue) -> None:
+def _codec_process(idx: int, req_q: mp.Queue, res_q: mp.Queue, cpu_cores: Optional[list] = None) -> None:
     """
     Runs in a dedicated subprocess. Owns one AudioDecoder (one CUDA context).
     Pulls jobs from req_q, decodes, puts results in res_q.
+    cpu_cores: list of CPU core indices to pin this process to (affinity).
     """
+    # Pin to assigned CPU cores if specified
+    if cpu_cores:
+        try:
+            import psutil
+            psutil.Process().cpu_affinity(cpu_cores)
+        except Exception:
+            pass  # non-fatal if psutil unavailable or affinity unsupported
+
+    # Enforce MPS SM compute slice — must be set before first CUDA API call.
+    # Inherited from parent env via spawn, but set explicitly here as a guard.
+    sm_pct = os.environ.get("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE")
+    if sm_pct:
+        os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = sm_pct
+
     # Import inside the subprocess so each process gets its own CUDA init
     from flowtts.decoder.decoder import AudioDecoder
 
@@ -148,13 +163,36 @@ class CodecPool:
         self.avg_ms      = [0.0] * n
         self.state       = ["init"] * n
 
-        print(f"Starting {n} codec subprocess(es) …", flush=True)
+        # Distribute CPU cores across codecs
+        import psutil
+        total_cpus = psutil.cpu_count(logical=True)
+        cores_per_codec = max(1, total_cpus // n)
+        cpu_assignments = [
+            [(i * cores_per_codec + c) % total_cpus for c in range(cores_per_codec)]
+            for i in range(n)
+        ]
+
+        # Split GPU memory AND compute equally across all codec subprocesses.
+        gpu_mem_fraction = 1.0 / n
+        # SM compute slice per process (1–100). MPS enforces this at the CUDA
+        # scheduler level — prevents any one codec from starving the others.
+        sm_pct = max(1, int(100 / n))
+
+        os.environ["CODEC_GPU_MEM_FRACTION"]          = str(gpu_mem_fraction)
+        # CUDA_MPS_ACTIVE_THREAD_PERCENTAGE is read by the MPS client at CUDA
+        # context creation time (i.e. when the subprocess first calls into CUDA).
+        os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(sm_pct)
+
+        print(f"Starting {n} codec subprocess(es) — {cores_per_codec} CPU core(s) each, "
+              f"{gpu_mem_fraction*100:.1f}% GPU memory each ({gpu_mem_fraction*80:.1f} GiB), "
+              f"{sm_pct}% GPU SMs each (MPS) …",
+              flush=True)
         for i in range(n):
             req_q = mp.Queue()
             self._req_qs.append(req_q)
             p = mp.Process(
                 target=_codec_process,
-                args=(i, req_q, self._res_q),
+                args=(i, req_q, self._res_q, cpu_assignments[i]),
                 daemon=True,
             )
             p.start()
