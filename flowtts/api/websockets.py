@@ -1,14 +1,32 @@
-"""WebSocket gateway for FlowTTS.
+"""Pipeline position: GATEWAY — WebSocket ↔ Redis bridge.
 
-Follows the FlowTTS data-flow:
-- accepts text synthesis requests over WebSocket,
-- enqueues jobs onto a Redis TTS queue,
-- listens on a per-call Redis Pub/Sub channel for audio tokens,
-- buffers/reassembles token chunks, decodes to audio, and streams WAV
-  back to the client.
+Role in pipeline:
+  Sits at both ends of the async pipeline:
+    • Inbound:  receives synthesize requests from callers over WebSocket,
+                serialises them to JSON and pushes onto the Redis TTS queue.
+    • Outbound: subscribes to the per-call Redis Pub/Sub channel and forwards
+                the result to the WebSocket client.
 
-The structure mirrors LITranscriber's gateway (ConnectionManager +
-WebSocket endpoint), adapted for TTS.
+Key classes:
+  ConnectionManager
+    connect()              — accept WebSocket, init Redis, start listener task.
+    disconnect()           — cancel listener, close pubsub, release decoder.
+    _publish_job_to_queue()— rpush {call_id, text_id, text} to Redis queue.
+    _listen_for_results()  — subscribe to the appropriate channel and forward
+                             AudioMessage to the WebSocket client.
+
+Decoded path (settings.decoder.enabled = True):
+  Worker publishes audio_tokens → flowtts:audio:{call_id}
+  DecoderWorker (decoder/decoder.py) subscribes, runs ncodec, publishes WAV
+    → flowtts:decoded:{call_id}
+  Gateway subscribes to flowtts:decoded:{call_id}, forwards audio_base64 to client.
+
+No-decode path (settings.decoder.enabled = False):
+  Worker publishes audio_tokens → flowtts:audio:{call_id}
+  Gateway subscribes to flowtts:audio:{call_id}, forwards raw tokens to client.
+
+One ConnectionManager instance (`manager`) is shared across all WebSocket
+connections in a single gateway process.
 """
 
 from __future__ import annotations
@@ -29,7 +47,6 @@ from flowtts.api.models import (
     MessageType,
 )
 from flowtts.core.config import settings
-from flowtts.decoder.buffer import TokenBufferManager
 from flowtts.decoder.manager import DecoderManager
 from flowtts.monitoring.metrics import (
     record_decode_latency,
@@ -48,8 +65,7 @@ _decoder_manager = DecoderManager()
 class ConnectionManager:
     """Manages WebSocket connections for FlowTTS.
 
-    This mirrors LITranscriber's ConnectionManager structure, adapted for
-    TTS (no Redis/audio buffers here; a future version can add them).
+    TTS ConnectionManager (no Redis/audio buffers here; a future version can add them).
     """
 
     def __init__(self) -> None:
@@ -57,7 +73,6 @@ class ConnectionManager:
         self.connection_tasks: Dict[str, asyncio.Task] = {}
         self.redis_client: redis.Redis | None = None
         self.redis_pubsub_clients: Dict[str, Any] = {}
-        self.token_buffers: Dict[str, TokenBufferManager] = {}
 
     async def initialize_redis(self) -> None:
         """Initialize Redis connection for the manager."""
@@ -82,8 +97,6 @@ class ConnectionManager:
 
         # Ensure Redis client is ready and start result listener
         await self.initialize_redis()
-        # Create a token buffer manager for this call
-        self.token_buffers[call_id] = TokenBufferManager()
         # Register decoder lifecycle
         _decoder_manager.acquire(call_id)
         task = asyncio.create_task(self._listen_for_results(call_id))
@@ -107,8 +120,7 @@ class ConnectionManager:
             await pubsub.unsubscribe()
             await pubsub.aclose()  # type: ignore[func-returns-value]
 
-        # Drop token buffer and release decoder
-        self.token_buffers.pop(call_id, None)
+        # Release decoder lifecycle tracking
         _decoder_manager.release(call_id)
 
         ws = self.active_connections.pop(call_id, None)
@@ -167,7 +179,17 @@ class ConnectionManager:
         )
 
     async def _listen_for_results(self, call_id: str) -> None:
-        """Listen for synthesis results from Redis Pub/Sub and forward to client."""
+        """Listen for synthesis results from Redis Pub/Sub and forward to client.
+
+        Two paths depending on settings.decoder.enabled:
+
+        • enabled=True  → subscribe to flowtts:decoded:{call_id}
+                           The DecoderWorker (decoder/decoder.py) has already
+                           decoded audio_tokens → WAV; we just forward the result.
+
+        • enabled=False → subscribe to flowtts:audio:{call_id}
+                           Forward raw audio_tokens to the client (client decodes).
+        """
         try:
             if self.redis_client is None:
                 await self.initialize_redis()
@@ -175,7 +197,11 @@ class ConnectionManager:
             pubsub = self.redis_client.pubsub()  # type: ignore[assignment]
             self.redis_pubsub_clients[call_id] = pubsub
 
-            channel = f"{settings.redis.results_channel_prefix}:{call_id}"
+            if settings.decoder.enabled:
+                channel = f"{settings.redis.decoded_channel_prefix}:{call_id}"
+            else:
+                channel = f"{settings.redis.results_channel_prefix}:{call_id}"
+
             await pubsub.subscribe(channel)
             logger.info("subscribed_to_results_channel", call_id=call_id, channel=channel)
 
@@ -185,57 +211,56 @@ class ConnectionManager:
 
                 try:
                     data = json.loads(message["data"])
-                    # Expect worker to send audio_tokens, text_id, is_final, etc.
-                    audio_tokens = data["audio_tokens"]
                     text_id = data.get("text_id", "")
                     is_final = data.get("is_final", True)
                     llm_s = data.get("llm_s")
 
-                    if not audio_tokens:
-                        logger.warning(
-                            "empty_audio_tokens_received",
-                            call_id=call_id,
-                            text_id=text_id,
-                        )
-                        await self.send_error(call_id, text_id, "Synthesis returned empty audio tokens")
-                        continue
-
                     if settings.decoder.enabled:
-                        # --- Decode path: buffer chunks, decode to WAV, send audio_base64 ---
-                        from flowtts.decoder.decoder import decoder as audio_decoder  # lazy: only when enabled
-                        buffer = self.token_buffers.setdefault(call_id, TokenBufferManager())
-                        full_tokens = buffer.add_chunk(text_id, audio_tokens, is_final)
+                        # --- Decoded path: DecoderWorker already produced WAV ---
+                        audio_b64 = data.get("audio_base64", "")
+                        sample_rate = data.get("sample_rate", settings.decoder.sample_rate)
+                        decode_s = data.get("decode_s")
 
-                        # Only decode once we have the full token sequence.
-                        if full_tokens is None:
+                        if not audio_b64:
+                            logger.warning(
+                                "empty_decoded_audio_received",
+                                call_id=call_id,
+                                text_id=text_id,
+                            )
+                            await self.send_error(call_id, text_id, "Decoder returned empty audio")
                             continue
 
-                        t_decode = time.time()
-                        decoded = audio_decoder.decode_to_wav(full_tokens)
-                        decode_latency = time.time() - t_decode
-                        record_decode_latency(call_id, decode_latency)
-
-                        audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
+                        if decode_s is not None:
+                            record_decode_latency(call_id, decode_s)
 
                         resp = AudioMessage(
                             call_id=call_id,
                             text_id=text_id,
-                            audio_tokens=audio_tokens,
                             audio_base64=audio_b64,
-                            sample_rate=decoded.sample_rate,
+                            sample_rate=sample_rate,
                             is_final=is_final,
                             llm_s=llm_s,
-                            decode_s=round(decode_latency, 4),
+                            decode_s=decode_s,
                         )
                         logger.debug(
                             "result_forwarded_to_client",
                             call_id=call_id,
                             text_id=text_id,
                             is_final=is_final,
-                            decode_latency=round(decode_latency, 3),
+                            decode_s=decode_s,
                         )
                     else:
                         # --- No-decode path: forward raw LLM tokens directly ---
+                        audio_tokens = data.get("audio_tokens", "")
+                        if not audio_tokens:
+                            logger.warning(
+                                "empty_audio_tokens_received",
+                                call_id=call_id,
+                                text_id=text_id,
+                            )
+                            await self.send_error(call_id, text_id, "Synthesis returned empty audio tokens")
+                            continue
+
                         resp = AudioMessage(
                             call_id=call_id,
                             text_id=text_id,

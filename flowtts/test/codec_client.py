@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """
-Codec pool client — sends decode requests to a running codec_server.py.
+Pipeline position: DECODER POOL CLIENT — load test / integration client for codec_server.py.
 
-Default: fires --requests (default 10) requests in parallel, distributed
-round-robin across all live codecs.
+Role in pipeline:
+  Companion to codec_server.py. Sends pre-generated audio_tokens (from JSON
+  benchmark files produced by benchmark.py) to the running codec pool and
+  measures decode throughput and latency.
 
-Import send_decode_request() into any test file for single requests, or
-use send_requests() to fire a configurable number of parallel requests.
+  JSON benchmark file → audio_tokens string
+    → Unix socket → codec_server.py
+      → pinned codec subprocess (by index, round-robin)
+        → ncodec decode → WAV base64
+    → save .wav + print latency
+
+Key functions:
+  send_decode_request()   — send one decode request (supports pin by idx or name).
+  send_requests(N)        — fire N requests in parallel, round-robin by codec index.
+                            Each request is pinned to codec i % n_codecs so no
+                            two requests share the same codec instance.
+  query_pool_info()       — ask server for n_codecs and name→index mapping.
+
+Pinning strategy:
+  Requests are pinned by codec_idx (not name) to correctly handle pools
+  larger than the 24-name Greek alphabet (index cycles, names don't).
+
+Input sources:
+  --bench-dir   root of bench_*/ directories from benchmark.py
+  --tokens      inline audio_tokens string (single request mode)
 
 Usage:
-    # 10 requests across all codecs (default)
-    python flowtts/test/codec_client.py
-
-    # custom number of requests
-    python flowtts/test/codec_client.py --requests 20
-
-    # custom socket
-    python flowtts/test/codec_client.py --socket /tmp/codec5.sock
-
-    # send a single audio_tokens string to a specific codec
+    python flowtts/test/codec_client.py --requests 25
+    python flowtts/test/codec_client.py --requests 50 --no-save
     python flowtts/test/codec_client.py --tokens "<|speech_token_1|>..." --codec-idx 2
-
-    # no WAV output
-    python flowtts/test/codec_client.py --no-save
 """
 
 from __future__ import annotations

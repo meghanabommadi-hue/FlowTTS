@@ -1,8 +1,20 @@
-"""Configuration settings for FlowTTS.
+"""Pipeline position: CONFIGURATION (read by every module at import time).
 
-This is intentionally similar in spirit to ``litranscriber.core.config``,
-but trimmed down to the essentials needed for a single-process prototype.
-Uses sglang Engine for inference (see TTSIntegration/ws_server.py).
+Role in pipeline:
+  Single source of truth for all tunable parameters. Every pipeline stage
+  imports `settings` from here rather than reading env-vars directly.
+
+Key sections and their pipeline consumers:
+  TtsModelSettings  → synthesis/models.py (sglang engine init, sampling params)
+                       synthesis/engine.py (model_dir, ref_audio paths)
+  DecoderSettings   → api/websockets.py   (enabled flag, to_wav flag)
+                       decoder/decoder.py  (sample_rate)
+  RedisSettings     → api/websockets.py   (queue publish, pub/sub subscribe)
+                       worker.py           (queue consume, pub/sub publish)
+  WebSocketSettings → main.py             (uvicorn host/port)
+
+All values can be overridden via environment variables (FLOWTTS_ prefix).
+No env-var → sensible defaults used (greedy decoding, 48 kHz, Redis localhost).
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,15 +29,19 @@ class TtsModelSettings(BaseModel):
     ref_audio: str = "/root/CleanTTSData/data/cropped_20260206output.wav"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
-    # sglang engine parameters (mirrors TTSIntegration/ws_server.py)
-    mem_fraction_static: float = 0.8
-    attention_backend: str = "flashinfer"
-    chunked_prefill_size: int = -1
+    # sglang engine parameters
+    mem_fraction_static: float = 0.9        # more KV cache for concurrent requests
+    attention_backend: str = "flashinfer"   # fastest for decode-heavy TTS
+    chunked_prefill_size: int = 512         # TTS prompts are short; small chunks start decode sooner
+
+    # Warmup sentence — run once after model load to prime the GPU
+    warmup_sentence: str = "నమస్తే! ఎలా ఉన్నారు?"
 
     # Generation / sampling parameters
-    max_tokens: int = 512
-    temperature: float = 0.0
-    top_p: float = 0.95
+    # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
+    max_tokens: int = 512                   # TTS rarely exceeds 250 tokens; cuts tail latency
+    temperature: float = 0.0               # greedy — fastest, deterministic
+    top_p: float = 0.7
     top_k: int = 50
     repetition_penalty: float = 1.2
     min_p: float = 0.05
@@ -45,6 +61,10 @@ class DecoderSettings(BaseModel):
     # Set to False to skip ncodec decoding and forward raw LLM tokens instead.
     # Useful for latency profiling and when decoder is not yet ready.
     enabled: bool = False
+
+    # Set to False to decode to raw PCM bytes only (skip WAV encoding).
+    # Saves ~1-5ms per request. Use when client handles raw float32 PCM.
+    to_wav: bool = True
 
 
 class WebSocketSettings(BaseModel):
@@ -72,6 +92,7 @@ class Settings(BaseSettings):
 
         tts_queue_name: str = "flowtts:tts_queue"
         results_channel_prefix: str = "flowtts:audio"
+        decoded_channel_prefix: str = "flowtts:decoded"
         worker_concurrency: int = 32
 
     redis: RedisSettings = RedisSettings()

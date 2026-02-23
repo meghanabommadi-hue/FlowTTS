@@ -1,4 +1,23 @@
-"""Pydantic models for FlowTTS WebSocket messages."""
+"""Pipeline position: API CONTRACT — WebSocket message schemas.
+
+Role in pipeline:
+  Defines the JSON wire format between callers and the gateway.
+  All WebSocket messages are validated/serialised through these models.
+
+Message flow:
+  Caller → Gateway:  SynthesizeRequest  {type:"synthesize", call_id, text_id, text}
+  Gateway → Caller:  AudioMessage       {type:"audio", audio_tokens, audio_base64?,
+                                         llm_s, decode_s, is_final}
+  Gateway → Caller:  ErrorMessage       {type:"error", error}
+
+Key fields:
+  call_id    — identifies the persistent WebSocket session (one per phone call).
+  text_id    — identifies one utterance within a call; used to correlate
+               requests with responses when multiple texts are in-flight.
+  llm_s      — seconds spent in sglang inference (set by worker).
+  decode_s   — seconds spent in ncodec decode (set by gateway, decode path only).
+  audio_base64 — base64-encoded WAV bytes (present only if decoder enabled).
+"""
 
 from enum import Enum
 from typing import Optional

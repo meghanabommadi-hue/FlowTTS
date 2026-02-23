@@ -1,7 +1,19 @@
-"""Audio processing utilities for post-decoder PCM audio.
+"""Pipeline position: POST-DECODE AUDIO PROCESSING — PCM → processed PCM.
 
-Contains both resampling and crossfade helpers so callers only need to
-import from a single module.
+Role in pipeline:
+  Operates on raw float32 PCM arrays after ncodec decoding.
+  Called by processing/pipeline.py, which is invoked by any consumer that
+  needs audio at a different sample rate or wants smooth multi-utterance audio.
+
+  ncodec outputs 48 kHz float32 PCM
+    → resample_audio(audio, 48000, target_sr)  if target_sr ≠ 48000
+    → crossfade(prev_chunk, new_chunk)          for seamless call-centre streams
+
+Functions:
+  resample_audio  — linear interpolation; fast but approximate.
+                    For higher quality use scipy.signal.resample or librosa.
+  crossfade       — appends two PCM chunks with optional linear overlap region.
+                    fade_samples=0 → plain concatenation (current default).
 """
 
 from __future__ import annotations

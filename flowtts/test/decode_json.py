@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
 """
-Decode audio_tokens from saved JSON benchmark files using multiple
-AudioDecoder instances in parallel — one codec per request, all at once.
+Pipeline position: OFFLINE DECODER BENCHMARK — batch decode from JSON files.
 
-Mirrors exactly what TTSIntegration/decoder.py does:
-    tts = TTSCodec()
-    wav = tts.decode(audio_tokens, context_tokens)
+Role in pipeline:
+  Second half of the two-stage benchmark workflow:
+    Stage 1: benchmark.py → run gateway + sglang → save audio_tokens JSON files
+    Stage 2: decode_json.py → load JSON files → decode audio_tokens → WAV
+
+  Bypasses the gateway entirely. Reads pre-generated JSON files from
+  benchmark.py output (test/bench_*/*.json) and decodes them directly
+  using AudioDecoder (ncodec TTSCodec).
+
+Why ProcessPoolExecutor (not threads):
+  ncodec uses onnxruntime CUDAExecutionProvider + PyTorch — both serialise
+  on a single CUDA stream within one process. Threads do not give parallelism.
+  Each subprocess spawned by ProcessPoolExecutor gets its own Python
+  interpreter and its own CUDA context → true parallel GPU decoding.
+
+Each subprocess:
+  1. Imports AudioDecoder locally (so CUDA init happens inside the subprocess).
+  2. Instantiates AudioDecoder() — loads ncodec model onto GPU.
+  3. Calls decode_to_wav(audio_tokens, context_tokens) → WAV bytes.
+  4. Optionally saves WAV to test/decode_out_TIMESTAMP/.
 
 Usage:
     python flowtts/test/decode_json.py                        # 3 random JSONs

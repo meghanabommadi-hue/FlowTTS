@@ -10,19 +10,21 @@
 #
 # The venv at /root/CleanTTSData/.venv has all required packages.
 
-set -euo pipefail
+set -uo pipefail
 
 VENV="/root/CleanTTSData/.venv"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
+export PATH="${VENV}/bin:${PATH}"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 BASE_PORT=8765
 N_PORTS=1
 TEST=0
 TEST_HOST="localhost"
+SAVE_AUDIO=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,9 +36,11 @@ while [[ $# -gt 0 ]]; do
             N_PORTS="$2"; shift 2 ;;
         --host)
             TEST_HOST="$2"; shift 2 ;;
+        --save-audio)
+            SAVE_AUDIO="$2"; shift 2 ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--ports N] [--port BASE] [--test [--host H]]"
+            echo "Usage: $0 [--ports N] [--port BASE] [--save-audio DIR] [--test [--host H]]"
             exit 1 ;;
     esac
 done
@@ -108,4 +112,17 @@ fi
 # ── Server mode — one process, one model, N ports ────────────────────────────
 echo "[FlowTTS] Starting server: ${N_PORTS} port(s) from ${BASE_PORT}..."
 
-exec "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}"
+# sglang's internal scheduler may crash and send SIGQUIT to the process tree,
+# killing the server. Restart automatically with a brief backoff.
+RESTART_DELAY=5
+while true; do
+    "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
+        ${SAVE_AUDIO:+--save-audio "${SAVE_AUDIO}"}
+    EXIT_CODE=$?
+    if [[ $EXIT_CODE -eq 0 ]]; then
+        echo "[FlowTTS] Server exited cleanly (code 0). Stopping."
+        break
+    fi
+    echo "[FlowTTS] Server exited with code ${EXIT_CODE}. Restarting in ${RESTART_DELAY}s..." >&2
+    sleep "${RESTART_DELAY}"
+done

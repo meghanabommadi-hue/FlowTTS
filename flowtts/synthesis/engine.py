@@ -1,7 +1,22 @@
-"""Main synthesis service that manages TTS model initialization.
+"""Pipeline position: SYNTHESIS SERVICE — singleton wrapper around the model.
 
-This mirrors ``litranscriber.transcription.engine`` but for a single
-FlowTTS model that produces audio tokens.
+Role in pipeline:
+  Provides a process-wide singleton (synthesis_service) that both the
+  worker (worker.py) and the single-process server (server.py) call via:
+
+      audio_tokens = await synthesis_service.synthesize(text)
+
+  Ensures the sglang Engine and ncodec TTSCodec are loaded exactly once per
+  process, no matter how many concurrent requests arrive.
+
+Lazy initialisation:
+  initialize() is called on first use (worker._process_job) or at server
+  startup (server._get_synthesizer). Subsequent calls are no-ops.
+
+Async safety:
+  synthesize() delegates to FlowTtsSynthesizer.synthesize() which calls
+  sgl.Engine.async_generate() — non-blocking, safe for concurrent coroutines.
+  The sglang Engine serialises GPU requests internally.
 """
 
 from __future__ import annotations

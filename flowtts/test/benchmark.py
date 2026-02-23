@@ -1,34 +1,40 @@
 #!/usr/bin/env python3
 """
-FlowTTS benchmark — N ports × M requests with random sentences.
+Pipeline position: GATEWAY LOAD TEST — end-to-end LLM throughput benchmark.
 
-Each port is treated as a single persistent call (phone-call model):
-  - One WebSocket connection is opened per port and kept alive.
-  - All text requests for that port are sent sequentially through the same socket.
-  - All ports run in parallel (asyncio.gather).
+Role in pipeline:
+  Drives the full gateway+worker pipeline from the client side:
+    Text (random Telugu sentences)
+      → WebSocket synthesize request → gateway port
+        → Redis queue → worker → sglang inference
+        → audio_tokens → gateway → WebSocket response
+      → save JSON {audio_tokens, llm_s, total_s}
 
-LLM outputs are saved as JSON (no decoder). Latency breakdown:
-  - llm_s   : time for sglang to generate audio tokens (from worker)
-  - total_s  : wall-clock time from send → response received
+  Does NOT call the decoder — output is raw audio_tokens JSON files that
+  can be fed into codec_client.py or decode_json.py for decoder benchmarking.
+
+Call model (persistent connection per port):
+  One WebSocket connection is opened per port and kept alive for the duration
+  of the test — mirroring a real phone-call where a caller stays connected
+  across multiple TTS utterances. Requests within a port are sequential;
+  all ports run concurrently via asyncio.gather.
+
+Outputs:
+  test/bench_YYYYMMDD_HHMMSS/*.json   — one file per request, contains
+    audio_tokens (input for decoder), llm_s, total_s, text, port, call_id.
+  test/llm_streaming_benchmark.log    — token chunk timeline: for each
+    response, audio_tokens is split into 100-token chunks with interpolated
+    timestamps so you can see token generation rate over the run duration.
+
+Latency fields:
+  llm_s    — sglang inference time (set by worker, excludes queue wait)
+  total_s  — wall time from WebSocket send to response received (includes
+             queue wait + inference + network round-trip)
 
 Usage:
-    # Auto-discover ports, 3 requests per port
-    python flowtts/test/benchmark.py
-
-    # 100 total requests distributed across live ports (round-robin)
-    python flowtts/test/benchmark.py --total 100
-
-    # 5 requests per port, base port 8765, scan up to 10 ports
-    python flowtts/test/benchmark.py --requests 5 --base-port 8765 --n-ports 10
-
-    # Ask a running gateway for the live port list via /ports
-    python flowtts/test/benchmark.py --auto-ports
-
-    # Single port, 10 requests
-    python flowtts/test/benchmark.py --base-port 8765 --n-ports 1 --requests 10
-
-    # Don't save JSON outputs, just measure timing
-    python flowtts/test/benchmark.py --no-save --total 100
+    python flowtts/test/benchmark.py --requests 1 --n-ports 100
+    python flowtts/test/benchmark.py --total 100 --no-save
+    python flowtts/test/benchmark.py --requests 5 --n-ports 10 --length long
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ import json
 import random
 import socket
 import statistics
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -48,6 +55,129 @@ from typing import Optional
 
 import websockets
 from websockets.exceptions import WebSocketException
+
+# ── Streaming token log ───────────────────────────────────────────────────────
+# The LLM returns all tokens at once (no true streaming). We split each
+# response into chunks of 100 tokens and interpolate timestamps linearly
+# across the known llm_s duration — giving a realistic per-100-token timeline.
+
+LOG_PATH = Path(__file__).parents[2] / "test" / "llm_streaming_benchmark.log"
+CHUNK_SIZE = 100  # tokens per logged checkpoint
+
+import re as _re
+
+def _parse_tokens(audio_tokens: str) -> list[int]:
+    """Extract integer token IDs from a speech_token string."""
+    return [int(x) for x in _re.findall(r"speech_token_(\d+)", audio_tokens)]
+
+
+class _TokenLog:
+    """
+    Collects per-call token chunks with interpolated timestamps, then writes
+    llm_streaming_benchmark.log (overwritten each run).
+
+    Each entry = one 100-token chunk from one call, timestamped at the
+    interpolated moment it would have arrived if tokens streamed linearly.
+    """
+
+    def __init__(self) -> None:
+        self._lock    = threading.Lock()
+        self._t_start: Optional[float] = None
+        # rows: (abs_elapsed_ms, port, chunk_no, chunk_tok, cum_tok, preview)
+        self._rows: list[tuple] = []
+        self._grand_total = 0
+
+    def start(self) -> None:
+        with self._lock:
+            self._t_start = time.perf_counter()
+            self._rows = []
+            self._grand_total = 0
+
+    def record_call(
+        self,
+        port: int,
+        audio_tokens: str,
+        llm_s: float,
+        call_start_elapsed_ms: float,   # ms since run start when this call began
+        text: str,
+    ) -> None:
+        """
+        Split audio_tokens into CHUNK_SIZE chunks, interpolate a timestamp
+        for each chunk linearly within [call_start_elapsed_ms,
+        call_start_elapsed_ms + llm_s*1000], and record each chunk.
+        """
+        tokens = _parse_tokens(audio_tokens)
+        total = len(tokens)
+        if total == 0:
+            return
+
+        preview = (text[:35] + "..") if len(text) > 35 else text
+        chunks = [tokens[i:i + CHUNK_SIZE] for i in range(0, total, CHUNK_SIZE)]
+        n_chunks = len(chunks)
+        llm_ms = (llm_s or 0.0) * 1000
+
+        with self._lock:
+            for ci, chunk in enumerate(chunks):
+                # Interpolated offset within this call's llm window
+                frac = (ci + 1) / n_chunks
+                interp_ms = call_start_elapsed_ms + frac * llm_ms
+                self._rows.append((
+                    interp_ms,          # abs elapsed ms from run start
+                    port,
+                    ci + 1,             # chunk number (1-based)
+                    n_chunks,           # total chunks for this call
+                    len(chunk),         # tokens in this chunk
+                    total,              # total tokens for this call
+                    preview,
+                ))
+            self._grand_total += total
+
+    def flush(self, wall_s: float) -> None:
+        with self._lock:
+            # Sort all chunks by interpolated timestamp
+            sorted_rows = sorted(self._rows, key=lambda r: r[0])
+
+            # Build cumulative across entire run
+            cum = 0
+            data_lines = []
+            for elapsed_ms, port, ci, n_chunks, chunk_tok, call_total, preview in sorted_rows:
+                cum += chunk_tok
+                pct_call  = (ci * CHUNK_SIZE + chunk_tok) / call_total * 100
+                pct_total = cum / self._grand_total * 100 if self._grand_total else 0.0
+                data_lines.append(
+                    f"{elapsed_ms:>10.0f}ms  :{port:<6}  "
+                    f"chunk {ci:>3}/{n_chunks:<3}  "
+                    f"{chunk_tok:>4} tok  "
+                    f"call%={pct_call:>5.1f}%  "
+                    f"run%={pct_total:>5.1f}%  "
+                    f"cum={cum:>6}  "
+                    f"{preview}"
+                )
+
+            header = [
+                f"llm_streaming_benchmark  {datetime.now().isoformat(timespec='seconds')}",
+                f"chunk_size={CHUNK_SIZE} tokens   wall={wall_s*1000:.0f}ms   "
+                f"total_tokens={self._grand_total}   "
+                f"tok/s={int(self._grand_total/wall_s) if wall_s else 0}",
+                "",
+                f"{'elapsed':>11}  {'port':<8}  {'chunk':>12}  {'size':>8}  "
+                f"{'call%':>9}  {'run%':>8}  {'cum':>9}  text",
+                "-" * 90,
+            ]
+            footer = [
+                "-" * 90,
+                f"grand_total={self._grand_total} tokens  "
+                f"avg_tok_per_s={int(self._grand_total/wall_s) if wall_s else 0}",
+            ]
+
+            LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LOG_PATH.write_text(
+                "\n".join(header + data_lines + footer) + "\n", encoding="utf-8"
+            )
+            print(f"\n  Token stream log → {LOG_PATH}", flush=True)
+
+
+TOKEN_LOG = _TokenLog()
 
 # ── Sentence pool ────────────────────────────────────────────────────────────
 # Short sentences (~5 words) — fast to synthesize, good for throughput tests
@@ -183,6 +313,7 @@ async def _call_worker(
     call_id = f"{host}:{port}"
     url = f"ws://{host}:{port}/ws/{call_id}"
     results = []
+    run_t0 = TOKEN_LOG._t_start  # reference start of this benchmark run
 
     try:
         async with websockets.connect(url, max_size=WS_MAX_SIZE, open_timeout=5) as ws:
@@ -232,9 +363,20 @@ async def _call_worker(
                     print(f"  [:{port}] #{idx:4d} ERROR: {msg.get('error')}", flush=True)
                     continue
 
-                llm_s       = msg.get("llm_s")
+                llm_s        = msg.get("llm_s") or 0.0
                 audio_tokens = msg.get("audio_tokens", "")
-                token_count = audio_tokens.count("<|speech_token_") if audio_tokens else 0
+                token_count  = audio_tokens.count("<|speech_token_") if audio_tokens else 0
+
+                # Log per-100-token chunks with interpolated timestamps
+                call_start_elapsed_ms = (t0 - run_t0) * 1000
+                if audio_tokens:
+                    TOKEN_LOG.record_call(
+                        port=port,
+                        audio_tokens=audio_tokens,
+                        llm_s=llm_s,
+                        call_start_elapsed_ms=call_start_elapsed_ms,
+                        text=text,
+                    )
 
                 # Save JSON output
                 file_name = ""
@@ -319,6 +461,8 @@ async def run_benchmark(
         print(f"    :{p}  →  {n} requests", flush=True)
     print(flush=True)
 
+    TOKEN_LOG.start()
+
     t0 = time.perf_counter()
     all_results_nested = await asyncio.gather(*[
         _call_worker(host, p, port_texts.get(p, []), port_start.get(p, 0), out_dir)
@@ -327,6 +471,9 @@ async def run_benchmark(
     wall = time.perf_counter() - t0
 
     results = [r for group in all_results_nested for r in group]
+
+    TOKEN_LOG.flush(wall_s=wall)
+
     print(f"\n  Wall time: {wall:.2f}s", flush=True)
     return results
 

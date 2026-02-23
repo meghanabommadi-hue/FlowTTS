@@ -1,8 +1,27 @@
-"""In-process metrics helpers for FlowTTS.
+"""Pipeline position: OBSERVABILITY — latency metrics for every stage.
 
-These functions provide a thin abstraction that can later be backed by
-Prometheus/StatsD. For now they keep simple in-memory counters and emit
-structured logs so you can debug performance without extra infra.
+Role in pipeline:
+  Thin in-memory counters instrumented at two points in the pipeline:
+
+  Worker (worker.py):
+    record_synthesis_latency(call_id, text_id, duration_s)
+      → tracks time from synthesis_service.synthesize() start to finish
+        (= pure sglang GPU inference time, excludes queue wait)
+
+  Gateway (api/websockets.py):
+    record_decode_latency(call_id, duration_s)
+      → tracks time from ncodec decode start to finish
+        (= AudioDecoder.decode_to_wav(), excludes WAV encoding when to_wav=False)
+    record_ws_connection_open / close
+      → tracks concurrent call count
+
+  All metrics also emit a structlog event so they appear in the log stream
+  without needing a separate metrics server.
+
+Scaling note:
+  Counters are in-process only — not shared across gateway workers. To
+  aggregate across processes, back these with Prometheus/StatsD by replacing
+  TimingStat.observe() with a push to an external system.
 """
 
 from __future__ import annotations

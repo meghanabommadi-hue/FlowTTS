@@ -1,9 +1,20 @@
-"""Per-call decoder instance lifecycle and GPU assignment.
+"""Pipeline position: DECODER LIFECYCLE — per-call resource tracking.
 
-Decoder instances subscribe to audio:{call_id}, decode tokens to PCM
-(via decoder.py), run processing pipeline, and are torn down when the
-WebSocket for that call_id disconnects. This module can assign decoder
-GPU ids when running multiple decoder workers.
+Role in pipeline:
+  Tracks which call_ids currently have an active decoder session.
+  Called by the gateway (api/websockets.py) on connect/disconnect:
+    connect    → DecoderManager.acquire(call_id)
+    disconnect → DecoderManager.release(call_id)
+
+Current state:
+  The gateway uses a single shared AudioDecoder instance (decoder/decoder.py)
+  for all calls — acquire/release are lightweight bookkeeping only.
+
+Future use:
+  When multiple GPU decoders are needed (e.g. one per active call), this
+  manager would assign a gpu_id from a pool and return a dedicated
+  AudioDecoder instance per call_id, releasing it back on disconnect.
+  The codec_server.py in test/ shows how that multi-instance pattern works.
 """
 
 from __future__ import annotations

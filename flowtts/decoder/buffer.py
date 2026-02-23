@@ -1,9 +1,21 @@
-"""Token chunk buffer: assembles LLM output token chunks before decoding.
+"""Pipeline position: BUFFER — between Redis Pub/Sub and the decoder.
 
-This module lives under decoder/ because the buffer sits BEFORE the decoder
-in the flow: Redis token chunks → buffer (reorder/assemble per text_id)
-→ decoder (tokens → PCM). Post-decoder audio processing (resample, crossfade)
-lives in flowtts.processing.
+Role in pipeline:
+  The worker currently sends all tokens for one utterance in a single
+  Redis message (is_final=True immediately). The buffer exists so that if
+  the worker is later changed to emit incremental chunks, the gateway
+  (api/websockets.py _listen_for_results) can accumulate them per text_id
+  and only trigger decoding once the full sequence arrives.
+
+Flow:
+  Redis message arrives  {audio_tokens, text_id, is_final}
+    → TokenBufferManager.add_chunk(text_id, audio_tokens, is_final)
+        if is_final=False → returns None  (keep buffering)
+        if is_final=True  → returns full concatenated token string
+    → AudioDecoder.decode_to_wav(full_tokens)  [in decoder/decoder.py]
+
+One TokenBufferManager instance is created per call_id in the gateway and
+discarded on disconnect (ConnectionManager.token_buffers dict).
 """
 
 from __future__ import annotations

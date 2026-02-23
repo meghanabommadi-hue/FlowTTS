@@ -1,7 +1,29 @@
-"""FlowTTS worker process.
+"""Pipeline position: WORKER (Redis-backed multi-process mode only).
 
-Consumes TTS jobs from a Redis queue and publishes audio tokens to a
-per-call Pub/Sub channel, as described in FlowTTS_data_flow_diagram.md.
+Role in pipeline:
+  Sits between the Redis TTS queue and the Redis Pub/Sub result channel.
+  Pops one job at a time (or concurrently up to worker_concurrency), runs
+  sglang inference, and publishes audio_tokens back so the gateway can
+  forward them to the waiting WebSocket client.
+
+Data flow through this file:
+  Redis queue (tts_queue_name)
+    → blpop job  {call_id, text_id, text, published_at}
+    → synthesis_service.synthesize(text)   [sglang GPU inference]
+    → audio_tokens string
+    → client.publish(results_channel_prefix:{call_id}, payload)
+    → Gateway WebSocket listener receives result
+
+Two implementations:
+  run_worker()        — simple async function, processes one job at a time.
+  SynthesizerWorker   — class-based, supports cfg.worker_concurrency parallel
+                        jobs via asyncio.Semaphore. Tracks queueing latency
+                        (time job spent waiting in queue before pickup) in
+                        addition to synthesis latency.
+
+Not used by server.py:
+  server.py calls synthesis_service.synthesize() directly — no Redis, no
+  worker process needed.
 """
 
 from __future__ import annotations
@@ -97,7 +119,7 @@ if __name__ == "__main__":
 
 
 class SynthesizerWorker:
-    """Class-based worker mirroring LITranscriber.TranscriptionWorker (adapted for TTS)."""
+    """Class-based worker - TranscriptionWorker."""
 
     def __init__(self) -> None:
         self.redis_client: redis.Redis | None = None

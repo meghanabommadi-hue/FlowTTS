@@ -1,30 +1,46 @@
 #!/usr/bin/env python3
 """
-Codec pool server — keeps N AudioDecoder instances alive in separate processes.
+Pipeline position: STANDALONE DECODER POOL SERVER (test / production decoder tier).
 
-Each codec runs in its own subprocess with its own Python interpreter and its
-own CUDA context, so GPU kernels from different codecs truly overlap in
-parallel (no GIL, no shared CUDA stream serialisation).
+Role in pipeline:
+  Replaces the single shared AudioDecoder instance in the gateway with a
+  pool of N independent decoder processes, each with its own CUDA context.
+  This allows true parallel decoding — N requests decoded simultaneously
+  without GPU stream serialisation.
 
-The main process accepts Unix-socket connections and routes each request to
-the target codec's subprocess via a multiprocessing.Queue pair.
+  Sits AFTER the gateway token step:
+    Gateway receives audio_tokens from Redis
+      → sends decode request to this server via Unix socket
+      → server routes to least-busy (or pinned) codec subprocess
+      → subprocess runs ncodec decode → returns WAV base64
+      → gateway sends WAV back to WebSocket client
 
-Protocol (newline-delimited JSON over Unix socket):
-  Request  → {"audio_tokens": "...", "context_tokens": "..." | null,
-               "codec_idx": int | null}
-           | {"cmd": "info"}
-  Response → {"ok": true, "wav_b64": "...", "sample_rate": 48000,
-               "codec_idx": 0, "decode_s": 0.12}
-           | {"ok": false, "error": "..."}
-           | {"ok": true, "n_codecs": N}   (info response)
+Why separate processes (not threads):
+  ncodec uses onnxruntime CUDAExecutionProvider + PyTorch. Both share one
+  CUDA stream per process. Threads within one process serialize on that
+  stream. Separate processes = separate CUDA contexts = true parallelism.
+
+GPU resource controls:
+  CODEC_GPU_MEM_FRACTION env var → each subprocess caps its GPU memory
+    (ONNX gpu_mem_limit + torch.cuda.set_per_process_memory_fraction).
+  CUDA_MPS_ACTIVE_THREAD_PERCENTAGE env var → MPS daemon enforces equal
+    SM compute slice per subprocess (requires nvidia-cuda-mps-control -d).
+  CPU affinity → each subprocess pinned to a slice of CPU cores.
+
+Protocol (newline-delimited JSON over Unix socket /tmp/codec_pool.sock):
+  Decode:  {"audio_tokens": "…", "context_tokens": "…"|null, "codec_idx": N|null}
+  Info:    {"cmd": "info"}
+  Response: {"ok": true,  "wav_b64": "…", "decode_s": 0.12, "codec_idx": N}
+          | {"ok": false, "error": "…"}
+          | {"ok": true,  "n_codecs": N, "names": {"alpha": 0, …}}
 
 Routing:
-  codec_idx set  → pinned to that codec (strict 1-to-1)
-  codec_idx None → least-busy (fewest pending jobs)
+  codec_idx provided → pinned (strict 1-to-1, used by codec_client.py)
+  codec_idx null     → least-busy subprocess (fewest in-flight jobs)
 
 Usage:
-    python flowtts/test/codec_server.py                 # 3 codecs
-    python flowtts/test/codec_server.py --n-codecs 5
+    python flowtts/test/codec_server.py                  # 3 codecs
+    python flowtts/test/codec_server.py --n-codecs 25
     python flowtts/test/codec_server.py --n-codecs 5 --socket /tmp/codec5.sock
 """
 

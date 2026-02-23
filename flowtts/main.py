@@ -1,12 +1,23 @@
-"""Main FastAPI application for FlowTTS.
+"""Pipeline position: GATEWAY (Redis-backed multi-process mode).
 
-This mirrors the shape of ``litranscriber.main`` but is intentionally
-minimal: a single WebSocket endpoint for text-to-speech.
+Role in pipeline:
+  1. Accepts WebSocket connections from callers (one connection per call_id).
+  2. Receives synthesize requests, publishes them to the Redis TTS queue.
+  3. Subscribes to the per-call Redis Pub/Sub channel and forwards audio
+     token results (+ optional decoded WAV) back to the caller.
+  4. Exposes /health and /ports HTTP endpoints for ops/discovery.
 
-On-demand model loading:
-  The worker loads the sglang model lazily on the first job it receives.
-  Gateways register themselves via FLOWTTS_KNOWN_PORTS so /ports can
-  report which ports are currently live.
+When to use this vs server.py:
+  Use main.py (via `python -m flowtts.main`) when you want the full
+  Redis-backed multi-process architecture: one gateway process per port,
+  separate worker process(es) for GPU inference.
+
+  Use server.py (via `./run.sh`) when you want a simpler single-process
+  setup — no Redis, no worker, model loaded once in-process.
+
+Port discovery:
+  Set FLOWTTS_KNOWN_PORTS=8765,8766,… so /ports can report which gateway
+  ports are live without scanning the full range.
 """
 
 from __future__ import annotations

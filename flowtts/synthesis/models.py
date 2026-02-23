@@ -1,11 +1,30 @@
-"""TTS model wrapper: produces audio token sequence from text.
+"""Pipeline position: SYNTHESIS — text → audio token string.
 
-Uses sglang Engine + ncodec TTSCodec, following the same pattern as
-TTSIntegration/ws_server.py.
+Role in pipeline:
+  The GPU-heavy core of the pipeline. Takes a plain-text utterance and
+  returns a speech token string that encodes the audio at the token level.
+  The downstream decoder (flowtts/decoder/decoder.py) converts tokens → PCM.
 
-The synthesizer produces the raw LLM-generated token string (e.g.
-"<|speech_token_42|><|speech_token_7|>...") which the decoder then
-converts to PCM via TTSCodec.decode().
+Sequence inside FlowTtsSynthesizer.synthesize():
+  1. Format prompt:
+       TTSCodec.format_prompt(text, context_tokens, ref_speech_tokens)
+       → "<|task_tts|><|start_text|>{text}…<|prompt_speech_start|>"
+  2. LLM inference:
+       sgl.Engine.async_generate(prompt, sampling_params)
+       → raw output text  "<|speech_token_42|><|speech_token_7|>…"
+  3. Return token string to caller (worker.py or server.py).
+
+Initialisation (done once, lazy):
+  • Downloads model via HuggingFace Hub (ncodec.TTSCodec).
+  • Encodes reference audio (cfg.ref_audio) to get:
+      - context_tokens  — speaker timbre/style descriptor.
+      - ref_speech_tokens — optional speech prefix for the LLM prompt.
+  • Loads sglang Engine with the configured model_dir, dtype, mem_fraction.
+
+Performance notes:
+  • sglang Engine holds the GPU for the lifetime of the process.
+  • temperature=0.0 (greedy) by default — deterministic output, fastest.
+  • max_new_tokens=512 limits utterance length; raise for longer sentences.
 """
 
 from __future__ import annotations

@@ -1,7 +1,24 @@
-"""Structured logging setup for FlowTTS.
+"""Pipeline position: OBSERVABILITY — structured logging for all stages.
 
-This module centralizes structlog configuration so that the gateway,
-worker, and decoder all emit logs in a consistent format.
+Role in pipeline:
+  Called once at startup (main.py lifespan / server.py __main__) via
+  configure_logging(). Every module then does:
+
+      logger = structlog.get_logger(__name__)
+      logger.info("tts_job_completed", call_id=…, synth_latency=…)
+
+Output formats:
+  json_logs=False  → coloured key=value console output (default/dev)
+  json_logs=True   → one JSON object per line (production / log aggregators)
+
+Key events to grep across the pipeline:
+  flowtts_gateway_starting     main.py      process starting
+  redis_connection_ready       main.py      Redis ready
+  websocket_connected          websockets   call accepted
+  job_published_to_queue       websockets   text pushed to Redis queue
+  tts_job_completed            worker       sglang done, tokens published
+  result_forwarded_to_client   websockets   audio sent back to caller
+  websocket_disconnected       websockets   call ended
 """
 
 from __future__ import annotations
