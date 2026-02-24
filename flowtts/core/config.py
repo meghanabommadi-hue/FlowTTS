@@ -33,6 +33,7 @@ class TtsModelSettings(BaseModel):
     mem_fraction_static: float = 0.9        # more KV cache for concurrent requests
     attention_backend: str = "flashinfer"   # fastest for decode-heavy TTS
     chunked_prefill_size: int = 512         # TTS prompts are short; small chunks start decode sooner
+    max_running_requests: int = 100          # allow all ports to run concurrently in sglang scheduler
 
     # Warmup sentence — run once after model load to prime the GPU
     warmup_sentence: str = "నమస్తే! ఎలా ఉన్నారు?"

@@ -25,6 +25,8 @@ N_PORTS=1
 TEST=0
 TEST_HOST="localhost"
 SAVE_AUDIO=""
+CTRL_PORT=""
+SKIP_DECODER=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -38,9 +40,13 @@ while [[ $# -gt 0 ]]; do
             TEST_HOST="$2"; shift 2 ;;
         --save-audio)
             SAVE_AUDIO="$2"; shift 2 ;;
+        --ctrl-port)
+            CTRL_PORT="$2"; shift 2 ;;
+        --skip-decoder)
+            SKIP_DECODER="1"; shift ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--ports N] [--port BASE] [--save-audio DIR] [--test [--host H]]"
+            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR] [--skip-decoder] [--test [--host H]]"
             exit 1 ;;
     esac
 done
@@ -117,7 +123,9 @@ echo "[FlowTTS] Starting server: ${N_PORTS} port(s) from ${BASE_PORT}..."
 RESTART_DELAY=5
 while true; do
     "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
-        ${SAVE_AUDIO:+--save-audio "${SAVE_AUDIO}"}
+        ${SAVE_AUDIO:+--save-audio "${SAVE_AUDIO}"} \
+        ${CTRL_PORT:+--ctrl-port "${CTRL_PORT}"} \
+        ${SKIP_DECODER:+--skip-decoder}
     EXIT_CODE=$?
     if [[ $EXIT_CODE -eq 0 ]]; then
         echo "[FlowTTS] Server exited cleanly (code 0). Stopping."

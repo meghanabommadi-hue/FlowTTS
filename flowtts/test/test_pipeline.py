@@ -1,42 +1,39 @@
-"""End-to-end pipeline smoke test (no model required).
+"""End-to-end pipeline smoke test.
 
-Tests Redis ↔ WebSocket plumbing by injecting real audio_tokens directly into
-Redis instead of running the LLM. Each request runs on its own WebSocket
-connection; requests are distributed round-robin across the given ports.
+Two execution modes:
 
-Port selection (mirrors run.sh convention):
-  --base-port P --n-ports N   Sequential: P, P+1, …, P+N-1  (run.sh default)
-  --ports 8765,8766,8780      Explicit comma-separated list
-  If neither given, auto-discovers live ports starting from 8765.
+  Managed (default, --launch):
+    The test launches flowtts.server itself with --ctrl-port, waits for it to
+    be ready, then opens WebSocket ports on demand via the control API
+    (POST /ports/add?port=N) — one port per concurrent request.  The server
+    subprocess is killed when the test finishes.
 
-Modes:
-  --mode tokens   No-decode path (decoder.enabled=False):
-                    inject audio_tokens → flowtts:audio:{call_id}
-                    → gateway forwards raw tokens back over WebSocket.
+  External (--no-launch):
+    Connect to an already-running server.  Ports are resolved from
+    --ports / --n-ports / --base-port or auto-discovered.
 
-  --mode decoded  Pre-decoded inject (decoder.enabled=True on gateway):
-                    inject audio_base64 → flowtts:decoded:{call_id}
-                    → gateway forwards audio_base64 back over WebSocket.
-
-  --mode worker   Full DecoderWorker end-to-end (decoder.enabled=True on gateway):
-                    inject audio_tokens → flowtts:audio:{call_id}
-                    → DecoderWorker decodes → flowtts:decoded:{call_id}
-                    → gateway forwards WAV back over WebSocket.
+Test modes (--mode):
+  tokens   Send text, receive audio_tokens + audio_base64 from server.
+  decoded  Inject pre-built WAV directly into flowtts:decoded:{call_id}.
+  worker   Inject audio_tokens into flowtts:audio:{call_id}; DecoderWorker
+           decodes and publishes to flowtts:decoded:{call_id}.
 
 Output:
-  WAV files (modes decoded/worker) are saved to
-  /root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/req{N:04d}_port{port}.wav
-  A summary table is printed and written to that directory as summary.txt.
+  WAV files saved to /root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/
+  Summary table printed and written as summary.txt.
 
 Usage:
-    # mirror run.sh: 3 ports from 8765 → 8765, 8766, 8767
-    python -m flowtts.test.test_pipeline --mode tokens --requests 9 --base-port 8765 --n-ports 3
+    # Managed — launch server, allocate 9 ports on demand, run 40 requests
+    python -m flowtts.test.test_pipeline --requests 40 --concurrency 9
 
-    # explicit port list
-    python -m flowtts.test.test_pipeline --mode worker --requests 10 --ports 8780,8781
+    # External — server already running on 8765-8773
+    python -m flowtts.test.test_pipeline --no-launch --n-ports 9 --requests 40
 
-    # auto-discover live ports
-    python -m flowtts.test.test_pipeline --mode tokens --requests 5
+    # command to kill all ports
+    kill $(ss -tlnp | grep :8764 | grep -oP 'pid=\K[0-9]+')
+
+    # command to check all open ports
+    ss -tlnp | grep python3 2>/dev/null | awk '{print $4}' | sort -t: -k2 -n
 """
 
 from __future__ import annotations
@@ -45,17 +42,18 @@ import argparse
 import asyncio
 import base64
 import datetime
-import io
 import json
+import os
+import signal
 import socket
-import struct
+import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
-import redis.asyncio as aioredis
 import websockets
 
 # ---------------------------------------------------------------------------
@@ -125,48 +123,6 @@ class RequestResult(NamedTuple):
     decode_s: Optional[float]
 
 
-# ---------------------------------------------------------------------------
-# Redis helpers
-# ---------------------------------------------------------------------------
-async def _redis() -> aioredis.Redis:
-    return await aioredis.from_url("redis://localhost:6379/0", decode_responses=False)
-
-
-async def _inject_tokens(rc: aioredis.Redis, call_id: str, text_id: str) -> None:
-    payload = {
-        "call_id": call_id,
-        "text_id": text_id,
-        "audio_tokens": SAMPLE_TOKENS,
-        "is_final": True,
-        "generated_at": time.time(),
-        "llm_s": 0.5,
-    }
-    await rc.publish(f"flowtts:audio:{call_id}", json.dumps(payload))
-
-
-async def _inject_decoded(rc: aioredis.Redis, call_id: str, text_id: str) -> None:
-    sr = 48000
-    n = sr  # 1 second silence
-    data_bytes = b"\x00\x00" * n
-    buf = io.BytesIO()
-    buf.write(b"RIFF")
-    buf.write(struct.pack("<I", 36 + len(data_bytes)))
-    buf.write(b"WAVEfmt ")
-    buf.write(struct.pack("<IHHIIHH", 16, 1, 1, sr, sr * 2, 2, 16))
-    buf.write(b"data")
-    buf.write(struct.pack("<I", len(data_bytes)))
-    buf.write(data_bytes)
-    audio_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    payload = {
-        "call_id": call_id,
-        "text_id": text_id,
-        "audio_base64": audio_b64,
-        "sample_rate": sr,
-        "is_final": True,
-        "llm_s": 0.5,
-        "decode_s": 0.01,
-    }
-    await rc.publish(f"flowtts:decoded:{call_id}", json.dumps(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +145,6 @@ async def _run_one(
     url = f"ws://localhost:{port}/ws/{call_id}"
 
     _log(req_id, port, f"connecting → {url}")
-    rc = await _redis()
     try:
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
@@ -208,23 +163,9 @@ async def _run_one(
             await ws.send(json.dumps(req))
             _log(req_id, port, "sent synthesize request")
 
-            # Small delay so gateway has subscribed before we publish
-            await asyncio.sleep(0.2)
-
-            if mode == "tokens":
-                await _inject_tokens(rc, call_id, text_id)
-                _log(req_id, port, f"injected audio_tokens → flowtts:audio:{call_id[:8]}…")
-            elif mode == "decoded":
-                await _inject_decoded(rc, call_id, text_id)
-                _log(req_id, port, f"injected decoded WAV → flowtts:decoded:{call_id[:8]}…")
-            else:  # worker — DecoderWorker picks it up automatically
-                await _inject_tokens(rc, call_id, text_id)
-                _log(req_id, port, f"injected audio_tokens → flowtts:audio:{call_id[:8]}… (awaiting DecoderWorker)")
-
-            timeout = 60 if mode == "worker" else 10
-            _log(req_id, port, f"waiting for WS response (timeout={timeout}s)…")
+            _log(req_id, port, "waiting for WS response…")
             t0 = time.time()
-            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            raw = await ws.recv()
             latency = round(time.time() - t0, 3)
             msg = json.loads(raw)
 
@@ -237,99 +178,206 @@ async def _run_one(
 
             wav_path: Optional[Path] = None
             wav_bytes_len = 0
-            token_chars = 0
+            token_chars = len(msg.get("audio_tokens", ""))
             llm_s = msg.get("llm_s")
             decode_s = msg.get("decode_s")
 
-            if mode == "tokens":
-                tokens = msg.get("audio_tokens", "")
-                if not tokens:
-                    _log(req_id, port, f"FAIL audio_tokens missing — msg keys: {list(msg.keys())}")
-                    return RequestResult(req_id, port, False, latency, None,
-                                         "audio_tokens missing", 0, 0, llm_s, None)
-                token_chars = len(tokens)
-                # Save WAV if the server included decoded audio alongside tokens
-                audio_b64 = msg.get("audio_base64", "")
-                if audio_b64:
-                    wav_data = base64.b64decode(audio_b64)
-                    wav_bytes_len = len(wav_data)
-                    wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
-                    wav_path.write_bytes(wav_data)
-                    _log(req_id, port, f"OK  {token_chars} token chars  {wav_bytes_len}B WAV → {wav_path.name}  llm_s={llm_s}  decode_s={decode_s}")
-                else:
-                    _log(req_id, port, f"OK  {token_chars} token chars  llm_s={llm_s}")
-
-            else:
-                audio_b64 = msg.get("audio_base64", "")
-                if not audio_b64:
-                    _log(req_id, port, f"FAIL audio_base64 missing — msg keys: {list(msg.keys())}")
-                    return RequestResult(req_id, port, False, latency, None,
-                                         "audio_base64 missing", 0, 0, llm_s, decode_s)
-                wav_data = base64.b64decode(audio_b64)
-                wav_bytes_len = len(wav_data)
-                wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
-                wav_path.write_bytes(wav_data)
-                _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name}  llm_s={llm_s}  decode_s={decode_s}")
+            audio_b64 = msg.get("audio_base64", "")
+            if not audio_b64:
+                _log(req_id, port, f"FAIL audio_base64 missing — msg keys: {list(msg.keys())}")
+                return RequestResult(req_id, port, False, latency, None,
+                                     "audio_base64 missing", 0, token_chars, llm_s, decode_s)
+            wav_data = base64.b64decode(audio_b64)
+            wav_bytes_len = len(wav_data)
+            wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
+            wav_path.write_bytes(wav_data)
+            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name}  llm_s={llm_s}  decode_s={decode_s}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
                                  None, wav_bytes_len, token_chars, llm_s, decode_s)
 
-    except asyncio.TimeoutError:
-        _log(req_id, port, "FAIL timeout waiting for response")
-        return RequestResult(req_id, port, False, 0.0, None, "timeout waiting for response", 0, 0, None, None)
     except Exception as e:
         err = str(e) or type(e).__name__
         _log(req_id, port, f"FAIL {type(e).__name__}: {err}")
         return RequestResult(req_id, port, False, 0.0, None, err, 0, 0, None, None)
-    finally:
-        await rc.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Server management (managed launch mode)
+# ---------------------------------------------------------------------------
+_VENV_PYTHON = "/root/CleanTTSData/.venv/bin/python3"
+_FLOWTTS_DIR = Path("/root/FlowTTS")
+_DEFAULT_CTRL_PORT = 8764
+
+
+def _ctrl_url(ctrl_port: int, path: str) -> str:
+    return f"http://127.0.0.1:{ctrl_port}{path}"
+
+
+def _ctrl_get(ctrl_port: int, path: str, timeout: float = 2.0):
+    with urllib.request.urlopen(_ctrl_url(ctrl_port, path), timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _ctrl_post(ctrl_port: int, path: str, timeout: float = 2.0):
+    req = urllib.request.Request(_ctrl_url(ctrl_port, path), method="POST", data=b"")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _launch_server(ctrl_port: int, save_audio: Optional[str] = None) -> subprocess.Popen:
+    """Start flowtts.server with --ports 0 (no WS ports) + control API."""
+    cmd = [
+        _VENV_PYTHON, "-m", "flowtts.server",
+        "--ports", "0",
+        "--ctrl-port", str(ctrl_port),
+    ]
+    if save_audio:
+        cmd += ["--save-audio", save_audio]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(_FLOWTTS_DIR)
+    proc = subprocess.Popen(
+        cmd, cwd=str(_FLOWTTS_DIR), env=env,
+        stdout=sys.stdout, stderr=sys.stderr,
+    )
+    return proc
+
+
+async def _wait_server_ready(ctrl_port: int, timeout: float = 300.0) -> None:
+    """Poll /ready until the model is loaded."""
+    deadline = time.time() + timeout
+    interval = 2.0
+    print(f"[server] waiting for model load (ctrl=:{ctrl_port})…", flush=True)
+    while time.time() < deadline:
+        try:
+            data = _ctrl_get(ctrl_port, "/ready", timeout=1.0)
+            if data.get("ready"):
+                print(f"[server] ready  existing_ports={data.get('ports')}", flush=True)
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+    raise TimeoutError(f"server not ready after {timeout}s")
+
+
+async def _open_port(ctrl_port: int, ws_port: int) -> int:
+    """Ask the running server to bind ws_port. Returns the port."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: _ctrl_post(ctrl_port, f"/ports/add?port={ws_port}"),
+    )
+    # Brief wait for the socket to be listening
+    for _ in range(20):
+        if _port_open(ws_port):
+            return ws_port
+        await asyncio.sleep(0.05)
+    raise OSError(f"port {ws_port} did not open after /ports/add")
 
 
 # ---------------------------------------------------------------------------
 # Main test runner
 # ---------------------------------------------------------------------------
-async def run_test(mode: str, ports: List[int], n_requests: int, out_dir: Path) -> List[RequestResult]:
+async def run_test(
+    mode: str,
+    n_requests: int,
+    out_dir: Path,
+    *,
+    # managed-launch args
+    launch: bool = True,
+    ctrl_port: int = _DEFAULT_CTRL_PORT,
+    concurrency: int = 9,
+    base_port: int = 8765,
+    save_audio: Optional[str] = None,
+    # external-server args
+    ports: Optional[List[int]] = None,
+) -> List[RequestResult]:
     global _BENCH_TEXTS
-    worker = None
-    worker_task = None
 
-    # Load Telugu sentences from bench_* once
     if not _BENCH_TEXTS:
         _BENCH_TEXTS = _load_bench_texts()
         if _BENCH_TEXTS:
-            print(f"[bench] loaded {len(_BENCH_TEXTS)} Telugu sentences from bench_*/", flush=True)
+            print(f"[bench] loaded {len(_BENCH_TEXTS)} Telugu sentences", flush=True)
         else:
-            print("[bench] no bench texts found, using 'test sentence N' fallback", flush=True)
+            print("[bench] no bench texts, using 'test sentence N' fallback", flush=True)
 
-    # Verify ports are reachable before launching requests; drop dead ones
-    ts = time.strftime("%H:%M:%S")
-    print(f"[{ts}] checking {len(ports)} port(s)…", flush=True)
-    live_ports = [p for p in ports if _port_open(p)]
-    dead_ports = [p for p in ports if p not in live_ports]
-    if not live_ports:
-        print(f"[{ts}] ERROR: no ports reachable: {dead_ports}", flush=True)
-        print(f"[{ts}] Start the server first:  nohup bash run.sh --ports N > /tmp/run_sh.log 2>&1 &", flush=True)
-        sys.exit(1)
-    if dead_ports:
-        print(f"[{ts}] WARNING: {len(dead_ports)} port(s) not reachable, dropped: {dead_ports}", flush=True)
-    ports = live_ports
-    print(f"[{ts}] using {len(ports)} live port(s): {ports}", flush=True)
+    server_proc: Optional[subprocess.Popen] = None
 
+    if launch:
+        # ── Managed: start server, open ports on demand ──────────────────────
+        server_proc = _launch_server(ctrl_port, save_audio)
+        try:
+            await _wait_server_ready(ctrl_port)
+        except TimeoutError as e:
+            server_proc.kill()
+            print(f"[server] FATAL: {e}", flush=True)
+            sys.exit(1)
+
+        # Open exactly `concurrency` WS ports starting at base_port
+        ws_ports: List[int] = []
+        for i in range(concurrency):
+            p = base_port + i
+            await _open_port(ctrl_port, p)
+            ws_ports.append(p)
+        print(f"[server] opened {len(ws_ports)} port(s): {ws_ports}", flush=True)
+        active_ports = ws_ports
+
+    else:
+        # ── External: open ports on demand via ctrl API, or use live ports ────
+        if ctrl_port:
+            if ports is not None:
+                # Explicit port list — open any that aren't bound yet
+                needed = ports
+                opened, already = [], []
+                for p in needed:
+                    if not _port_open(p):
+                        await _open_port(ctrl_port, p)
+                        opened.append(p)
+                    else:
+                        already.append(p)
+                if opened:
+                    print(f"[server] opened new port(s): {opened}", flush=True)
+                if already:
+                    print(f"[server] reusing existing port(s): {already}", flush=True)
+                active_ports = needed
+            else:
+                # No explicit ports — use all ports the server already has open
+                data = _ctrl_get(ctrl_port, "/ports")
+                active_ports = data.get("ports", [])
+                print(f"[server] using {len(active_ports)} existing port(s): {active_ports}", flush=True)
+        else:
+            # No ctrl port — just use whatever is already live
+            if ports is None:
+                ports = _resolve_ports(None, base_port, None)
+            ts = time.strftime("%H:%M:%S")
+            print(f"[{ts}] checking {len(ports)} port(s)…", flush=True)
+            live = [p for p in ports if _port_open(p)]
+            dead = [p for p in ports if p not in live]
+            if not live:
+                print(f"[{ts}] ERROR: no ports reachable: {dead}", flush=True)
+                sys.exit(1)
+            if dead:
+                print(f"[{ts}] WARNING: dropped dead ports: {dead}", flush=True)
+            active_ports = live
+            print(f"[{ts}] using {len(active_ports)} live port(s): {active_ports}", flush=True)
+
+    worker = None
+    worker_task = None
     if mode == "worker":
         from flowtts.decoder.decoder import DecoderWorker
-        print(f"[{ts}] loading DecoderWorker + ncodec…", flush=True)
+        print("[worker] loading DecoderWorker + ncodec…", flush=True)
         worker = DecoderWorker()
         worker_task = asyncio.create_task(worker.run())
-        await asyncio.sleep(1.5)  # wait for ncodec load + Redis subscribe
-        print(f"[{ts}] DecoderWorker ready", flush=True)
+        await asyncio.sleep(1.5)
+        print("[worker] ready", flush=True)
 
     print(f"\n{'='*60}")
-    print(f"mode={mode}  requests={n_requests}  ports={ports}")
+    print(f"mode={mode}  requests={n_requests}  ports={active_ports}")
     print(f"output → {out_dir}")
-    print(f"{'='*60}")
+    print(f"{'='*60}\n")
 
     tasks = [
-        _run_one(i, ports[i % len(ports)], mode, out_dir, worker)
+        _run_one(i, active_ports[i % len(active_ports)], mode, out_dir, worker)
         for i in range(n_requests)
     ]
     results: List[RequestResult] = await asyncio.gather(*tasks)
@@ -341,6 +389,14 @@ async def run_test(mode: str, ports: List[int], n_requests: int, out_dir: Path) 
             await worker_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    if server_proc is not None:
+        server_proc.terminate()
+        try:
+            server_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+        print("[server] stopped", flush=True)
 
     return results
 
@@ -465,34 +521,71 @@ def _resolve_ports(
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-async def main(mode: str, ports: List[int], n_requests: int) -> None:
+async def main(args: argparse.Namespace) -> None:
     out_dir = _make_out_dir()
-    results = await run_test(mode, ports, n_requests, out_dir)
-    ok = _print_summary(results, mode, out_dir)
+
+    if args.launch:
+        results = await run_test(
+            args.mode, args.requests, out_dir,
+            launch=True,
+            ctrl_port=args.ctrl_port,
+            concurrency=args.concurrency,
+            base_port=args.base_port,
+            save_audio=args.save_audio,
+        )
+    else:
+        port_list = _resolve_ports(args.ports, args.base_port, args.n_ports) if not args.ctrl_port else None
+        if port_list:
+            print(f"[ports] resolved: {port_list}")
+        results = await run_test(
+            args.mode, args.requests, out_dir,
+            launch=False,
+            ctrl_port=args.ctrl_port,
+            concurrency=args.concurrency,
+            base_port=args.base_port,
+            ports=port_list,
+        )
+
+    ok = _print_summary(results, args.mode, out_dir)
     sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FlowTTS pipeline smoke test")
-    parser.add_argument("--mode", choices=["tokens", "decoded", "worker"], default="tokens",
-                        help="Test mode (default: tokens)")
+    parser = argparse.ArgumentParser(
+        description="FlowTTS pipeline smoke test",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--mode", choices=["synth", "tokens", "decoded", "worker"], default="synth",
+                        help="Test mode (default: synth)")
     parser.add_argument("--requests", type=int, default=5,
-                        help="Number of parallel requests (default: 5)")
+                        help="Number of requests to send (default: 5)")
 
-    # Port selection — mirrors run.sh conventions
-    # --port / --base-port : first (or only) port  (run.sh uses --port)
-    # --n-ports            : number of sequential ports from base
-    # --ports              : explicit comma-separated list
+    # Managed-launch vs external
+    grp = parser.add_mutually_exclusive_group()
+    grp.add_argument("--launch", dest="launch", action="store_true", default=True,
+                     help="(default) Launch flowtts.server, open ports on demand")
+    grp.add_argument("--no-launch", dest="launch", action="store_false",
+                     help="Connect to an already-running server")
+
+    # Managed-launch options
+    parser.add_argument("--concurrency", type=int, default=9,
+                        help="Number of WS ports to open (managed mode, default: 9)")
+    parser.add_argument("--ctrl-port", type=int, default=_DEFAULT_CTRL_PORT,
+                        help=f"Server control API port (default: {_DEFAULT_CTRL_PORT})")
+    parser.add_argument("--save-audio", type=str, default=None, metavar="DIR",
+                        help="Pass --save-audio DIR to the launched server")
+
+    # External-server port selection
     pg = parser.add_mutually_exclusive_group()
     pg.add_argument("--ports", type=str, default=None,
-                    help="Explicit comma-separated port list, e.g. 8765,8766,8780")
+                    help="Explicit comma-separated port list (--no-launch)")
     pg.add_argument("--n-ports", type=int, default=None,
-                    help="Number of sequential ports from --base-port (run.sh style)")
+                    help="Number of sequential ports from --base-port (--no-launch)")
     parser.add_argument("--base-port", "--port", dest="base_port", type=int, default=8765,
-                        help="Base/first port (default: 8765)")
+                        help="Base WS port (default: 8765)")
 
     args = parser.parse_args()
-
-    port_list = _resolve_ports(args.ports, args.base_port, args.n_ports)
-    print(f"[ports] using: {port_list}")
-    asyncio.run(main(args.mode, port_list, args.requests))
+    # If --ctrl-port given without explicit --launch, assume external server
+    if args.ctrl_port and args.launch and "--launch" not in sys.argv:
+        args.launch = False
+    asyncio.run(main(args))

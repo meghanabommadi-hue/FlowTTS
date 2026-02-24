@@ -94,6 +94,7 @@ class FlowTtsSynthesizer:
             dtype=cfg.dtype,
             attention_backend=cfg.attention_backend,
             chunked_prefill_size=cfg.chunked_prefill_size,
+            max_running_requests=cfg.max_running_requests,
         )
 
         sampling_params = {
