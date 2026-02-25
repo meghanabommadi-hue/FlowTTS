@@ -55,14 +55,21 @@ class FlowTtsSynthesizer:
             return  # already initialized — don't reload
 
         cfg = settings.tts_model
+        dec = settings.decoder
         model_path = cfg.model_dir
 
         if not Path(model_path).is_dir():
             raise FileNotFoundError(f"Model not found: {model_path}")
 
         logger.info("loading_codec_and_ref_audio", ref_audio=cfg.ref_audio)
-        from ncodec.codec import TTSCodec
-        tts_codec = TTSCodec()
+        from flowtts.decoder.ncodec.codec import TTSCodec
+        tts_codec = TTSCodec(
+            max_batch_size=dec.max_batch,
+            batch_timeout_ms=dec.batch_timeout_ms,
+            gpu_chunk_size=dec.gpu_chunk_size,
+            onnx_workers=dec.onnx_workers,
+            use_trt=dec.use_trt,
+        )
 
         # Encode reference audio to get context tokens + ref speech tokens
         ref_path = cfg.ref_audio
@@ -95,6 +102,8 @@ class FlowTtsSynthesizer:
             attention_backend=cfg.attention_backend,
             chunked_prefill_size=cfg.chunked_prefill_size,
             max_running_requests=cfg.max_running_requests,
+            schedule_policy=cfg.schedule_policy,
+            cuda_graph_max_bs=cfg.cuda_graph_max_bs,
         )
 
         sampling_params = {

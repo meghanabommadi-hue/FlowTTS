@@ -139,6 +139,7 @@ async def _run_one(
     mode: str,
     out_dir: Path,
     worker,       # DecoderWorker instance or None
+    skip_decoder: bool = False,
 ) -> RequestResult:
     call_id = str(uuid.uuid4())
     text_id = str(uuid.uuid4())
@@ -159,6 +160,7 @@ async def _run_one(
                 "call_id": call_id,
                 "text_id": text_id,
                 "text": text,
+                **({"skip_decoder": True} if skip_decoder else {}),
             }
             await ws.send(json.dumps(req))
             _log(req_id, port, "sent synthesize request")
@@ -183,14 +185,15 @@ async def _run_one(
             decode_s = msg.get("decode_s")
 
             audio_b64 = msg.get("audio_base64", "")
-            if not audio_b64:
+            if not audio_b64 and not skip_decoder:
                 _log(req_id, port, f"FAIL audio_base64 missing — msg keys: {list(msg.keys())}")
                 return RequestResult(req_id, port, False, latency, None,
                                      "audio_base64 missing", 0, token_chars, llm_s, decode_s)
-            wav_data = base64.b64decode(audio_b64)
-            wav_bytes_len = len(wav_data)
-            wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
-            wav_path.write_bytes(wav_data)
+            if audio_b64:
+                wav_data = base64.b64decode(audio_b64)
+                wav_bytes_len = len(wav_data)
+                wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
+                wav_path.write_bytes(wav_data)
             _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name}  llm_s={llm_s}  decode_s={decode_s}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
@@ -289,6 +292,7 @@ async def run_test(
     concurrency: int = 9,
     base_port: int = 8765,
     save_audio: Optional[str] = None,
+    skip_decoder: bool = False,
     # external-server args
     ports: Optional[List[int]] = None,
 ) -> List[RequestResult]:
@@ -363,13 +367,6 @@ async def run_test(
 
     worker = None
     worker_task = None
-    if mode == "worker":
-        from flowtts.decoder.decoder import DecoderWorker
-        print("[worker] loading DecoderWorker + ncodec…", flush=True)
-        worker = DecoderWorker()
-        worker_task = asyncio.create_task(worker.run())
-        await asyncio.sleep(1.5)
-        print("[worker] ready", flush=True)
 
     print(f"\n{'='*60}")
     print(f"mode={mode}  requests={n_requests}  ports={active_ports}")
@@ -377,7 +374,8 @@ async def run_test(
     print(f"{'='*60}\n")
 
     tasks = [
-        _run_one(i, active_ports[i % len(active_ports)], mode, out_dir, worker)
+        _run_one(i, active_ports[i % len(active_ports)], mode, out_dir, worker,
+                 skip_decoder=skip_decoder)
         for i in range(n_requests)
     ]
     results: List[RequestResult] = await asyncio.gather(*tasks)
@@ -532,9 +530,10 @@ async def main(args: argparse.Namespace) -> None:
             concurrency=args.concurrency,
             base_port=args.base_port,
             save_audio=args.save_audio,
+            skip_decoder=args.skip_decoder,
         )
     else:
-        port_list = _resolve_ports(args.ports, args.base_port, args.n_ports) if not args.ctrl_port else None
+        port_list = _resolve_ports(args.ports, args.base_port, args.n_ports)
         if port_list:
             print(f"[ports] resolved: {port_list}")
         results = await run_test(
@@ -574,6 +573,8 @@ if __name__ == "__main__":
                         help=f"Server control API port (default: {_DEFAULT_CTRL_PORT})")
     parser.add_argument("--save-audio", type=str, default=None, metavar="DIR",
                         help="Pass --save-audio DIR to the launched server")
+    parser.add_argument("--skip-decoder", dest="skip_decoder", action="store_true", default=False,
+                        help="Send skip_decoder=true in each WS request (LLM only, no WAV decode)")
 
     # External-server port selection
     pg = parser.add_mutually_exclusive_group()
@@ -585,7 +586,9 @@ if __name__ == "__main__":
                         help="Base WS port (default: 8765)")
 
     args = parser.parse_args()
-    # If --ctrl-port given without explicit --launch, assume external server
-    if args.ctrl_port and args.launch and "--launch" not in sys.argv:
+    # If the user explicitly passed --ctrl-port / --n-ports / --ports (i.e. they
+    # have a server already running) and did NOT pass --launch, switch to external mode.
+    _external_hints = {"--ctrl-port", "--n-ports", "--ports", "--no-launch"}
+    if args.launch and "--launch" not in sys.argv and _external_hints.intersection(sys.argv):
         args.launch = False
     asyncio.run(main(args))

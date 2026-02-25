@@ -32,15 +32,17 @@ class TtsModelSettings(BaseModel):
     # sglang engine parameters
     mem_fraction_static: float = 0.9        # more KV cache for concurrent requests
     attention_backend: str = "flashinfer"   # fastest for decode-heavy TTS
-    chunked_prefill_size: int = 512         # TTS prompts are short; small chunks start decode sooner
-    max_running_requests: int = 100          # allow all ports to run concurrently in sglang scheduler
+    chunked_prefill_size: int = 128         # small prefill chunks → decode starts sooner
+    max_running_requests: int = 100         # allow all ports to run concurrently in sglang scheduler
+    schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
+    cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
 
     # Warmup sentence — run once after model load to prime the GPU
     warmup_sentence: str = "నమస్తే! ఎలా ఉన్నారు?"
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 512                   # TTS rarely exceeds 250 tokens; cuts tail latency
+    max_tokens: int = 350                   # TTS tokens rarely exceed 300; cuts tail latency
     temperature: float = 0.0               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
@@ -66,6 +68,13 @@ class DecoderSettings(BaseModel):
     # Set to False to decode to raw PCM bytes only (skip WAV encoding).
     # Saves ~1-5ms per request. Use when client handles raw float32 PCM.
     to_wav: bool = True
+
+    # TTSCodec batch queue settings
+    max_batch: int = 128             # batch queue max size
+    batch_timeout_ms: float = 10.0   # ms to wait collecting a batch
+    gpu_chunk_size: int = 50         # max items per GPU forward pass
+    onnx_workers: int = 2            # parallel ONNX worker threads
+    use_trt: bool = False            # compile decoder with TensorRT FP16
 
 
 class WebSocketSettings(BaseModel):

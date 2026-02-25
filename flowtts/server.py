@@ -58,7 +58,7 @@ import websockets
 from websockets.exceptions import WebSocketException
 
 from flowtts.core.config import settings
-from flowtts.decoder.decoder import AudioDecoder
+from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
 # Silence websockets' own logger — we do our own prints
@@ -66,30 +66,9 @@ logging.getLogger("websockets").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 _synthesizer: FlowTtsSynthesizer | None = None
-_decoder: AudioDecoder | None = None
 _audio_out_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
 _skip_decoder: bool = False  # set via --skip-decoder CLI flag
-
-# Limit concurrent decoder (ONNX+FASR) calls to avoid GPU OOM.
-# The LLM already serialises itself via sglang; the decoder does not.
-# 2 concurrent decodes is safe even with 88 ports; raise cautiously.
-_DECODE_CONCURRENCY = 100
-_decode_sem: asyncio.Semaphore | None = None  # initialised in run_server
-
-
-def _get_decode_sem() -> asyncio.Semaphore:
-    global _decode_sem
-    if _decode_sem is None:
-        _decode_sem = asyncio.Semaphore(_DECODE_CONCURRENCY)
-    return _decode_sem
-
-
-def _get_decoder() -> AudioDecoder:
-    global _decoder
-    if _decoder is None:
-        _decoder = AudioDecoder()
-    return _decoder
 
 
 def _ts() -> str:
@@ -125,6 +104,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             text = (data.get("text") or "").strip()
             call_id = data.get("call_id") or f"{peer[0]}:{peer[1]}"
             text_id = data.get("text_id") or str(uuid.uuid4())
+            req_skip_decoder = _skip_decoder or bool(data.get("skip_decoder", False))
 
             if not text:
                 await ws.send(json.dumps({
@@ -144,7 +124,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
 
                 token_count = audio_tokens.count("<|speech_token_")
 
-                if _skip_decoder:
+                if req_skip_decoder:
                     await ws.send(json.dumps({
                         "type": "audio",
                         "call_id": call_id,
@@ -157,21 +137,19 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                         "decode_s": 0,
                     }))
                     print(
-                        f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}  (decoder skipped)",
+                        f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}  (skip_decoder)",
                         flush=True,
                     )
                 else:
-                    # Decode tokens → WAV in a thread so the event loop stays free.
-                    # Semaphore limits concurrent GPU allocations in the decoder.
-                    dec = _get_decoder()
-                    loop = asyncio.get_running_loop()
+                    # Batch decode: all concurrent requests are coalesced by
+                    # TTSCodec's internal batch queue into one GPU forward pass.
+                    codec = synth._tts_codec
+                    ctx = synth._context_tokens
                     td = time.perf_counter()
-                    async with _get_decode_sem():
-                        decoded = await loop.run_in_executor(
-                            None,
-                            lambda: dec.decode_to_wav(audio_tokens, to_wav=True),
-                        )
+                    wav_tensor = await codec.decode_async(audio_tokens, ctx)
                     decode_s = round(time.perf_counter() - td, 4)
+
+                    decoded = tensor_to_wav(wav_tensor)
                     audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
 
                     if _audio_out_dir is not None:
@@ -185,7 +163,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                         "text_id": text_id,
                         "audio_tokens": audio_tokens,
                         "audio_base64": audio_b64,
-                        "sample_rate": decoded.sample_rate,
+                        "sample_rate": SAMPLE_RATE,
                         "is_final": True,
                         "llm_s": llm_s,
                         "decode_s": decode_s,
@@ -247,20 +225,17 @@ async def _warmup_port(port: int, sentence: str) -> None:
 
 
 async def _warmup_all_ports(ports: list[int]) -> None:
-    """Warm up every bound WS port in batches to avoid decoder GPU OOM.
+    """Warm up every bound WS port concurrently.
 
-    Batch size matches _DECODE_CONCURRENCY so we never exceed the semaphore
-    limit — which also means each batch completes before the next starts,
-    keeping peak GPU pressure predictable regardless of port count.
+    All warmup decode requests are coalesced by TTSCodec's internal batch queue
+    into one GPU forward pass, so firing all ports simultaneously is safe.
     """
     sentence = settings.tts_model.warmup_sentence
     if not sentence or not ports:
         return
-    print(f"[{_ts()}] warming up {len(ports)} port(s) (batch={_DECODE_CONCURRENCY})...", flush=True)
+    print(f"[{_ts()}] warming up {len(ports)} port(s) concurrently...", flush=True)
     t0 = time.perf_counter()
-    for i in range(0, len(ports), _DECODE_CONCURRENCY):
-        batch = ports[i:i + _DECODE_CONCURRENCY]
-        await asyncio.gather(*[_warmup_port(p, sentence) for p in batch])
+    await asyncio.gather(*[_warmup_port(p, sentence) for p in ports])
     print(f"[{_ts()}] all ports warmed up  ({(time.perf_counter()-t0)*1000:.0f}ms)", flush=True)
 
 
