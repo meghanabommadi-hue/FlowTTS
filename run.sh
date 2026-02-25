@@ -7,12 +7,10 @@
 #   ./run.sh --ports 3 --port 9000  # ports 9000, 9001, 9002
 #   ./run.sh --test                 # quick smoke test against running server
 #   ./run.sh --test --ports 3 --port 8765
-#
-# The venv at /root/CleanTTSData/.venv has all required packages.
 
 set -uo pipefail
 
-VENV="/root/CleanTTSData/.venv"
+VENV="${VIRTUAL_ENV:-/root/CleanTTSData/.venv}"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

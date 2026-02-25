@@ -75,3 +75,6 @@ pyngrok
 onnx
 onnxruntime
 gradio
+websockets
+pydantic_settings
+structlog

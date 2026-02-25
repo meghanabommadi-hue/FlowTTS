@@ -104,6 +104,7 @@ class FlowTtsSynthesizer:
             max_running_requests=cfg.max_running_requests,
             schedule_policy=cfg.schedule_policy,
             cuda_graph_max_bs=cfg.cuda_graph_max_bs,
+            disable_radix_cahce=cfg.disable_radix_cahce
         )
 
         sampling_params = {

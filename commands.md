@@ -11,7 +11,7 @@ cd /root/FlowTTS && bash run.sh --ctrl-port 8764
 ## Open N ports
 
 ```bash
-/root/CleanTTSData/.venv/bin/python3 -m flowtts.test.open_ports --n 40
+python3 -m flowtts.test.open_ports --n 40
 ```
 
 - Starts from the next port after the highest already open
@@ -39,7 +39,7 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-deco
 ## Open M more ports
 
 ```bash
-/root/CleanTTSData/.venv/bin/python3 -m flowtts.test.open_ports --n 50
+python3 -m flowtts.test.open_ports --n 50
 ```
 
 - Continues from the next port after the highest already open
@@ -49,7 +49,7 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-deco
 ## Send M+N requests (1 per port)
 
 ```bash
-cd /root/FlowTTS && /root/CleanTTSData/.venv/bin/python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 90
+cd /root/FlowTTS && python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 90
 ```
 
 ---
@@ -91,7 +91,7 @@ Must set LD_LIBRARY_PATH so onnxruntime uses GPU (libcudnn.so.9):
 ```bash
 cd /root/FlowTTS
 export LD_LIBRARY_PATH=/root/CleanTTSData/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
-/root/CleanTTSData/.venv/bin/python3 flowtts/test/test_concurrent_decode.py --n-requests 30 --rounds 3
+python3 flowtts/test/test_concurrent_decode.py --n-requests 30 --rounds 3
 ```
 
 - Codec initialised **once** (model load + ONNX session warm-up)
