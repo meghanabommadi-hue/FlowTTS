@@ -106,6 +106,33 @@ def _load_bench_texts() -> List[str]:
 SAMPLE_TOKENS = _load_sample_tokens()
 _BENCH_TEXTS: List[str] = []  # loaded lazily on first use
 
+# Fallback Telugu sentences (short / medium / long mix) used when no bench_* data exists.
+_TELUGU_FALLBACK: List[str] = [
+    # short
+    "నేను రేపు హైదరాబాద్ వెళ్తాను, మీరు వస్తారా?",
+    "ఈ పుస్తకం చాలా ఆసక్తికరంగా ఉంది, మీరు తప్పకుండా చదవాలి.",
+    "వాతావరణం బాగుంది కాబట్టి, సాయంత్రం పార్కుకు వెళ్దాం.",
+    "మీ పేరు ఏమిటి? మీరు ఎక్కడ నుండి వచ్చారు?",
+    "ఈ రోజు పని చాలా ఎక్కువగా ఉంది, అయినా పూర్తి చేశాను.",
+    "తెలుగు భాష చాలా మధురంగా ఉంటుంది.",
+    "మా ఊరిలో ప్రతి సంవత్సరం పెద్ద పండుగ జరుగుతుంది.",
+    "కొత్త సినిమా చాలా బాగుంది, మీరు తప్పకుండా చూడండి.",
+    "డాక్టర్ గారు చెప్పిన మందులు వేసుకుంటున్నావా?",
+    "ఈ వంటకం తయారు చేయడం చాలా సులభం.",
+
+    # medium
+    "నేను రేపు హైదరాబాద్ వెళ్తాను, మీరు వస్తారా?",
+    "ఈ పుస్తకం చాలా ఆసక్తికరంగా ఉంది, మీరు తప్పకుండా చదవాలి.",
+    "వాతావరణం బాగుంది కాబట్టి, సాయంత్రం పార్కుకు వెళ్దాం.",
+    "మీ పేరు ఏమిటి? మీరు ఎక్కడ నుండి వచ్చారు?",
+    "ఈ రోజు పని చాలా ఎక్కువగా ఉంది, అయినా పూర్తి చేశాను.",
+    "తెలుగు భాష చాలా మధురంగా ఉంటుంది.",
+    "మా ఊరిలో ప్రతి సంవత్సరం పెద్ద పండుగ జరుగుతుంది.",
+    "కొత్త సినిమా చాలా బాగుంది, మీరు తప్పకుండా చూడండి.",
+    "డాక్టర్ గారు చెప్పిన మందులు వేసుకుంటున్నావా?",
+    "ఈ వంటకం తయారు చేయడం చాలా సులభం."
+]
+
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -150,11 +177,11 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Use Telugu bench text if available, else fallback
+            # Use Telugu bench text if available, else built-in Telugu fallback list
             if _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
             else:
-                text = f"test sentence {req_id}"
+                text = _TELUGU_FALLBACK[req_id % len(_TELUGU_FALLBACK)]
             req = {
                 "type": "synthesize",
                 "call_id": call_id,
@@ -303,7 +330,7 @@ async def run_test(
         if _BENCH_TEXTS:
             print(f"[bench] loaded {len(_BENCH_TEXTS)} Telugu sentences", flush=True)
         else:
-            print("[bench] no bench texts, using 'test sentence N' fallback", flush=True)
+            print(f"[bench] no bench texts, using built-in {len(_TELUGU_FALLBACK)} Telugu sentences", flush=True)
 
     server_proc: Optional[subprocess.Popen] = None
 
@@ -533,9 +560,13 @@ async def main(args: argparse.Namespace) -> None:
             skip_decoder=args.skip_decoder,
         )
     else:
-        port_list = _resolve_ports(args.ports, args.base_port, args.n_ports)
-        if port_list:
-            print(f"[ports] resolved: {port_list}")
+        # Prefer ctrl API for port discovery if available and no explicit port list given
+        if args.ctrl_port and args.ports is None and args.n_ports is None:
+            port_list = None  # run_test will fetch from ctrl API
+        else:
+            port_list = _resolve_ports(args.ports, args.base_port, args.n_ports)
+            if port_list:
+                print(f"[ports] resolved: {port_list}")
         results = await run_test(
             args.mode, args.requests, out_dir,
             launch=False,
@@ -561,7 +592,7 @@ if __name__ == "__main__":
 
     # Managed-launch vs external
     grp = parser.add_mutually_exclusive_group()
-    grp.add_argument("--launch", dest="launch", action="store_true", default=True,
+    grp.add_argument("--launch", dest="launch", action="store_true", default=None,
                      help="(default) Launch flowtts.server, open ports on demand")
     grp.add_argument("--no-launch", dest="launch", action="store_false",
                      help="Connect to an already-running server")
@@ -586,9 +617,8 @@ if __name__ == "__main__":
                         help="Base WS port (default: 8765)")
 
     args = parser.parse_args()
-    # If the user explicitly passed --ctrl-port / --n-ports / --ports (i.e. they
-    # have a server already running) and did NOT pass --launch, switch to external mode.
-    _external_hints = {"--ctrl-port", "--n-ports", "--ports", "--no-launch"}
-    if args.launch and "--launch" not in sys.argv and _external_hints.intersection(sys.argv):
-        args.launch = False
+    # If neither --launch nor --no-launch was given, auto-detect from other flags.
+    if args.launch is None:
+        _external_hints = {"--ctrl-port", "--n-ports", "--ports", "--no-launch"}
+        args.launch = not bool(_external_hints.intersection(sys.argv))
     asyncio.run(main(args))

@@ -26,23 +26,23 @@ class TtsModelSettings(BaseModel):
     """TTS model configuration."""
 
     model_dir: str = "/root/models/MeghanaKap-MiraTTSTelugu"
-    ref_audio: str = "/root/models/tel_male_audio.wav"
+    ref_audio: str = "/root/models//MeghanaKap-MiraTTSTelugu/tel_male_audio.wav"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.8       # more KV cache for concurrent requests
-    attention_backend: str = "flashinfer"   # fastest for decode-heavy TTS
-    chunked_prefill_size: int = 128         # small prefill chunks → decode starts sooner
-    max_running_requests: int = 100         # allow all ports to run concurrently in sglang scheduler
+    mem_fraction_static: float = 0.9       # more KV cache for concurrent requests
+    attention_backend: str = "flashinfer"   # triton is fastest # fastest for decode-heavy TTS
+    chunked_prefill_size: int = 4096         # small prefill chunks → decode starts sooner
+    max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
-    disable_radix_cahce: bool = True
+    disable_radix_cache: bool = True
     # Warmup sentence — run once after model load to prime the GPU
     warmup_sentence: str = "నమస్తే! ఎలా ఉన్నారు?"
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 512                   # TTS tokens rarely exceed 300; cuts tail latency
+    max_tokens: int = 400                   # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.0               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50

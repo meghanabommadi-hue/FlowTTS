@@ -131,12 +131,14 @@ class AudioTokenizer():
                 print("[TRT] Falling back to plain FP16 decoder.")
 
     # ------------------------------------------------------------------
-    # TRT helpers — compile via decode_2 venv (tensorrt-cu12, works on driver 570)
-    # The main venv has tensorrt-cu13 (CUDA 13.1) which requires driver >= 575.
+    # TRT helpers — compile via venv2 (tensorrt-cu12, works on driver 570).
+    # The main llmc venv has tensorrt-cu13 libs which require driver >= 575,
+    # so TRT compilation and the cache .ep file are managed entirely through
+    # the venv2 subprocess.  The main process always runs plain FP16.
     # ------------------------------------------------------------------
 
-    _COMPILE_PYTHON = "/root/BatchBicodec/decode_2/bin/python3"
-    _COMPILE_SP     = "/root/BatchBicodec/decode_2/lib/python3.10/site-packages"
+    _COMPILE_PYTHON = "/root/BatchBicodec/venv2/bin/python3"
+    _COMPILE_SP     = "/root/BatchBicodec/venv2/lib/python3.12/site-packages"
 
     @classmethod
     def _trt_env(cls) -> dict:
@@ -165,32 +167,32 @@ class AudioTokenizer():
         return env
 
     def _load_or_compile_trt(self, gpu_chunk_size: int, model_path: str):
-        """Load TRT engine from cache, or compile it via the decode_2 venv
-        (tensorrt-cu12 10.12, compatible with driver 570) in a subprocess.
+        """Compile TRT engine via the venv2 subprocess if not already cached.
+
+        The venv2 (torch-tensorrt 2.8, tensorrt-cu12) is compatible with
+        driver 570, unlike the main llmc venv's tensorrt-cu13 libs which
+        require driver >= 575.  As a result:
+          - Compilation happens in venv2 subprocess → writes .ep cache file.
+          - Loading the .ep into the main process is not supported on this
+            driver; _load_or_compile_trt always returns None so the caller
+            falls back to plain FP16 PyTorch inference.
 
         Cache: decoder_trt_b{gpu_chunk_size}.ep next to model weights.
+              Run compile_trt_mig.py in venv2 to pre-build this file.
         """
-        import torch_tensorrt
-        import torch.export
+        import subprocess, textwrap
 
         cache_path = Path(model_path).parent / f"decoder_trt_b{gpu_chunk_size}.ep"
 
         if cache_path.exists():
-            print(f"[TRT] Loading engine from cache: {cache_path}")
-            try:
-                loaded = torch_tensorrt.load(str(cache_path))
-                if isinstance(loaded, torch.export.ExportedProgram):
-                    loaded = loaded.module()
-                print("[TRT] Engine loaded.")
-                return loaded
-            except Exception as e:
-                print(f"[TRT] Cache load failed ({e}), recompiling ...")
-                cache_path.unlink(missing_ok=True)
+            print(f"[TRT] Cache exists: {cache_path}")
+            print("[TRT] In-process TRT load not available on this driver (570 < 575 required for cu13 TRT).")
+            print("[TRT] Falling back to plain FP16 decoder.")
+            return None
 
-        print(f"[TRT] Compiling FP16 engine via decode_2 venv "
+        print(f"[TRT] Compiling FP16 engine via venv2 "
               f"(opt_batch={gpu_chunk_size}) — ~60 s first time ...")
 
-        import subprocess, textwrap
         flowtts_root = str(Path(__file__).parents[3])
         compile_script = textwrap.dedent(f"""
             import sys, torch, torch_tensorrt
@@ -231,18 +233,11 @@ class AudioTokenizer():
         )
         if result.returncode != 0 or not cache_path.exists():
             print(f"[TRT] Subprocess compile failed (rc={result.returncode}). Using plain FP16.")
-            return None
-
-        print(f"[TRT] Engine cached: {cache_path}. Loading into main process ...")
-        try:
-            loaded = torch_tensorrt.load(str(cache_path))
-            if isinstance(loaded, torch.export.ExportedProgram):
-                loaded = loaded.module()
-            print("[TRT] Engine loaded.")
-            return loaded
-        except Exception as e:
-            print(f"[TRT] Load failed after compile ({e}). Using plain FP16.")
-            return None
+        else:
+            print(f"[TRT] Engine cached at {cache_path}. Plain FP16 used in this process.")
+        # In-process TRT load is not available on driver 570 (cu13 TRT requires >= 575).
+        # The compiled .ep is available for future use when the driver is upgraded.
+        return None
 
     def decode(self, x):
         return self.detokenizer(x)

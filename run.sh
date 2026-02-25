@@ -10,7 +10,7 @@
 
 set -uo pipefail
 
-VENV="${VIRTUAL_ENV:-/root/CleanTTSData/.venv}"
+VENV="${VIRTUAL_ENV:-/root/FlowTTS/llmc}"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -20,7 +20,7 @@ export PATH="${VENV}/bin:${PATH}"
 # onnxruntime CUDAExecutionProvider needs libcudnn.so.9 (installed via pip as nvidia-cudnn-cu12).
 # torch-tensorrt needs libcudart.so.13 (installed via cuda-toolkit pip package).
 # Neither is on the system LD path, so we prepend the venv nvidia lib dirs here.
-export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${VENV}/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/torch/lib:${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${VENV}/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 BASE_PORT=8765
@@ -29,7 +29,6 @@ TEST=0
 TEST_HOST="localhost"
 SAVE_AUDIO=""
 CTRL_PORT=""
-SKIP_DECODER=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,11 +44,9 @@ while [[ $# -gt 0 ]]; do
             SAVE_AUDIO="$2"; shift 2 ;;
         --ctrl-port)
             CTRL_PORT="$2"; shift 2 ;;
-        --skip-decoder)
-            SKIP_DECODER="1"; shift ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR] [--skip-decoder] [--test [--host H]]"
+            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR] [--test [--host H]]"
             exit 1 ;;
     esac
 done
@@ -124,12 +121,15 @@ echo "[FlowTTS] Starting server: ${N_PORTS} port(s) from ${BASE_PORT}..."
 # sglang's internal scheduler may crash and send SIGQUIT to the process tree,
 # killing the server. Restart automatically with a brief backoff.
 RESTART_DELAY=5
+LOG_FILE="${SCRIPT_DIR}/llm.log"
+> "${LOG_FILE}"   # truncate on each run
+
 while true; do
     "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
         ${SAVE_AUDIO:+--save-audio "${SAVE_AUDIO}"} \
         ${CTRL_PORT:+--ctrl-port "${CTRL_PORT}"} \
-        ${SKIP_DECODER:+--skip-decoder}
-    EXIT_CODE=$?
+        2>&1 | tee -a "${LOG_FILE}"
+    EXIT_CODE=${PIPESTATUS[0]}
     if [[ $EXIT_CODE -eq 0 ]]; then
         echo "[FlowTTS] Server exited cleanly (code 0). Stopping."
         break

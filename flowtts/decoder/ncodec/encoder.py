@@ -3,7 +3,7 @@ import librosa
 import numpy as np
 import onnxruntime as ort
 import torchaudio.transforms as TT
-from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
+# Imported lazily in _ensure_wav2vec2() to avoid loading torchvision at startup
 
 def audio_volume_normalize(audio: np.ndarray, coeff: float = 0.2) -> np.ndarray:
     """
@@ -64,15 +64,10 @@ class AudioEncoder:
     def __init__(self, decoder_paths="YaTharThShaRma999/pretrained_tts_tokenizers"):
 
         ## uses torch/onnx as seen fit, for some things torch is faster, others torch is faster
-        device = 'cuda:0'
-        wav2vec2_path = "facebook/wav2vec2-large-xlsr-53"
-        self.processor = Wav2Vec2FeatureExtractor.from_pretrained(
-            wav2vec2_path
-        )
-        self.feature_extractor = Wav2Vec2Model.from_pretrained(
-            wav2vec2_path,
-            torch_dtype=torch.bfloat16,
-        ).to(device)
+        self._device = 'cuda:0'
+        self._wav2vec2_path = "facebook/wav2vec2-large-xlsr-53"
+        self.processor = None
+        self.feature_extractor = None
         
         sess_options = ort.SessionOptions()
         providers = [
@@ -84,8 +79,18 @@ class AudioEncoder:
         self.mel_transformer = get_mel_transformer()
         self.ref_segment_length = 96000 
         
+    def _ensure_wav2vec2(self):
+        if self.feature_extractor is None:
+            from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
+            self.processor = Wav2Vec2FeatureExtractor.from_pretrained(self._wav2vec2_path)
+            self.feature_extractor = Wav2Vec2Model.from_pretrained(
+                self._wav2vec2_path,
+                torch_dtype=torch.bfloat16,
+            ).to(self._device)
+
     def extract_wav2vec2_features(self, wavs: torch.Tensor) -> torch.Tensor:
         """extract wav2vec2 hidden state for semantics"""
+        self._ensure_wav2vec2()
         inputs = self.processor(
             wavs,
             sampling_rate=16000,

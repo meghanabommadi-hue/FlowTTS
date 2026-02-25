@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import datetime
 import json
 import time
 import uuid
@@ -68,11 +69,24 @@ logging.getLogger("aiohttp").setLevel(logging.WARNING)
 _synthesizer: FlowTtsSynthesizer | None = None
 _audio_out_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
-_skip_decoder: bool = False  # set via --skip-decoder CLI flag
+_llm_log: Path = Path(__file__).parents[1] / "llm.log"
+_llm_log_file = None  # opened once in main()
 
 
 def _ts() -> str:
     return time.strftime("%H:%M:%S")
+
+
+def _tsms() -> str:
+    """Current time as HH:MM:SS.mmm (millisecond precision)."""
+    return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+
+def _log(line: str) -> None:
+    """Append a timestamped line to llm.log (no-op if file not open)."""
+    if _llm_log_file is not None:
+        _llm_log_file.write(line + "\n")
+        _llm_log_file.flush()
 
 
 async def _get_synthesizer() -> FlowTtsSynthesizer:
@@ -104,8 +118,6 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             text = (data.get("text") or "").strip()
             call_id = data.get("call_id") or f"{peer[0]}:{peer[1]}"
             text_id = data.get("text_id") or str(uuid.uuid4())
-            req_skip_decoder = _skip_decoder or bool(data.get("skip_decoder", False))
-
             if not text:
                 await ws.send(json.dumps({
                     "type": "error", "call_id": call_id, "text_id": text_id,
@@ -113,67 +125,56 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 continue
 
+            ts_recv = _tsms()
+            _log(f"{ts_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
             print(f"[{_ts()}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
 
             try:
                 synth = await _get_synthesizer()
                 t0 = time.perf_counter()
+                ts_in = _tsms()
+                _log(f"{ts_in}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
                 audio_tokens = await synth.synthesize(text)
                 llm_s = round(time.perf_counter() - t0, 4)
                 llm_ms = round(llm_s * 1000)
+                ts_out = _tsms()
+                _log(f"{ts_out}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
 
                 token_count = audio_tokens.count("<|speech_token_")
 
-                if req_skip_decoder:
-                    await ws.send(json.dumps({
-                        "type": "audio",
-                        "call_id": call_id,
-                        "text_id": text_id,
-                        "audio_tokens": audio_tokens,
-                        "audio_base64": "",
-                        "sample_rate": 0,
-                        "is_final": True,
-                        "llm_s": llm_s,
-                        "decode_s": 0,
-                    }))
-                    print(
-                        f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}  (skip_decoder)",
-                        flush=True,
-                    )
-                else:
-                    # Batch decode: all concurrent requests are coalesced by
-                    # TTSCodec's internal batch queue into one GPU forward pass.
-                    codec = synth._tts_codec
-                    ctx = synth._context_tokens
-                    td = time.perf_counter()
-                    wav_tensor = await codec.decode_async(audio_tokens, ctx)
-                    decode_s = round(time.perf_counter() - td, 4)
+                # Batch decode: all concurrent requests are coalesced by
+                # TTSCodec's internal batch queue into one GPU forward pass.
+                codec = synth._tts_codec
+                ctx = synth._context_tokens
+                td = time.perf_counter()
+                wav_tensor = await codec.decode_async(audio_tokens, ctx)
+                decode_s = round(time.perf_counter() - td, 4)
 
-                    decoded = tensor_to_wav(wav_tensor)
-                    audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
+                decoded = tensor_to_wav(wav_tensor)
+                audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
 
-                    if _audio_out_dir is not None:
-                        wav_file = _audio_out_dir / f"{text_id}.wav"
-                        wav_file.write_bytes(decoded.wav_bytes)
-                        print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
+                if _audio_out_dir is not None:
+                    wav_file = _audio_out_dir / f"{text_id}.wav"
+                    wav_file.write_bytes(decoded.wav_bytes)
+                    print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
 
-                    await ws.send(json.dumps({
-                        "type": "audio",
-                        "call_id": call_id,
-                        "text_id": text_id,
-                        "audio_tokens": audio_tokens,
-                        "audio_base64": audio_b64,
-                        "sample_rate": SAMPLE_RATE,
-                        "is_final": True,
-                        "llm_s": llm_s,
-                        "decode_s": decode_s,
-                    }))
+                await ws.send(json.dumps({
+                    "type": "audio",
+                    "call_id": call_id,
+                    "text_id": text_id,
+                    "audio_tokens": audio_tokens,
+                    "audio_base64": audio_b64,
+                    "sample_rate": SAMPLE_RATE,
+                    "is_final": True,
+                    "llm_s": llm_s,
+                    "decode_s": decode_s,
+                }))
 
-                    print(
-                        f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}"
-                        f"  decode={round(decode_s*1000)}ms  wav={len(decoded.wav_bytes)}B",
-                        flush=True,
-                    )
+                print(
+                    f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}"
+                    f"  decode={round(decode_s*1000)}ms  wav={len(decoded.wav_bytes)}B",
+                    flush=True,
+                )
 
             except Exception as e:
                 print(f"[{_ts()}] :{port} {call_id}  ERROR: {e}", flush=True)
@@ -322,7 +323,7 @@ async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None)
 
 
 def main() -> None:
-    global _audio_out_dir, _skip_decoder
+    global _audio_out_dir
 
     parser = argparse.ArgumentParser(description="FlowTTS single-process WebSocket server")
     parser.add_argument("--base-port", type=int, default=settings.ws.port,
@@ -333,13 +334,10 @@ def main() -> None:
                         help="Directory to save decoded WAV files (one per request)")
     parser.add_argument("--ctrl-port", type=int, default=None, metavar="PORT",
                         help="HTTP control API port for on-demand WS port binding (e.g. 8764)")
-    parser.add_argument("--skip-decoder", action="store_true", default=False,
-                        help="Skip decoder: return audio_tokens only, no WAV (faster, LLM-only mode)")
     args = parser.parse_args()
 
-    if args.skip_decoder:
-        _skip_decoder = True
-        print("[FlowTTS] Decoder disabled — returning audio_tokens only", flush=True)
+    global _llm_log_file
+    _llm_log_file = open(_llm_log, "w", buffering=1)  # line-buffered, overwrites each run
 
     if args.save_audio:
         _audio_out_dir = Path(args.save_audio)

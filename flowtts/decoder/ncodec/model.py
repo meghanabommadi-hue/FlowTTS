@@ -75,6 +75,16 @@ class AudioDecoder:
             [int(t) for t in re.findall(r"context_token_(\d+)", ctx_str)],
             dtype=np.int32,
         ).reshape(1, 1, -1)
+        if spch.shape[1] == 0:
+            raise ValueError(
+                f"No speech tokens found in LLM output. "
+                f"spch_str preview: {spch_str[:200]!r}"
+            )
+        if ctx.shape[2] == 0:
+            raise ValueError(
+                f"No context tokens found. "
+                f"ctx_str preview: {ctx_str[:200]!r}"
+            )
         return ctx, spch
 
     def _run_onnx_chunk(self, chunk: list[tuple[str, str]]) -> list:
