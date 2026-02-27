@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import datetime
 import json
 import time
@@ -60,6 +59,8 @@ from websockets.exceptions import WebSocketException
 
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
+from flowtts.monitoring.metrics import record_call
+from flowtts.processing.text_normalize import normalize_text
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
 # Silence websockets' own logger — we do our own prints
@@ -125,6 +126,8 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 continue
 
+            text = normalize_text(text)
+
             ts_recv = _tsms()
             _log(f"{ts_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
             print(f"[{_ts()}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
@@ -151,24 +154,38 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 decode_s = round(time.perf_counter() - td, 4)
 
                 decoded = tensor_to_wav(wav_tensor)
-                audio_b64 = base64.b64encode(decoded.wav_bytes).decode("ascii")
+
+                record_call(
+                    call_id=call_id,
+                    text_id=text_id,
+                    port=port,
+                    text=text,
+                    token_count=token_count,
+                    llm_s=llm_s,
+                    decode_s=decode_s,
+                    wav_bytes=len(decoded.wav_bytes),
+                    ts=ts_out,
+                )
 
                 if _audio_out_dir is not None:
                     wav_file = _audio_out_dir / f"{text_id}.wav"
                     wav_file.write_bytes(decoded.wav_bytes)
                     print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
 
+                # Frame 1: JSON metadata (text)
                 await ws.send(json.dumps({
                     "type": "audio",
                     "call_id": call_id,
                     "text_id": text_id,
                     "audio_tokens": audio_tokens,
-                    "audio_base64": audio_b64,
                     "sample_rate": SAMPLE_RATE,
+                    "wav_bytes": len(decoded.wav_bytes),
                     "is_final": True,
                     "llm_s": llm_s,
                     "decode_s": decode_s,
                 }))
+                # Frame 2: raw WAV bytes (binary)
+                await ws.send(decoded.wav_bytes)
 
                 print(
                     f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}"

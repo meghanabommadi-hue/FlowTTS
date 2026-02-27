@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import datetime
 import json
 import os
@@ -60,6 +59,7 @@ import websockets
 # Output directory
 # ---------------------------------------------------------------------------
 _TEST_ROOT = Path("/root/FlowTTS/test")
+_LLM_LOG   = Path("/root/FlowTTS/llm.log")
 
 
 def _make_out_dir() -> Path:
@@ -90,7 +90,7 @@ def _load_sample_tokens() -> str:
 
 
 def _load_bench_texts() -> List[str]:
-    """Load Telugu text sentences from bench_* JSON files."""
+    """Load text sentences from bench_* JSON files."""
     texts = []
     for p in sorted(_TEST_ROOT.glob("bench_*/*.json")):
         try:
@@ -106,7 +106,29 @@ def _load_bench_texts() -> List[str]:
 SAMPLE_TOKENS = _load_sample_tokens()
 _BENCH_TEXTS: List[str] = []  # loaded lazily on first use
 
-# Fallback Telugu sentences (short / medium / long mix) used when no bench_* data exists.
+# Per-language fallback sentences (short / medium / long mix).
+_HINDI_FALLBACK: List[str] = [
+    # short — with Hindi numerals
+    "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
+    "क्या आप अपना नाम बता सकते हैं?",
+    "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें।",
+    "कृपया थोड़ा इंतज़ार करें।",
+    "आपकी समस्या हल हो गई है।",
+    "आपका बकाया ₹२,५०० है, कृपया आज ही जमा करें।",
+    "हम जल्द ही आपसे संपर्क करेंगे।",
+    "आपका भुगतान ₹१०,०००  सफलतापूर्वक हो गया है।",
+    # medium — amounts and account numbers in Hindi numerals
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
+    "आपके loan की किस्त ₹३,७५० अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount ₹५,०००  है, कृपया जल्द से जल्द इसे जमा करें।",
+    "आपकी EMI की due date ३० अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
+    "आपके account नंबर ४५६७८९०१२३ पर ₹१५,००० का loan approve हुआ है, क्या आप details verify करेंगे?",
+    # long — with Hindi numerals for amounts and dates
+    "आपकी loan application approve हो गई है और ₹५०,०००  सीधे आपके bank account ७८९०१२३४५६ में transfer कर दिए जाएंगे, जिसमें २ से ३ कार्य दिवस लग सकते हैं।",
+    "हमारी company की policy के अनुसार अगर payment ३० दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर ₹८,२५०  का भुगतान करें।",
+    "आप हमारे mobile app के माध्यम से अपनी ₹४,५०० की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है।",
+]
+
 _TELUGU_FALLBACK: List[str] = [
     # short
     "నేను రేపు హైదరాబాద్ వెళ్తాను, మీరు వస్తారా?",
@@ -117,21 +139,20 @@ _TELUGU_FALLBACK: List[str] = [
     "తెలుగు భాష చాలా మధురంగా ఉంటుంది.",
     "మా ఊరిలో ప్రతి సంవత్సరం పెద్ద పండుగ జరుగుతుంది.",
     "కొత్త సినిమా చాలా బాగుంది, మీరు తప్పకుండా చూడండి.",
+    # medium
     "డాక్టర్ గారు చెప్పిన మందులు వేసుకుంటున్నావా?",
     "ఈ వంటకం తయారు చేయడం చాలా సులభం.",
-
-    # medium
-    "నేను రేపు హైదరాబాద్ వెళ్తాను, మీరు వస్తారా?",
-    "ఈ పుస్తకం చాలా ఆసక్తికరంగా ఉంది, మీరు తప్పకుండా చదవాలి.",
-    "వాతావరణం బాగుంది కాబట్టి, సాయంత్రం పార్కుకు వెళ్దాం.",
-    "మీ పేరు ఏమిటి? మీరు ఎక్కడ నుండి వచ్చారు?",
-    "ఈ రోజు పని చాలా ఎక్కువగా ఉంది, అయినా పూర్తి చేశాను.",
-    "తెలుగు భాష చాలా మధురంగా ఉంటుంది.",
-    "మా ఊరిలో ప్రతి సంవత్సరం పెద్ద పండుగ జరుగుతుంది.",
-    "కొత్త సినిమా చాలా బాగుంది, మీరు తప్పకుండా చూడండి.",
-    "డాక్టర్ గారు చెప్పిన మందులు వేసుకుంటున్నావా?",
-    "ఈ వంటకం తయారు చేయడం చాలా సులభం."
+    "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
+
+# Pick fallback list based on configured checkpoint.
+try:
+    from flowtts.core.config import settings as _cfg
+    _checkpoint = _cfg.tts_model.checkpoint_lg
+except Exception:
+    _checkpoint = "hindi"
+
+_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else _HINDI_FALLBACK
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +198,11 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Use Telugu bench text if available, else built-in Telugu fallback list
+            # Use bench texts if available, else built-in fallback list for active checkpoint
             if _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
             else:
-                text = _TELUGU_FALLBACK[req_id % len(_TELUGU_FALLBACK)]
+                text = _FALLBACK_TEXTS[req_id % len(_FALLBACK_TEXTS)]
             req = {
                 "type": "synthesize",
                 "call_id": call_id,
@@ -194,6 +215,7 @@ async def _run_one(
 
             _log(req_id, port, "waiting for WS response…")
             t0 = time.time()
+            # Frame 1: JSON metadata
             raw = await ws.recv()
             latency = round(time.time() - t0, 3)
             msg = json.loads(raw)
@@ -205,23 +227,25 @@ async def _run_one(
                 return RequestResult(req_id, port, False, latency, None,
                                      msg.get("error"), 0, 0, None, None)
 
+            # Frame 2: raw WAV bytes
+            wav_data = await ws.recv()
+            if isinstance(wav_data, str):
+                wav_data = wav_data.encode()
+
             wav_path: Optional[Path] = None
-            wav_bytes_len = 0
             token_chars = len(msg.get("audio_tokens", ""))
             llm_s = msg.get("llm_s")
             decode_s = msg.get("decode_s")
+            wav_bytes_len = len(wav_data)
 
-            audio_b64 = msg.get("audio_base64", "")
-            if not audio_b64 and not skip_decoder:
-                _log(req_id, port, f"FAIL audio_base64 missing — msg keys: {list(msg.keys())}")
-                return RequestResult(req_id, port, False, latency, None,
-                                     "audio_base64 missing", 0, token_chars, llm_s, decode_s)
-            if audio_b64:
-                wav_data = base64.b64decode(audio_b64)
-                wav_bytes_len = len(wav_data)
+            if not skip_decoder:
+                if not wav_data:
+                    _log(req_id, port, f"FAIL empty WAV bytes")
+                    return RequestResult(req_id, port, False, latency, None,
+                                         "empty WAV bytes", 0, token_chars, llm_s, decode_s)
                 wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
                 wav_path.write_bytes(wav_data)
-            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name}  llm_s={llm_s}  decode_s={decode_s}")
+            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
                                  None, wav_bytes_len, token_chars, llm_s, decode_s)
@@ -328,11 +352,12 @@ async def run_test(
     if not _BENCH_TEXTS:
         _BENCH_TEXTS = _load_bench_texts()
         if _BENCH_TEXTS:
-            print(f"[bench] loaded {len(_BENCH_TEXTS)} Telugu sentences", flush=True)
+            print(f"[bench] loaded {len(_BENCH_TEXTS)} sentences", flush=True)
         else:
-            print(f"[bench] no bench texts, using built-in {len(_TELUGU_FALLBACK)} Telugu sentences", flush=True)
+            print(f"[bench] no bench texts, using built-in {len(_FALLBACK_TEXTS)} fallback sentences", flush=True)
 
     server_proc: Optional[subprocess.Popen] = None
+    active_ports: List[int] = [base_port]
 
     if launch:
         # ── Managed: start server, open ports on demand ──────────────────────
@@ -395,13 +420,20 @@ async def run_test(
     worker = None
     worker_task = None
 
+    # Build the final port list to round-robin across.
+    # active_ports is set in managed/external branches above; fall back to base_port.
+    routing_ports: List[int] = active_ports if active_ports else [base_port]
+
     print(f"\n{'='*60}")
-    print(f"mode={mode}  requests={n_requests}  ports={active_ports}")
+    if len(routing_ports) == 1:
+        print(f"mode={mode}  requests={n_requests}  port={routing_ports[0]}  (each request = unique WS connection)")
+    else:
+        print(f"mode={mode}  requests={n_requests}  ports={routing_ports}  (round-robin, unique WS connection per request)")
     print(f"output → {out_dir}")
     print(f"{'='*60}\n")
 
     tasks = [
-        _run_one(i, active_ports[i % len(active_ports)], mode, out_dir, worker,
+        _run_one(i, routing_ports[i % len(routing_ports)], mode, out_dir, worker,
                  skip_decoder=skip_decoder)
         for i in range(n_requests)
     ]
@@ -484,6 +516,13 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     summary_file = out_dir / "summary.txt"
     summary_file.write_text(text)
     print(f"\n[output] {out_dir}/")
+
+    # Append summary to llm.log so each test run is recorded alongside inference logs.
+    try:
+        with _LLM_LOG.open("a") as f:
+            f.write("\n" + text + "\n")
+    except OSError:
+        pass  # server not running / log not writable — non-fatal
 
     return len(failed) == 0
 

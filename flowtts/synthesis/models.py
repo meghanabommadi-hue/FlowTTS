@@ -30,6 +30,7 @@ Performance notes:
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import structlog
@@ -100,11 +101,11 @@ class FlowTtsSynthesizer:
             trust_remote_code=True,
             dtype=cfg.dtype,
             attention_backend=cfg.attention_backend,
-            chunked_prefill_size=cfg.chunked_prefill_size,
-            max_running_requests=cfg.max_running_requests,
+            # chunked_prefill_size=cfg.chunked_prefill_size,
+            # max_running_requests=cfg.max_running_requests,
             schedule_policy=cfg.schedule_policy,
-            cuda_graph_max_bs=cfg.cuda_graph_max_bs,
-            disable_radix_cahce=cfg.disable_radix_cahce
+            # cuda_graph_max_bs=cfg.cuda_graph_max_bs,
+            disable_radix_cache=cfg.disable_radix_cache
         )
 
         sampling_params = {
@@ -125,6 +126,43 @@ class FlowTtsSynthesizer:
         self._sampling_params = sampling_params
         logger.info("synthesizer_ready")
 
+        # Inspect live engine objects — not config.py values.
+        # get_server_info() round-trips to the scheduler subprocess and returns
+        # global_server_args_dict, which contains the attention_backend actually
+        # selected by model_runner.init_attention_backend() after model load.
+        si = getattr(engine, "scheduler_info", {}) or {}
+        sa = engine.server_args
+        try:
+            srv_info = engine.get_server_info()
+            # internal_states is per-worker; pick first scheduler's state
+            internal = srv_info.get("internal_states", [{}])
+            mem = internal[0].get("memory_usage", {}) if internal else {}
+            resolved_attn = srv_info.get("attention_backend", "n/a")
+        except Exception:
+            mem = {}
+            resolved_attn = "n/a (get_server_info failed)"
+
+        # ref_audio: inspect what we actually encoded
+        ctx_token_count = context_tokens.count("<|context_token_")
+        ref_speech_present = ref_speech_tokens is not None and bool(ref_speech_tokens)
+        ref_source = cfg.ref_audio if (ref_path and os.path.isfile(ref_path)) else "default_context (hardcoded)"
+
+        print("\n" + "=" * 60, flush=True)
+        print("  FlowTTS — Engine runtime stats (from model)", flush=True)
+        print("=" * 60, flush=True)
+        print(f"  tp_size              : {sa.tp_size}", flush=True)
+        print(f"  attention_backend    : {resolved_attn}", flush=True)
+        print(f"  max_total_num_tokens : {si.get('max_total_num_tokens', 'n/a')}", flush=True)
+        print(f"  max_req_input_len    : {si.get('max_req_input_len', 'n/a')}", flush=True)
+        if mem:
+            print(f"  mem weight (GB)      : {mem.get('weight', 'n/a')}", flush=True)
+            print(f"  mem kvcache (GB)     : {mem.get('kvcache', 'n/a')}", flush=True)
+            print(f"  mem graph (GB)       : {mem.get('graph', 'n/a')}", flush=True)
+        print(f"  ref_audio source     : {ref_source}", flush=True)
+        print(f"  context_tokens       : {ctx_token_count} tokens encoded", flush=True)
+        print(f"  ref_speech_tokens    : {'present' if ref_speech_present else 'absent'}", flush=True)
+        print("=" * 60 + "\n", flush=True)
+
     async def synthesize(self, text: str) -> str:
         """Return full audio token string for the given text.
 
@@ -138,10 +176,20 @@ class FlowTtsSynthesizer:
             text, self._context_tokens, self._ref_speech_tokens
         )
 
+        t0 = time.monotonic()
+        logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt))
+
         result = await self._engine.async_generate(prompt, self._sampling_params)
+        # result = await self._engine.generate(prompt, self._sampling_params)
         full_text = result["text"]
 
-        logger.debug("synthesis_done", text_preview=text[:40], token_len=len(full_text))
+        duration = time.monotonic() - t0
+        logger.info(
+            "llm_call_end",
+            text_preview=text[:40],
+            duration_seconds=round(duration, 4),
+            token_len=len(full_text),
+        )
         return full_text
 
     @staticmethod

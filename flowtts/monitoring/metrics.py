@@ -26,12 +26,19 @@ Scaling note:
 
 from __future__ import annotations
 
+import json
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict
 
 import structlog
+
+# One JSON line per completed call — written by server.py via record_call().
+_CALLS_LOG = Path(__file__).parents[2] / "monitoring" / "calls.jsonl"
+_CALLS_LOG.parent.mkdir(parents=True, exist_ok=True)
+_calls_log_file = _CALLS_LOG.open("a", buffering=1)  # line-buffered, append across restarts
 
 
 logger = structlog.get_logger("metrics")
@@ -101,6 +108,35 @@ def record_ws_connection_close(call_id: str) -> None:
     with _lock:
         _ws_connections_closed += 1
     logger.info("ws_connection_close", call_id=call_id)
+
+
+def record_call(
+    *,
+    call_id: str,
+    text_id: str,
+    port: int,
+    text: str,
+    token_count: int,
+    llm_s: float,
+    decode_s: float,
+    wav_bytes: int,
+    ts: str,
+) -> None:
+    """Append one JSON line to monitoring/calls.jsonl for every completed TTS call."""
+    entry = {
+        "ts": ts,
+        "call_id": call_id,
+        "text_id": text_id,
+        "port": port,
+        "text": text,
+        "token_count": token_count,
+        "llm_s": llm_s,
+        "decode_s": decode_s,
+        "total_s": round(llm_s + decode_s, 4),
+        "wav_bytes": wav_bytes,
+    }
+    with _lock:
+        _calls_log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def snapshot_metrics() -> dict:

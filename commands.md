@@ -6,19 +6,11 @@
 cd /root/FlowTTS && bash run.sh --ctrl-port 8764
 ```
 
----
-
 ## Open N ports
 
 ```bash
 python3 -m flowtts.test.open_ports --n 40
 ```
-
-- Starts from the next port after the highest already open
-- To start from a specific port: `--base-port 8765`
-- To open specific ports: `--ports 8900,8901,8902`
-
----
 
 ## Send N requests (1 per port)
 

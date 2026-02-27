@@ -118,22 +118,12 @@ fi
 # ── Server mode — one process, one model, N ports ────────────────────────────
 echo "[FlowTTS] Starting server: ${N_PORTS} port(s) from ${BASE_PORT}..."
 
-# sglang's internal scheduler may crash and send SIGQUIT to the process tree,
-# killing the server. Restart automatically with a brief backoff.
-RESTART_DELAY=5
 LOG_FILE="${SCRIPT_DIR}/llm.log"
 > "${LOG_FILE}"   # truncate on each run
 
-while true; do
-    "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
-        ${SAVE_AUDIO:+--save-audio "${SAVE_AUDIO}"} \
-        ${CTRL_PORT:+--ctrl-port "${CTRL_PORT}"} \
-        2>&1 | tee -a "${LOG_FILE}"
-    EXIT_CODE=${PIPESTATUS[0]}
-    if [[ $EXIT_CODE -eq 0 ]]; then
-        echo "[FlowTTS] Server exited cleanly (code 0). Stopping."
-        break
-    fi
-    echo "[FlowTTS] Server exited with code ${EXIT_CODE}. Restarting in ${RESTART_DELAY}s..." >&2
-    sleep "${RESTART_DELAY}"
-done
+EXTRA_ARGS=()
+[[ -n "${SAVE_AUDIO}" ]] && EXTRA_ARGS+=(--save-audio "${SAVE_AUDIO}")
+[[ -n "${CTRL_PORT}"  ]] && EXTRA_ARGS+=(--ctrl-port  "${CTRL_PORT}")
+"$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
+    "${EXTRA_ARGS[@]}" \
+    2>&1 | tee -a "${LOG_FILE}"

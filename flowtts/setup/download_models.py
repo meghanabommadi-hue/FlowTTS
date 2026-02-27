@@ -22,8 +22,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 MODELS = {
     "MeghanaKap/MiraTTSTelugu": {
-        "hf_repo": "MeghanaKap/MiraTTSTelugu",
-        "local_dir": "/root/models/MeghanaKap-MiraTTSTelugu",
+        "hf_repo": "Shubhangi7/mira_hindi_second_round",
+        "local_dir": "/root/models/Shubhangi7-mira_hindi_second_round",
     },
 }
 

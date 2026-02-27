@@ -15,7 +15,7 @@ import sys
 import urllib.request
 
 
-_DEFAULT_CTRL_PORT = 8764
+_DEFAULT_CTRL_PORT = 443
 _DEFAULT_BASE_PORT = 8765
 
 
