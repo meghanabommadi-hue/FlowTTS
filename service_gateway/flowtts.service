@@ -1,0 +1,20 @@
+[Unit]
+Description=FlowTTS TTS Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/FlowTTS
+Environment="PATH=/root/FlowTTS/llmc/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="PYTHONPATH=/root/FlowTTS"
+Environment="LD_LIBRARY_PATH=/root/FlowTTS/llmc/lib/python3.12/site-packages/torch/lib:/root/FlowTTS/llmc/lib/python3.12/site-packages/nvidia/cudnn/lib:/root/FlowTTS/llmc/lib/python3.12/site-packages/nvidia/cu13/lib"
+ExecStart=/root/FlowTTS/llmc/bin/python3 -m flowtts.server \
+    --base-port 8765 \
+    --ports 1 \
+    --ctrl-port 443
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
