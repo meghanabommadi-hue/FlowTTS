@@ -108,7 +108,7 @@ _BENCH_TEXTS: List[str] = []  # loaded lazily on first use
 
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
-    # short — with Hindi numerals
+    # short — Hindi numerals
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
     "क्या आप अपना नाम बता सकते हैं?",
     "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें।",
@@ -117,16 +117,26 @@ _HINDI_FALLBACK: List[str] = [
     "आपका बकाया ₹२,५०० है, कृपया आज ही जमा करें।",
     "हम जल्द ही आपसे संपर्क करेंगे।",
     "आपका भुगतान ₹१०,०००  सफलतापूर्वक हो गया है।",
-    # medium — amounts and account numbers in Hindi numerals
+    # short — English numerals in Hindi sentences
+    "आपका account number 9876543210 है, कृपया confirm करें।",
+    "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें।",
+    "आपकी EMI Rs. 3750 हर महीने देय है।",
+    # medium — Hindi numerals
     "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
     "आपके loan की किस्त ₹३,७५० अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
     "हमारे रिकॉर्ड के अनुसार आपका बकाया amount ₹५,०००  है, कृपया जल्द से जल्द इसे जमा करें।",
     "आपकी EMI की due date ३० अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
     "आपके account नंबर ४५६७८९०१२३ पर ₹१५,००० का loan approve हुआ है, क्या आप details verify करेंगे?",
-    # long — with Hindi numerals for amounts and dates
+    # medium — English numerals in Hindi sentences
+    "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
+    # long — Hindi numerals
     "आपकी loan application approve हो गई है और ₹५०,०००  सीधे आपके bank account ७८९०१२३४५६ में transfer कर दिए जाएंगे, जिसमें २ से ३ कार्य दिवस लग सकते हैं।",
     "हमारी company की policy के अनुसार अगर payment ३० दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर ₹८,२५०  का भुगतान करें।",
     "आप हमारे mobile app के माध्यम से अपनी ₹४,५०० की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है।",
+    # long — English numerals in Hindi sentences
+    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
+    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
 ]
 
 _TELUGU_FALLBACK: List[str] = [

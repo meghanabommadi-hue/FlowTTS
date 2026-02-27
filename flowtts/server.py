@@ -177,6 +177,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     "type": "audio",
                     "call_id": call_id,
                     "text_id": text_id,
+                    "text": text,
                     "audio_tokens": audio_tokens,
                     "sample_rate": SAMPLE_RATE,
                     "wav_bytes": len(decoded.wav_bytes),
@@ -208,17 +209,70 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
         print(f"[{_ts()}] :{port} disconnected  peer={peer[0]}:{peer[1]}", flush=True)
 
 
+_WARMUP_SENTENCES = [
+    # short
+    "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
+    "क्या आप अपना नाम बता सकते हैं?",
+    "कृपया थोड़ा इंतज़ार करें.",
+    "आपकी समस्या हल हो गई है.",
+    "हम जल्द ही आपसे संपर्क करेंगे.",
+    "आपका भुगतान सफलतापूर्वक हो गया है.",
+    "क्या आप मुझे और जानकारी दे सकते हैं?",
+    "आपका account number क्या है?",
+    "क्या यह सही समय है बात करने का?",
+    "मैं आपकी पूरी मदद करने के लिए यहाँ हूं.",
+    # short with numbers
+    "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें.",
+    "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें.",
+    "आपकी EMI Rs. 3750 हर महीने देय है.",
+    "आपका बकाया ₹२,५०० है, कृपया आज ही जमा करें.",
+    "आपका भुगतान ₹१०,००० सफलतापूर्वक हो गया है.",
+    # medium
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
+    "आपके loan की किस्त अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount ₹५,००० है, कृपया जल्द से जल्द इसे जमा करें.",
+    "आपकी EMI की due date निकल चुकी है, late charge से बचने के लिए आज ही payment करें.",
+    "क्या आप अपनी personal details verify कर सकते हैं ताकि हम आपके account की जानकारी दे सकें?",
+    "आपके loan की किस्त ₹३,७५० अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "आपकी EMI की due date ३० अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें.",
+    "आपके account नंबर ४५६७८९०१२३ पर ₹१५,००० का loan approve हुआ है, क्या आप details verify करेंगे?",
+    "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
+    # medium — extra variety
+    "आपकी loan application हमें मिल गई है और हम उसे process कर रहे हैं.",
+    "क्या आप अपना registered mobile number confirm कर सकते हैं?",
+    "आपकी next EMI की date 15 तारीख है, कृपया समय पर payment करें.",
+    "हम आपको एक OTP भेज रहे हैं, कृपया उसे verify करें.",
+    "आपका loan account successfully activate हो गया है.",
+    # long
+    "आपकी loan application approve हो गई है और ₹५०,००० सीधे आपके bank account ७८९०१२३४५६ में transfer कर दिए जाएंगे, जिसमें २ से ३ कार्य दिवस लग सकते हैं.",
+    "हमारी company की policy के अनुसार अगर payment ३० दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर ₹८,२५० का भुगतान करें.",
+    "आप हमारे mobile app के माध्यम से अपनी ₹४,५०० की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है.",
+    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं.",
+    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें.",
+    # long — extra variety
+    "आपकी loan application approve हो गई है और loan amount सीधे आपके bank account में transfer कर दी जाएगी, जिसमें दो से तीन कार्य दिवस लग सकते हैं.",
+    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है.",
+    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है.",
+    "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें.",
+]
+
+
 async def _warmup(synth: FlowTtsSynthesizer) -> None:
-    sentence = settings.tts_model.warmup_sentence
-    if not sentence:
+    sentences = _WARMUP_SENTENCES
+    if not sentences:
         return
-    print(f"[{_ts()}] warmup: running '{sentence}'...", flush=True)
-    try:
-        t0 = time.perf_counter()
-        await synth.synthesize(sentence)
-        print(f"[{_ts()}] warmup done  ({(time.perf_counter()-t0)*1000:.0f}ms)", flush=True)
-    except Exception as e:
-        print(f"[{_ts()}] warmup failed: {e}", flush=True)
+    print(f"[{_ts()}] warmup: running {len(sentences)} sentences...", flush=True)
+    t0 = time.perf_counter()
+    failed = 0
+    for i, sentence in enumerate(sentences):
+        try:
+            await synth.synthesize(normalize_text(sentence))
+        except Exception as e:
+            print(f"[{_ts()}] warmup sentence {i+1} failed: {e}", flush=True)
+            failed += 1
+    elapsed = (time.perf_counter() - t0) * 1000
+    print(f"[{_ts()}] warmup done  {len(sentences) - failed}/{len(sentences)} ok  ({elapsed:.0f}ms total)", flush=True)
 
 
 async def _warmup_port(port: int, sentence: str) -> None:

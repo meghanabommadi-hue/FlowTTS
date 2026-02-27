@@ -39,7 +39,7 @@ class TtsModelSettings(BaseModel):
     # sglang engine parameters
     mem_fraction_static: float = 0.9      # more KV cache for concurrent requests
     attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = -1         # small prefill chunks → decode starts sooner
+    chunked_prefill_size: int = 8192         # small prefill chunks → decode starts sooner
     # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
@@ -48,7 +48,7 @@ class TtsModelSettings(BaseModel):
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 450                   # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
+    max_tokens: int = 400                  # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.0               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
