@@ -22,11 +22,14 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 MODELS = {
     "MeghanaKap/MiraTTSTelugu": {
+        "hf_repo": "MeghanaKap/MiraTTSTelugu",
+        "local_dir": str(Path.home() / "models" / "MeghanaKap-MiraTTSTelugu"),
+    },
+    "Shubhangi/mira_hindi_second_round": {
         "hf_repo": "Shubhangi7/mira_hindi_second_round",
-        "local_dir": "/root/models/Shubhangi7-mira_hindi_second_round",
+        "local_dir": str(Path.home() / "models" / "Shubhangi7-mira_hindi_second_round"),
     },
 }
-
 
 def download(hf_repo: str, local_dir: str) -> None:
     dest = Path(local_dir)
