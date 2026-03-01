@@ -19,7 +19,7 @@ Test modes (--mode):
            decodes and publishes to flowtts:decoded:{call_id}.
 
 Output:
-  WAV files saved to /root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/
+  WAV files saved to ~/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/
   Summary table printed and written as summary.txt.
 
 Usage:
@@ -58,8 +58,8 @@ import websockets
 # ---------------------------------------------------------------------------
 # Output directory
 # ---------------------------------------------------------------------------
-_TEST_ROOT = Path("/root/FlowTTS/test")
-_LLM_LOG   = Path("/root/FlowTTS/llm.log")
+_TEST_ROOT = Path.home() / "FlowTTS/test"
+_LLM_LOG   = Path.home() / "FlowTTS/llm.log"
 
 
 def _make_out_dir() -> Path:
@@ -269,8 +269,8 @@ async def _run_one(
 # ---------------------------------------------------------------------------
 # Server management (managed launch mode)
 # ---------------------------------------------------------------------------
-_VENV_PYTHON = "/root/CleanTTSData/.venv/bin/python3"
-_FLOWTTS_DIR = Path("/root/FlowTTS")
+_VENV_PYTHON = str(Path.home() / "FlowTTS/llm/bin/python3")
+_FLOWTTS_DIR = Path.home() / "FlowTTS"
 _DEFAULT_CTRL_PORT = 8764
 
 

@@ -88,17 +88,26 @@ class AudioDecoder:
         return ctx, spch
 
     def _run_onnx_chunk(self, chunk: list[tuple[str, str]]) -> list:
-        """Run ONNX on a sub-list of requests using this thread's GPU session."""
+        """Run ONNX on a sub-list of requests as a single batched call."""
         sess = self._get_session()
-        outs = []
-        for ctx_str, spch_str in chunk:
-            ctx, spch = self._parse_tokens(ctx_str, spch_str)
-            out = sess.run(
-                ["preprocessed_output"],
-                {"context_tokens": ctx, "speech_tokens": spch},
-            )
-            outs.append(out[0])  # [1, C, T_i]
-        return outs
+        parsed = [self._parse_tokens(ctx, spch) for ctx, spch in chunk]
+
+        max_spch = max(p[1].shape[1] for p in parsed)
+        max_ctx  = max(p[0].shape[2] for p in parsed)
+        B = len(parsed)
+
+        ctx_batch  = np.zeros((B, 1, max_ctx), dtype=np.int32)
+        spch_batch = np.zeros((B, max_spch),   dtype=np.int64)
+        for i, (ctx, spch) in enumerate(parsed):
+            ctx_batch[i,  :, :ctx.shape[2]]  = ctx[0]
+            spch_batch[i, :spch.shape[1]]    = spch[0]
+
+        out = sess.run(
+            ["preprocessed_output"],
+            {"context_tokens": ctx_batch, "speech_tokens": spch_batch},
+        )[0]  # [B, C, T]
+
+        return [out[i:i+1] for i in range(B)]
 
     # ------------------------------------------------------------------ public
 

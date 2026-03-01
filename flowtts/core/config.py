@@ -20,32 +20,38 @@ No env-var → sensible defaults used (greedy decoding, 48 kHz, Redis localhost)
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import BaseModel
-from typing import Literal
+from typing import ClassVar, Literal
 
 _MODELS_DIR = str(Path.home() / "models")
 
 
 class TtsModelSettings(BaseModel):
     """TTS model configuration."""
-
-    model_dir: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu"
-    ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/tel_male_audio.wav"
+    checkpoint_lg: ClassVar[str] = "hindi"
+    if checkpoint_lg == "telugu":
+        model_dir: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu"
+        warmup_sentence: str = "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది."
+        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/tel_male_audio.wav"
+    else:
+        model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
+        warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
+        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
+    
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.9       # more KV cache for concurrent requests
-    attention_backend: str = "flashinfer"   # triton is fastest # fastest for decode-heavy TTS
+    mem_fraction_static: float = 0.85      # more KV cache for concurrent requests
+    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
     chunked_prefill_size: int = 4096         # small prefill chunks → decode starts sooner
-    max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
+    # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
-    disable_radix_cache: bool = True
+    disable_radix_cache: bool = False
     # Warmup sentence — run once after model load to prime the GPU
-    warmup_sentence: str = "నమస్తే! ఎలా ఉన్నారు?"
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 400                   # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
+    max_tokens: int = 512                  # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.0               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
@@ -62,7 +68,7 @@ class DecoderSettings(BaseModel):
     model_gpu_id: int = 0
     decoder_gpu_id: int = 0
 
-    sample_rate: int = 48000
+    sample_rate: int = 16000
 
     # Set to False to skip ncodec decoding and forward raw LLM tokens instead.
     # Useful for latency profiling and when decoder is not yet ready.
@@ -74,7 +80,7 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 10.0   # ms to wait collecting a batch
+    batch_timeout_ms: float = 1.0   # ms to wait collecting a batch
     gpu_chunk_size: int = 90         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
     use_trt: bool = False            # compile decoder with TensorRT FP16

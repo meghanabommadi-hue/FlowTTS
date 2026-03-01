@@ -259,20 +259,26 @@ _WARMUP_SENTENCES = [
 
 
 async def _warmup(synth: FlowTtsSynthesizer) -> None:
-    sentences = _WARMUP_SENTENCES
-    if not sentences:
+    if not _WARMUP_SENTENCES:
         return
-    print(f"[{_ts()}] warmup: running {len(sentences)} sentences...", flush=True)
+    # Build a batch of exactly 40 sentences by cycling through the list.
+    batch_size = 40
+    sentences = [_WARMUP_SENTENCES[i % len(_WARMUP_SENTENCES)] for i in range(batch_size)]
+    print(f"[{_ts()}] warmup: running {batch_size} sentences concurrently...", flush=True)
     t0 = time.perf_counter()
-    failed = 0
-    for i, sentence in enumerate(sentences):
+
+    async def _one(sentence: str) -> bool:
         try:
             await synth.synthesize(normalize_text(sentence))
+            return True
         except Exception as e:
-            print(f"[{_ts()}] warmup sentence {i+1} failed: {e}", flush=True)
-            failed += 1
+            print(f"[{_ts()}] warmup sentence failed: {e}", flush=True)
+            return False
+
+    results = await asyncio.gather(*[_one(s) for s in sentences])
+    ok = sum(results)
     elapsed = (time.perf_counter() - t0) * 1000
-    print(f"[{_ts()}] warmup done  {len(sentences) - failed}/{len(sentences)} ok  ({elapsed:.0f}ms total)", flush=True)
+    print(f"[{_ts()}] warmup done  {ok}/{batch_size} ok  ({elapsed:.0f}ms total)", flush=True)
 
 
 async def _warmup_port(port: int, sentence: str) -> None:
