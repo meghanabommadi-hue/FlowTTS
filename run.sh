@@ -10,7 +10,7 @@
 
 set -uo pipefail
 
-VENV="${VIRTUAL_ENV:-/root/FlowTTS/llmc}"
+VENV="${VIRTUAL_ENV:-${HOME}/FlowTTS/llm}"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -20,7 +20,7 @@ export PATH="${VENV}/bin:${PATH}"
 # onnxruntime CUDAExecutionProvider needs libcudnn.so.9 (installed via pip as nvidia-cudnn-cu12).
 # torch-tensorrt needs libcudart.so.13 (installed via cuda-toolkit pip package).
 # Neither is on the system LD path, so we prepend the venv nvidia lib dirs here.
-export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/torch/lib:${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${VENV}/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/torch/lib:${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${VENV}/lib/python3.12/site-packages/nvidia/cu13/lib:${VENV}/lib/python3.12/site-packages/tensorrt_libs:${LD_LIBRARY_PATH:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 BASE_PORT=8765
@@ -124,6 +124,18 @@ LOG_FILE="${SCRIPT_DIR}/llm.log"
 EXTRA_ARGS=()
 [[ -n "${SAVE_AUDIO}" ]] && EXTRA_ARGS+=(--save-audio "${SAVE_AUDIO}")
 [[ -n "${CTRL_PORT}"  ]] && EXTRA_ARGS+=(--ctrl-port  "${CTRL_PORT}")
-"$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
-    "${EXTRA_ARGS[@]}" \
-    2>&1 | tee -a "${LOG_FILE}"
+
+RESTART_DELAY=5
+while true; do
+    "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
+        "${EXTRA_ARGS[@]}" \
+        2>&1 | tee -a "${LOG_FILE}"
+    EXIT_CODE=${PIPESTATUS[0]}
+    # Exit code 0 = clean shutdown (KeyboardInterrupt), don't restart
+    if [[ ${EXIT_CODE} -eq 0 ]]; then
+        echo "[FlowTTS] Clean exit. Stopping."
+        break
+    fi
+    echo "[FlowTTS] Server exited with code ${EXIT_CODE}. Restarting in ${RESTART_DELAY}s..."
+    sleep "${RESTART_DELAY}"
+done

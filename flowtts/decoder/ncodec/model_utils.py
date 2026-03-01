@@ -1,7 +1,7 @@
 import os
+import sys
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf, DictConfig
 from pathlib import Path
 from safetensors.torch import load_file
 
@@ -15,26 +15,14 @@ from flowtts.decoder.ncodec.layers import (
 
 def remove_weight_norm_recursive(m):
     """
-    Recursively removes weight normalization from a module.
+    Removes weight normalization from a module (new parametrize API or old-style).
     """
     try:
-        if hasattr(m, 'weight_g') and hasattr(m, 'weight_v'):
-            # This is a good sign of weight_norm
-            nn.utils.remove_weight_norm(m)
-    except Exception as e:
-        print(f"Could not remove weight norm from {m}: {e}")
+        if nn.utils.parametrize.is_parametrized(m, 'weight'):
+            nn.utils.parametrize.remove_parametrizations(m, 'weight', leave_parametrized=True)
+    except Exception:
+        pass
 
-def load_config(config_path: Path):
-
-    # Load the initial configuration from the given path
-    config = OmegaConf.load(config_path)
-
-    # Check if there is a base configuration specified and merge if necessary
-    if config.get("base_config", None) is not None:
-        base_config = OmegaConf.load(config["base_config"])
-        config = OmegaConf.merge(base_config, config)
-
-    return config
 
 class DecoderBlock(nn.Module):
     def __init__(
@@ -98,6 +86,25 @@ class Decoder(nn.Module):
         return self.model(x)
 
 
+# Site-packages of the active venv (resolved at import time).
+_SP = str(Path(__file__).parents[3] / "llm/lib/python3.12/site-packages")
+
+
+def _ensure_trt_libs() -> None:
+    """Prepend the cu13 CUDA runtime and TRT libs to LD_LIBRARY_PATH so that
+    libtorchtrt.so can find libcudart.so.13 and the TensorRT shared libs.
+    Must be called before the first `import torch_tensorrt`.
+    """
+    ld_paths = [
+        f"{_SP}/nvidia/cu13/lib",
+        f"{_SP}/tensorrt_libs",
+        f"{_SP}/torch/lib",
+    ]
+    new_ld = ":".join(p for p in ld_paths if os.path.isdir(p))
+    existing = os.environ.get("LD_LIBRARY_PATH", "")
+    os.environ["LD_LIBRARY_PATH"] = f"{new_ld}:{existing}" if existing else new_ld
+
+
 class AudioTokenizer():
     def __init__(
         self,
@@ -105,16 +112,6 @@ class AudioTokenizer():
         use_trt: bool = False,
         gpu_chunk_size: int = 40,
     ):
-        """Loads the audio detokenizer.
-
-        Args:
-            model_path:      Path to detokenizer.safetensors.
-            use_trt:         Compile with TensorRT FP16 for 3-5x faster decode.
-                             Requires:  pip install torch-tensorrt
-                             First call triggers a ~60 s one-time compilation.
-            gpu_chunk_size:  Max batch size passed to the decoder (used to set
-                             the TRT optimum/max shape profiles).
-        """
         model_config = {'input_channel': 1024, 'channels': 1536, 'rates': [8, 5, 4, 2], 'kernel_sizes': [16, 11, 8, 4]}
         self.detokenizer = Decoder(**model_config)
         self.detokenizer.apply(remove_weight_norm_recursive)
@@ -124,120 +121,37 @@ class AudioTokenizer():
         self.detokenizer = self.detokenizer.eval().float().to("cuda:0").half()
 
         if use_trt:
-            result = self._load_or_compile_trt(gpu_chunk_size, model_path)
-            if result is not None:
-                self.detokenizer = result
-            else:
-                print("[TRT] Falling back to plain FP16 decoder.")
+            trt_model = self._load_trt(gpu_chunk_size, model_path)
+            if trt_model is not None:
+                self.detokenizer = trt_model
+                return
+            print("[TRT] Falling back to plain FP16 + torch.compile.")
 
-    # ------------------------------------------------------------------
-    # TRT helpers — compile via venv2 (tensorrt-cu12, works on driver 570).
-    # The main llmc venv has tensorrt-cu13 libs which require driver >= 575,
-    # so TRT compilation and the cache .ep file are managed entirely through
-    # the venv2 subprocess.  The main process always runs plain FP16.
-    # ------------------------------------------------------------------
+        try:
+            self.detokenizer = torch.compile(self.detokenizer, mode="reduce-overhead")
+            print("[decoder] torch.compile applied (reduce-overhead).")
+        except Exception as e:
+            print(f"[decoder] torch.compile skipped: {e}")
 
-    _COMPILE_PYTHON = "/root/BatchBicodec/venv2/bin/python3"
-    _COMPILE_SP     = "/root/BatchBicodec/venv2/lib/python3.12/site-packages"
-
-    @classmethod
-    def _trt_env(cls) -> dict:
-        sp = cls._COMPILE_SP
-        ld_paths = [
-            f"{sp}/nvidia/cudnn/lib",
-            f"{sp}/nvidia/cuda_runtime/lib",
-            f"{sp}/tensorrt_libs",
-            f"{sp}/torch/lib",
-        ]
-        new_ld = ":".join(p for p in ld_paths if os.path.isdir(p))
-        existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
-        ld = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
-        env = {**os.environ, "LD_LIBRARY_PATH": ld}
-        if not env.get("CUDA_VISIBLE_DEVICES"):
-            try:
-                import subprocess, re
-                out = subprocess.check_output(["nvidia-smi", "-L"], text=True, stderr=subprocess.DEVNULL)
-                for line in out.splitlines():
-                    m = re.search(r"(MIG-[0-9a-f\-]+)", line)
-                    if m:
-                        env["CUDA_VISIBLE_DEVICES"] = m.group(1)
-                        break
-            except Exception:
-                pass
-        return env
-
-    def _load_or_compile_trt(self, gpu_chunk_size: int, model_path: str):
-        """Compile TRT engine via the venv2 subprocess if not already cached.
-
-        The venv2 (torch-tensorrt 2.8, tensorrt-cu12) is compatible with
-        driver 570, unlike the main llmc venv's tensorrt-cu13 libs which
-        require driver >= 575.  As a result:
-          - Compilation happens in venv2 subprocess → writes .ep cache file.
-          - Loading the .ep into the main process is not supported on this
-            driver; _load_or_compile_trt always returns None so the caller
-            falls back to plain FP16 PyTorch inference.
-
-        Cache: decoder_trt_b{gpu_chunk_size}.ep next to model weights.
-              Run compile_trt_mig.py in venv2 to pre-build this file.
-        """
-        import subprocess, textwrap
-
+    def _load_trt(self, gpu_chunk_size: int, model_path: str):
+        """Load a pre-compiled TRT .ep engine. Returns the loaded model or None."""
         cache_path = Path(model_path).parent / f"decoder_trt_b{gpu_chunk_size}.ep"
-
-        if cache_path.exists():
-            print(f"[TRT] Cache exists: {cache_path}")
-            print("[TRT] In-process TRT load not available on this driver (570 < 575 required for cu13 TRT).")
-            print("[TRT] Falling back to plain FP16 decoder.")
+        if not cache_path.exists():
+            print(f"[TRT] No cached engine at {cache_path}. Falling back.")
             return None
 
-        print(f"[TRT] Compiling FP16 engine via venv2 "
-              f"(opt_batch={gpu_chunk_size}) — ~60 s first time ...")
-
-        flowtts_root = str(Path(__file__).parents[3])
-        compile_script = textwrap.dedent(f"""
-            import sys, torch, torch_tensorrt
-            from pathlib import Path
-            from safetensors.torch import load_file
-            sys.path.insert(0, {flowtts_root!r})
-            from flowtts.decoder.ncodec.model_utils import Decoder, remove_weight_norm_recursive
-
-            model_config = {{'input_channel': 1024, 'channels': 1536,
-                             'rates': [8, 5, 4, 2], 'kernel_sizes': [16, 11, 8, 4]}}
-            det = Decoder(**model_config)
-            det.apply(remove_weight_norm_recursive)
-            det.load_state_dict(load_file({str(model_path)!r}), strict=False)
-            det = det.eval().float().to('cuda:0').half()
-
-            compiled = torch_tensorrt.compile(
-                det,
-                inputs=[torch_tensorrt.Input(
-                    min_shape=(1, 1024, 50),
-                    opt_shape=({gpu_chunk_size}, 1024, 172),
-                    max_shape=({gpu_chunk_size}, 1024, 350),
-                    dtype=torch.float16,
-                )],
-                enabled_precisions={{torch.float16}},
-                truncate_long_and_double=True,
-                require_full_compilation=False,
-            )
-            example = torch.zeros({gpu_chunk_size}, 1024, 172, dtype=torch.float16, device='cuda:0')
-            torch_tensorrt.save(compiled, {str(cache_path)!r}, inputs=[example])
-            print('TRT_COMPILE_OK')
-        """)
-
-        result = subprocess.run(
-            [self._COMPILE_PYTHON, "-c", compile_script],
-            env=self._trt_env(),
-            timeout=1800,  # TRT dynamo compile can take 10-30 min first time
-            capture_output=False,
-        )
-        if result.returncode != 0 or not cache_path.exists():
-            print(f"[TRT] Subprocess compile failed (rc={result.returncode}). Using plain FP16.")
-        else:
-            print(f"[TRT] Engine cached at {cache_path}. Plain FP16 used in this process.")
-        # In-process TRT load is not available on driver 570 (cu13 TRT requires >= 575).
-        # The compiled .ep is available for future use when the driver is upgraded.
-        return None
+        print(f"[TRT] Loading cached engine: {cache_path}")
+        try:
+            _ensure_trt_libs()
+            import torch_tensorrt
+            loaded = torch_tensorrt.load(str(cache_path))
+            if hasattr(loaded, "module"):
+                loaded = loaded.module()
+            print("[TRT] Engine loaded successfully.")
+            return loaded
+        except Exception as e:
+            print(f"[TRT] Load failed ({e}). Falling back.")
+            return None
 
     def decode(self, x):
         return self.detokenizer(x)

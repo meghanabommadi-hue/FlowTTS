@@ -59,7 +59,7 @@ from websockets.exceptions import WebSocketException
 
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
-from flowtts.monitoring.metrics import record_call
+from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close
 from flowtts.processing.text_normalize import normalize_text
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
@@ -103,7 +103,9 @@ async def _get_synthesizer() -> FlowTtsSynthesizer:
 async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     """Handle one persistent WebSocket connection (one call = one socket)."""
     peer = ws.remote_address
-    print(f"[{_ts()}] :{port} connected  peer={peer[0]}:{peer[1]}", flush=True)
+    conn_id = f"{peer[0]}:{peer[1]}"
+    print(f"[{_ts()}] :{port} connected  peer={conn_id}", flush=True)
+    record_ws_connection_open(conn_id)
 
     try:
         async for raw in ws:
@@ -137,7 +139,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 t0 = time.perf_counter()
                 ts_in = _tsms()
                 _log(f"{ts_in}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
-                audio_tokens = await synth.synthesize(text)
+                audio_tokens = await asyncio.wait_for(synth.synthesize(text), timeout=30.0)
                 llm_s = round(time.perf_counter() - t0, 4)
                 llm_ms = round(llm_s * 1000)
                 ts_out = _tsms()
@@ -150,7 +152,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 codec = synth._tts_codec
                 ctx = synth._context_tokens
                 td = time.perf_counter()
-                wav_tensor = await codec.decode_async(audio_tokens, ctx)
+                wav_tensor = await asyncio.wait_for(codec.decode_async(audio_tokens, ctx), timeout=30.0)
                 decode_s = round(time.perf_counter() - td, 4)
 
                 decoded = tensor_to_wav(wav_tensor)
@@ -206,7 +208,8 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     except Exception as e:
         print(f"[{_ts()}] :{port} connection error: {e}", flush=True)
     finally:
-        print(f"[{_ts()}] :{port} disconnected  peer={peer[0]}:{peer[1]}", flush=True)
+        record_ws_connection_close(conn_id)
+        print(f"[{_ts()}] :{port} disconnected  peer={conn_id}", flush=True)
 
 
 _WARMUP_SENTENCES = [
@@ -362,11 +365,18 @@ async def _http_ready(req: web.Request) -> web.Response:
     return web.json_response({"ready": True, "ports": sorted(_open_ports)})
 
 
+async def _http_metrics(req: web.Request) -> web.Response:
+    """GET /metrics  — Prometheus scrape endpoint."""
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+
+
 async def _run_control_api(ctrl_port: int) -> None:
     app = web.Application()
     app.router.add_post("/ports/add", _http_add_port)
     app.router.add_get("/ports",      _http_list_ports)
     app.router.add_get("/ready",      _http_ready)
+    app.router.add_get("/metrics",    _http_metrics)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", ctrl_port)

@@ -40,9 +40,9 @@ class TtsModelSettings(BaseModel):
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.85      # more KV cache for concurrent requests
+    mem_fraction_static: float = 0.8      # more KV cache for concurrent requests
     attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = 4096         # small prefill chunks → decode starts sooner
+    chunked_prefill_size: int = 8192         # small prefill chunks → decode starts sooner
     # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
@@ -83,7 +83,7 @@ class DecoderSettings(BaseModel):
     batch_timeout_ms: float = 1.0   # ms to wait collecting a batch
     gpu_chunk_size: int = 90         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = False            # compile decoder with TensorRT FP16
+    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 
 class WebSocketSettings(BaseModel):

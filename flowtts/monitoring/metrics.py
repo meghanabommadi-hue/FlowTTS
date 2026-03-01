@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Dict
 
 import structlog
+from prometheus_client import Counter, Gauge
 
 # One JSON line per completed call — written by server.py via record_call().
 _CALLS_LOG = Path(__file__).parents[2] / "monitoring" / "calls.jsonl"
@@ -42,6 +43,14 @@ _calls_log_file = _CALLS_LOG.open("a", buffering=1)  # line-buffered, append acr
 
 
 logger = structlog.get_logger("metrics")
+
+# ── Prometheus counters (matching PikoTTS naming) ─────────────────────────────
+TTS_REQUESTS      = Counter('tts_requests_total',      'Total successful TTS requests')
+TTS_LLM_MS        = Counter('tts_llm_ms_total',        'Total sum of LLM inference time in ms')
+TTS_DECODE_MS     = Counter('tts_decode_ms_total',     'Total sum of decoder time in ms')
+TTS_E2E_MS        = Counter('tts_e2e_ms_total',        'Total sum of end-to-end time in ms')
+TTS_TOKENS        = Counter('tts_tokens_total',        'Total sum of generated speech tokens')
+ACTIVE_WEBSOCKETS = Gauge('tts_active_websockets',     'Currently active WebSocket connections')
 
 
 @dataclass
@@ -99,6 +108,7 @@ def record_ws_connection_open(call_id: str) -> None:
     global _ws_connections_opened
     with _lock:
         _ws_connections_opened += 1
+    ACTIVE_WEBSOCKETS.inc()
     logger.info("ws_connection_open", call_id=call_id)
 
 
@@ -107,6 +117,7 @@ def record_ws_connection_close(call_id: str) -> None:
     global _ws_connections_closed
     with _lock:
         _ws_connections_closed += 1
+    ACTIVE_WEBSOCKETS.dec()
     logger.info("ws_connection_close", call_id=call_id)
 
 
@@ -137,6 +148,12 @@ def record_call(
     }
     with _lock:
         _calls_log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    TTS_REQUESTS.inc()
+    TTS_LLM_MS.inc(llm_s * 1000)
+    TTS_DECODE_MS.inc(decode_s * 1000)
+    TTS_E2E_MS.inc((llm_s + decode_s) * 1000)
+    TTS_TOKENS.inc(token_count)
 
 
 def snapshot_metrics() -> dict:

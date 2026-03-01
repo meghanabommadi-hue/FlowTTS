@@ -6,6 +6,9 @@ import onnxruntime as ort
 from concurrent.futures import ThreadPoolExecutor
 from flowtts.decoder.ncodec.model_utils import AudioTokenizer
 
+_RE_SPEECH  = re.compile(r"speech_token_(\d+)")
+_RE_CONTEXT = re.compile(r"context_token_(\d+)")
+
 
 class AudioDecoder:
 
@@ -46,6 +49,9 @@ class AudioDecoder:
             gpu_chunk_size=gpu_chunk_size,
         )
 
+        # Persistent CUDA stream — avoids allocating a new stream per batch call.
+        self._stream = torch.cuda.Stream()
+
     # ------------------------------------------------------------------ helpers
 
     def _make_session(self, providers=None) -> ort.InferenceSession:
@@ -53,6 +59,9 @@ class AudioDecoder:
         if providers is None:
             providers = self._providers
         opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.enable_mem_pattern = True
+        opts.enable_cpu_mem_arena = False  # not needed for GPU inference
         return ort.InferenceSession(
             f"{self._decoder_paths}/processer.onnx",
             opts,
@@ -67,14 +76,8 @@ class AudioDecoder:
 
     @staticmethod
     def _parse_tokens(ctx_str: str, spch_str: str):
-        spch = np.array(
-            [int(t) for t in re.findall(r"speech_token_(\d+)", spch_str)],
-            dtype=np.int64,
-        ).reshape(1, -1)
-        ctx = np.array(
-            [int(t) for t in re.findall(r"context_token_(\d+)", ctx_str)],
-            dtype=np.int32,
-        ).reshape(1, 1, -1)
+        spch = np.fromiter(_RE_SPEECH.findall(spch_str),  dtype=np.int64).reshape(1, -1)
+        ctx  = np.fromiter(_RE_CONTEXT.findall(ctx_str),  dtype=np.int32).reshape(1, 1, -1)
         if spch.shape[1] == 0:
             raise ValueError(
                 f"No speech tokens found in LLM output. "
@@ -88,7 +91,11 @@ class AudioDecoder:
         return ctx, spch
 
     def _run_onnx_chunk(self, chunk: list[tuple[str, str]]) -> list:
-        """Run ONNX on a sub-list of requests as a single batched call."""
+        """Run ONNX on a sub-list of requests as a single batched call.
+
+        Uses IOBinding to keep the output tensor on GPU, avoiding a CPU
+        round-trip before the PyTorch decoder forward pass.
+        """
         sess = self._get_session()
         parsed = [self._parse_tokens(ctx, spch) for ctx, spch in chunk]
 
@@ -96,43 +103,47 @@ class AudioDecoder:
         max_ctx  = max(p[0].shape[2] for p in parsed)
         B = len(parsed)
 
-        ctx_batch  = np.zeros((B, 1, max_ctx), dtype=np.int32)
-        spch_batch = np.zeros((B, max_spch),   dtype=np.int64)
+        ctx_batch  = np.empty((B, 1, max_ctx), dtype=np.int32)
+        spch_batch = np.empty((B, max_spch),   dtype=np.int64)
+        ctx_batch[:]  = 0
+        spch_batch[:] = 0
         for i, (ctx, spch) in enumerate(parsed):
             ctx_batch[i,  :, :ctx.shape[2]]  = ctx[0]
             spch_batch[i, :spch.shape[1]]    = spch[0]
 
-        out = sess.run(
-            ["preprocessed_output"],
-            {"context_tokens": ctx_batch, "speech_tokens": spch_batch},
-        )[0]  # [B, C, T]
+        binding = sess.io_binding()
+        binding.bind_cpu_input("context_tokens", ctx_batch)
+        binding.bind_cpu_input("speech_tokens",  spch_batch)
+        binding.bind_output("preprocessed_output", device_type="cuda", device_id=0)
+        sess.run_with_iobinding(binding)
 
-        return [out[i:i+1] for i in range(B)]
+        # Output stays on GPU — return as a list of [1, C, T] torch tensors.
+        out_tensor = binding.get_outputs()[0].numpy()  # [B, C, T] on CPU fallback
+        # Prefer zero-copy OrtValue → torch if available
+        try:
+            ortval = binding.get_outputs()[0]
+            out_torch = torch.from_dlpack(ortval.to_dlpack())  # stays on GPU
+            return [out_torch[i:i+1] for i in range(B)]
+        except Exception:
+            return [out_tensor[i:i+1] for i in range(B)]
 
     # ------------------------------------------------------------------ public
 
     @torch.inference_mode()
     def detokenize(self, context_tokens: str, speech_tokens: str):
         """Single-item decode (called from the main thread)."""
-        spch = (
-            torch.tensor([int(t) for t in re.findall(r"speech_token_(\d+)", speech_tokens)])
-            .long().unsqueeze(0)
-        ).numpy()
-        ctx = (
-            torch.tensor([int(t) for t in re.findall(r"context_token_(\d+)", context_tokens)])
-            .long().unsqueeze(0).unsqueeze(0)
-        ).numpy().astype(np.int32)
+        spch = np.fromiter(_RE_SPEECH.findall(speech_tokens),   dtype=np.int64).reshape(1, -1)
+        ctx  = np.fromiter(_RE_CONTEXT.findall(context_tokens), dtype=np.int32).reshape(1, 1, -1)
 
         x = self.processor_detokenizer.run(
             ["preprocessed_output"],
             {"context_tokens": ctx, "speech_tokens": spch},
         )
 
-        stream = torch.cuda.Stream()
-        with torch.cuda.stream(stream):
+        with torch.cuda.stream(self._stream):
             x_t   = torch.from_numpy(x[0]).to("cuda:0")
             lowres = self.audio_detokenizer.decode(x_t).squeeze(0)
-        stream.synchronize()
+        self._stream.synchronize()
         return lowres.cpu()
 
     def detokenize_batch(self, requests: list[tuple[str, str]]) -> list:
@@ -154,26 +165,33 @@ class AudioDecoder:
         onnx_outs = [out for fut in futures for out in fut.result()]
 
         # Stack into [B, C, T], zero-padding if token counts differ.
+        # onnx_outs may be numpy arrays or GPU torch tensors (IOBinding fast path).
+        is_torch = isinstance(onnx_outs[0], torch.Tensor)
         C     = onnx_outs[0].shape[1]
         max_T = max(o.shape[2] for o in onnx_outs)
         if all(o.shape[2] == max_T for o in onnx_outs):
-            x_batch = np.concatenate(onnx_outs, axis=0)
+            x_batch = torch.cat(onnx_outs, dim=0) if is_torch else np.concatenate(onnx_outs, axis=0)
         else:
-            x_batch = np.zeros((B, C, max_T), dtype=onnx_outs[0].dtype)
-            for i, o in enumerate(onnx_outs):
-                x_batch[i, :, : o.shape[2]] = o[0]
+            if is_torch:
+                x_batch = torch.zeros((B, C, max_T), dtype=onnx_outs[0].dtype, device=onnx_outs[0].device)
+                for i, o in enumerate(onnx_outs):
+                    x_batch[i, :, :o.shape[2]] = o[0]
+            else:
+                x_batch = np.zeros((B, C, max_T), dtype=onnx_outs[0].dtype)
+                for i, o in enumerate(onnx_outs):
+                    x_batch[i, :, :o.shape[2]] = o[0]
 
         # --- Phase 2: chunked GPU forward (prevents OOM on large batches) ---
         chunk   = self._gpu_chunk_size
-        results: list = [None] * B
+        gpu_outs: list = [None] * B
         with torch.inference_mode():
-            stream = torch.cuda.Stream()
             for start in range(0, B, chunk):
                 end = min(start + chunk, B)
-                with torch.cuda.stream(stream):
-                    x_t   = torch.from_numpy(x_batch[start:end]).to("cuda:0")
+                with torch.cuda.stream(self._stream):
+                    x_t = x_batch[start:end] if is_torch else torch.from_numpy(x_batch[start:end]).to("cuda:0")
                     lowres = self.audio_detokenizer.decode(x_t)
                     for i, gi in enumerate(range(start, end)):
-                        results[gi] = lowres[i].squeeze(0).cpu()
-            stream.synchronize()
-        return results
+                        gpu_outs[gi] = lowres[i].squeeze(0)
+            self._stream.synchronize()
+        # Move to CPU after sync so transfers don't block the GPU stream.
+        return [t.cpu() for t in gpu_outs]
