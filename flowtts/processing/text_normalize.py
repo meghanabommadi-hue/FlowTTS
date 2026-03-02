@@ -215,6 +215,13 @@ def normalize_text(text: str) -> str:
     """
     # Always: Hindi full stop → ASCII period
     text = text.replace("।", " .")
+    # Add space before the last comma only
+    idx = text.rfind(",")
+    if idx != -1:
+        text = text[:idx] + " ,.." + text[idx+1:]
+    # Replace trailing "." with " ." (only the last one)
+    if text.endswith("."):
+        text = text[:-1] + " ..."
 
     if not _is_hindi(text):
         # Pure English — convert numbers to English words
