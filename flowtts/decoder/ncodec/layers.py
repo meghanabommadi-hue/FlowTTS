@@ -11,6 +11,8 @@ def WNConvTranspose1d(*args, **kwargs):
     return weight_norm(nn.ConvTranspose1d(*args, **kwargs))
 
 
+# Scripting this brings model speed up 1.4x
+@torch.jit.script
 def snake(x, alpha):
     shape = x.shape
     x = x.reshape(shape[0], shape[1], -1)
