@@ -47,7 +47,7 @@ class TtsModelSettings(BaseModel):
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
     disable_radix_cache: bool = False
-    # Warmup sentence — run once after model load to prime the GPU
+    num_continuous_decode_steps: int = 4    # batch N decode steps before re-scheduling → less scheduler overhead
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
@@ -80,9 +80,9 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 1.0   # ms to wait collecting a batch
+    batch_timeout_ms: float = 5.0   # ms to wait collecting a batch (longer = better packing)
     gpu_chunk_size: int = 90         # max items per GPU forward pass
-    onnx_workers: int = 1            # parallel ONNX worker threads
+    onnx_workers: int = 4            # parallel ONNX worker threads
     use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 

@@ -10,6 +10,57 @@ _RE_SPEECH  = re.compile(r"speech_token_(\d+)")
 _RE_CONTEXT = re.compile(r"context_token_(\d+)")
 
 
+def _trim_trailing_silence(
+    wav: torch.Tensor,
+    *,
+    threshold: float = 1e-4,
+    min_tail_samples: int = 1024,
+) -> torch.Tensor:
+    """Trim padding noise added by zero-padded ONNX features.
+
+    The ONNX preprocessor pads inputs to max_T; the decoder then sees extra
+    frames at the end for shorter utterances, which can produce low-level
+    noise. We detect the last sample above a small threshold and keep a small
+    safety tail after it, trimming the rest.
+    """
+    if wav.numel() == 0:
+        return wav
+    x = wav.view(-1)
+    # Find last index where amplitude is above threshold
+    mask = torch.gt(torch.abs(x), threshold)
+    if not torch.any(mask):
+        return wav  # all near-silent; leave as-is
+    last_idx = int(torch.nonzero(mask, as_tuple=False)[-1].item())
+    cut = min(x.numel(), last_idx + 1 + min_tail_samples)
+    if cut >= x.numel():
+        return wav
+    return x[:cut]
+
+
+def _trim_by_token_ratio(
+    wav: torch.Tensor,
+    this_len: int,
+    max_len: int,
+    *,
+    safety_margin: float = 1.05,
+) -> torch.Tensor:
+    """Trim tail proportionally to the relative speech token length.
+
+    In batched decode we pad speech tokens up to max_len before ONNX.
+    Shorter sequences therefore get extra frames at the end which can
+    manifest as beeps.  We approximate the true end of each utterance by
+    scaling the full waveform length by (this_len / max_len).
+    """
+    if wav.numel() == 0 or max_len <= 0 or this_len <= 0:
+        return wav
+    ratio = min(1.0, float(this_len) / float(max_len) * safety_margin)
+    if ratio >= 1.0:
+        return wav
+    x = wav.view(-1)
+    keep = max(1, int(x.numel() * ratio))
+    return x[:keep]
+
+
 class AudioDecoder:
 
     def __init__(
@@ -143,6 +194,7 @@ class AudioDecoder:
         with torch.cuda.stream(self._stream):
             x_t   = torch.from_numpy(x[0]).to("cuda:0")
             lowres = self.audio_detokenizer.decode(x_t).squeeze(0)
+            lowres = _trim_trailing_silence(lowres)
         self._stream.synchronize()
         return lowres.cpu()
 
@@ -154,6 +206,11 @@ class AudioDecoder:
         Phase 2 — Chunked GPU decoder  (gpu_chunk_size items per forward pass)
         """
         B = len(requests)
+        # True speech-token lengths for each request (used to trim padded tails).
+        speech_lens = [
+            len(_RE_SPEECH.findall(spch_str)) for _, spch_str in requests
+        ]
+        max_spch_len = max(speech_lens) if speech_lens else 0
 
         # --- Phase 1: split requests across ONNX worker threads ---
         # Ceiling-divide so every chunk is as equal as possible.
@@ -191,7 +248,13 @@ class AudioDecoder:
                     x_t = x_batch[start:end] if is_torch else torch.from_numpy(x_batch[start:end]).to("cuda:0")
                     lowres = self.audio_detokenizer.decode(x_t)
                     for i, gi in enumerate(range(start, end)):
-                        gpu_outs[gi] = lowres[i].squeeze(0)
+                        wav = lowres[i].squeeze(0)
+                        # First drop frames that correspond purely to padded tokens,
+                        # then trim any residual near-silence tail.
+                        if max_spch_len > 0:
+                            wav = _trim_by_token_ratio(wav, speech_lens[gi], max_spch_len)
+                        wav = _trim_trailing_silence(wav)
+                        gpu_outs[gi] = wav
             self._stream.synchronize()
         # Move to CPU after sync so transfers don't block the GPU stream.
         return [t.cpu() for t in gpu_outs]

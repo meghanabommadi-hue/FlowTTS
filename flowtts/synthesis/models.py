@@ -104,8 +104,9 @@ class FlowTtsSynthesizer:
             chunked_prefill_size=cfg.chunked_prefill_size,
             # max_running_requests=cfg.max_running_requests,
             schedule_policy=cfg.schedule_policy,
-            # cuda_graph_max_bs=cfg.cuda_graph_max_bs,
+            cuda_graph_max_bs=cfg.cuda_graph_max_bs,
             disable_radix_cache=cfg.disable_radix_cache,
+            num_continuous_decode_steps=cfg.num_continuous_decode_steps,
         )
 
         sampling_params = {

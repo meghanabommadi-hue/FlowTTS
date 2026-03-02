@@ -72,6 +72,8 @@ _audio_out_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
 _llm_log: Path = Path(__file__).parents[1] / "llm.log"
 _llm_log_file = None  # opened once in main()
+_llm_out_log: Path = Path(__file__).parents[1] / "monitoring" / "llm_outputs.jsonl"
+_llm_out_log_file = None  # opened once in main()
 
 
 def _ts() -> str:
@@ -146,6 +148,19 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 _log(f"{ts_out}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
 
                 token_count = audio_tokens.count("<|speech_token_")
+
+                # Save LLM output to JSONL
+                if _llm_out_log_file is not None:
+                    _llm_out_log_file.write(json.dumps({
+                        "ts": ts_out,
+                        "call_id": call_id,
+                        "text_id": text_id,
+                        "port": port,
+                        "text": text,
+                        "audio_tokens": audio_tokens,
+                        "token_count": token_count,
+                        "llm_ms": llm_ms,
+                    }, ensure_ascii=False) + "\n")
 
                 # Batch decode: all concurrent requests are coalesced by
                 # TTSCodec's internal batch queue into one GPU forward pass.
@@ -423,8 +438,10 @@ def main() -> None:
                         help="HTTP control API port for on-demand WS port binding (e.g. 8764)")
     args = parser.parse_args()
 
-    global _llm_log_file
+    global _llm_log_file, _llm_out_log_file
     _llm_log_file = open(_llm_log, "w", buffering=1)  # line-buffered, overwrites each run
+    _llm_out_log.parent.mkdir(parents=True, exist_ok=True)
+    _llm_out_log_file = open(_llm_out_log, "a", buffering=1)  # line-buffered, append across restarts
 
     if args.save_audio:
         _audio_out_dir = Path(args.save_audio)
