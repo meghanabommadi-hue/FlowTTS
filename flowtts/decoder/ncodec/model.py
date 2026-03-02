@@ -42,7 +42,7 @@ def _trim_by_token_ratio(
     this_len: int,
     max_len: int,
     *,
-    safety_margin: float = 1.05,
+    safety_margin: float = 1.0,
 ) -> torch.Tensor:
     """Trim tail proportionally to the relative speech token length.
 
