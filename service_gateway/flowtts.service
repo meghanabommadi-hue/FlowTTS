@@ -4,15 +4,15 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/FlowTTS
-Environment="PATH=/root/FlowTTS/llmc/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
-Environment="PYTHONPATH=/root/FlowTTS"
-Environment="LD_LIBRARY_PATH=/root/FlowTTS/llmc/lib/python3.12/site-packages/torch/lib:/root/FlowTTS/llmc/lib/python3.12/site-packages/nvidia/cudnn/lib:/root/FlowTTS/llmc/lib/python3.12/site-packages/nvidia/cu13/lib"
-ExecStart=/root/FlowTTS/llmc/bin/python3 -m flowtts.server \
+User=ubuntu
+WorkingDirectory=/home/ubuntu/FlowTTS
+Environment="PATH=/home/ubuntu/FlowTTS/llm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="PYTHONPATH=/home/ubuntu/FlowTTS"
+Environment="LD_LIBRARY_PATH=/home/ubuntu/FlowTTS/llm/lib/python3.12/site-packages/torch/lib:/home/ubuntu/FlowTTS/llm/lib/python3.12/site-packages/nvidia/cudnn/lib:/home/ubuntu/FlowTTS/llm/lib/python3.12/site-packages/nvidia/cu13/lib:/home/ubuntu/FlowTTS/llm/lib/python3.12/site-packages/tensorrt_libs"
+ExecStart=/home/ubuntu/FlowTTS/llm/bin/python3 -m flowtts.server \
     --base-port 8765 \
     --ports 1 \
-    --ctrl-port 443
+    --ctrl-port 8764
 Restart=on-failure
 RestartSec=5
 
