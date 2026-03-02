@@ -40,7 +40,7 @@ class TtsModelSettings(BaseModel):
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.7      # more KV cache for concurrent requests
+    mem_fraction_static: float = 0.65      # more KV cache for concurrent requests
     attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
     chunked_prefill_size: int = -1         # small prefill chunks → decode starts sooner
     # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
@@ -51,11 +51,11 @@ class TtsModelSettings(BaseModel):
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 512                  # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
+    max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.0               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
-    repetition_penalty: float = 1.2
+    repetition_penalty: float = 1.6
     min_p: float = 0.05
 
 

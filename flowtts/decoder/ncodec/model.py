@@ -13,28 +13,34 @@ _RE_CONTEXT = re.compile(r"context_token_(\d+)")
 def _trim_trailing_silence(
     wav: torch.Tensor,
     *,
-    threshold: float = 1e-4,
-    min_tail_samples: int = 1024,
+    silence_threshold: float = 1e-3,
+    min_tail_samples: int = 3200,
+    window_samples: int = 1600,
 ) -> torch.Tensor:
-    """Trim padding noise added by zero-padded ONNX features.
+    """Trim the repeating-frame noise tail produced by feature padding.
 
-    The ONNX preprocessor pads inputs to max_T; the decoder then sees extra
-    frames at the end for shorter utterances, which can produce low-level
-    noise. We detect the last sample above a small threshold and keep a small
-    safety tail after it, trimming the rest.
+    Padding the feature batch with the last real frame causes the decoder
+    to emit a periodic noise burst with high RMS (~0.07). Real speech always
+    ends with a brief near-zero gap (breath/pause, RMS < 0.001). We scan
+    backwards in windows to find that gap, then cut there + a small safety tail.
     """
     if wav.numel() == 0:
         return wav
     x = wav.view(-1)
-    # Find last index where amplitude is above threshold
-    mask = torch.gt(torch.abs(x), threshold)
-    if not torch.any(mask):
-        return wav  # all near-silent; leave as-is
-    last_idx = int(torch.nonzero(mask, as_tuple=False)[-1].item())
-    cut = min(x.numel(), last_idx + 1 + min_tail_samples)
-    if cut >= x.numel():
-        return wav
-    return x[:cut]
+    N = x.numel()
+
+    # Walk backwards in windows looking for the near-zero gap at speech end.
+    for end in range(N, 0, -window_samples):
+        start = max(0, end - window_samples)
+        rms = x[start:end].float().pow(2).mean().sqrt().item()
+        if rms < silence_threshold:
+            # Found the gap — keep up to this point + safety tail
+            cut = min(N, end + min_tail_samples)
+            if cut < N:
+                return x[:cut]
+            return wav  # gap is near the end, nothing significant to trim
+
+    return wav  # no near-zero gap found — leave as-is
 
 
 def _trim_by_token_ratio(
@@ -42,7 +48,7 @@ def _trim_by_token_ratio(
     this_len: int,
     max_len: int,
     *,
-    safety_margin: float = 1.05,
+    safety_margin: float = 0.95,
 ) -> torch.Tensor:
     """Trim tail proportionally to the relative speech token length.
 
@@ -144,39 +150,33 @@ class AudioDecoder:
     def _run_onnx_chunk(self, chunk: list[tuple[str, str]]) -> list:
         """Run ONNX on a sub-list of requests as a single batched call.
 
-        Uses IOBinding to keep the output tensor on GPU, avoiding a CPU
-        round-trip before the PyTorch decoder forward pass.
+        Returns list of (tensor [1,C,T], real_token_count) tuples.
+        real_token_count is used by the caller to cut exactly the right
+        amount of audio — 1 token = 320 audio samples at 16kHz.
         """
         sess = self._get_session()
         parsed = [self._parse_tokens(ctx, spch) for ctx, spch in chunk]
 
-        max_spch = max(p[1].shape[1] for p in parsed)
+        real_lengths = [p[1].shape[1] for p in parsed]  # actual token count per item
+        max_spch = max(real_lengths)
         max_ctx  = max(p[0].shape[2] for p in parsed)
         B = len(parsed)
 
-        ctx_batch  = np.empty((B, 1, max_ctx), dtype=np.int32)
-        spch_batch = np.empty((B, max_spch),   dtype=np.int64)
-        ctx_batch[:]  = 0
-        spch_batch[:] = 0
+        ctx_batch  = np.zeros((B, 1, max_ctx), dtype=np.int32)
+        spch_batch = np.zeros((B, max_spch),   dtype=np.int64)
         for i, (ctx, spch) in enumerate(parsed):
-            ctx_batch[i,  :, :ctx.shape[2]]  = ctx[0]
-            spch_batch[i, :spch.shape[1]]    = spch[0]
+            ctx_batch[i, 0, :ctx.shape[2]] = ctx[0, 0]
+            T = spch.shape[1]
+            spch_batch[i, :T] = spch[0]
+            if T < max_spch:
+                spch_batch[i, T:] = spch[0, -1]  # pad with last real token, not 0
 
-        binding = sess.io_binding()
-        binding.bind_cpu_input("context_tokens", ctx_batch)
-        binding.bind_cpu_input("speech_tokens",  spch_batch)
-        binding.bind_output("preprocessed_output", device_type="cuda", device_id=0)
-        sess.run_with_iobinding(binding)
-
-        # Output stays on GPU — return as a list of [1, C, T] torch tensors.
-        out_tensor = binding.get_outputs()[0].numpy()  # [B, C, T] on CPU fallback
-        # Prefer zero-copy OrtValue → torch if available
-        try:
-            ortval = binding.get_outputs()[0]
-            out_torch = torch.from_dlpack(ortval.to_dlpack())  # stays on GPU
-            return [out_torch[i:i+1] for i in range(B)]
-        except Exception:
-            return [out_tensor[i:i+1] for i in range(B)]
+        out = sess.run(
+            ["preprocessed_output"],
+            {"context_tokens": ctx_batch, "speech_tokens": spch_batch},
+        )
+        batch_out = torch.from_numpy(out[0]).to("cuda:0")  # [B, C, T_out]
+        return [(batch_out[i:i+1], real_lengths[i]) for i in range(B)]
 
     # ------------------------------------------------------------------ public
 
@@ -194,7 +194,6 @@ class AudioDecoder:
         with torch.cuda.stream(self._stream):
             x_t   = torch.from_numpy(x[0]).to("cuda:0")
             lowres = self.audio_detokenizer.decode(x_t).squeeze(0)
-            lowres = _trim_trailing_silence(lowres)
         self._stream.synchronize()
         return lowres.cpu()
 
@@ -205,12 +204,10 @@ class AudioDecoder:
         Phase 1 — Parallel ONNX  (onnx_workers threads, each ~B/W items)
         Phase 2 — Chunked GPU decoder  (gpu_chunk_size items per forward pass)
         """
+        import time as _time
+        _t0 = _time.perf_counter()
+
         B = len(requests)
-        # True speech-token lengths for each request (used to trim padded tails).
-        speech_lens = [
-            len(_RE_SPEECH.findall(spch_str)) for _, spch_str in requests
-        ]
-        max_spch_len = max(speech_lens) if speech_lens else 0
 
         # --- Phase 1: split requests across ONNX worker threads ---
         # Ceiling-divide so every chunk is as equal as possible.
@@ -218,43 +215,51 @@ class AudioDecoder:
         chunks = [requests[i : i + csize] for i in range(0, B, csize)]
 
         futures  = [self._onnx_executor.submit(self._run_onnx_chunk, c) for c in chunks]
-        # Collect in submission order to preserve request ordering.
-        onnx_outs = [out for fut in futures for out in fut.result()]
+        # Collect in submission order; each entry is (tensor, real_token_count).
+        onnx_outs = [item for fut in futures for item in fut.result()]
+        _t1 = _time.perf_counter()
 
-        # Stack into [B, C, T], zero-padding if token counts differ.
-        # onnx_outs may be numpy arrays or GPU torch tensors (IOBinding fast path).
-        is_torch = isinstance(onnx_outs[0], torch.Tensor)
-        C     = onnx_outs[0].shape[1]
-        max_T = max(o.shape[2] for o in onnx_outs)
-        if all(o.shape[2] == max_T for o in onnx_outs):
-            x_batch = torch.cat(onnx_outs, dim=0) if is_torch else np.concatenate(onnx_outs, axis=0)
-        else:
-            if is_torch:
-                x_batch = torch.zeros((B, C, max_T), dtype=onnx_outs[0].dtype, device=onnx_outs[0].device)
-                for i, o in enumerate(onnx_outs):
-                    x_batch[i, :, :o.shape[2]] = o[0]
-            else:
-                x_batch = np.zeros((B, C, max_T), dtype=onnx_outs[0].dtype)
-                for i, o in enumerate(onnx_outs):
-                    x_batch[i, :, :o.shape[2]] = o[0]
+        # --- Phase 2: group by T, batch each group — no cross-item padding ---
+        # 1 speech token = 320 audio samples at 16 kHz (upsample factor 8*5*4*2).
+        # We know real_tokens per item, so we cut exactly real_tokens*320 + tail.
+        _UPSAMPLE    = 320
+        _TAIL_SAMPS  = 1600  # 100ms safety tail after last real token
+        _TRIM_TOKENS = 3     # remove this many tokens from the end to cancel noise onset
 
-        # --- Phase 2: chunked GPU forward (prevents OOM on large batches) ---
-        chunk   = self._gpu_chunk_size
+        from collections import defaultdict as _dd
+        groups: dict = _dd(list)  # T_feat -> [(orig_idx, tensor, real_tokens)]
+        for i, (o, real_tok) in enumerate(onnx_outs):
+            groups[o.shape[2]].append((i, o, real_tok))
+
+        chunk    = self._gpu_chunk_size
         gpu_outs: list = [None] * B
         with torch.inference_mode():
-            for start in range(0, B, chunk):
-                end = min(start + chunk, B)
-                with torch.cuda.stream(self._stream):
-                    x_t = x_batch[start:end] if is_torch else torch.from_numpy(x_batch[start:end]).to("cuda:0")
-                    lowres = self.audio_detokenizer.decode(x_t)
-                    for i, gi in enumerate(range(start, end)):
-                        wav = lowres[i].squeeze(0)
-                        # First drop frames that correspond purely to padded tokens,
-                        # then trim any residual near-silence tail.
-                        if max_spch_len > 0:
-                            wav = _trim_by_token_ratio(wav, speech_lens[gi], max_spch_len)
-                        wav = _trim_trailing_silence(wav)
-                        gpu_outs[gi] = wav
+            for T_val, items in groups.items():
+                for sub_start in range(0, len(items), chunk):
+                    sub = items[sub_start : sub_start + chunk]
+                    indices   = [idx      for idx, _, _  in sub]
+                    real_toks = [rt       for _,   _, rt in sub]
+                    x_batch   = torch.cat([o for _, o, _ in sub], dim=0)
+                    with torch.cuda.stream(self._stream):
+                        lowres = self.audio_detokenizer.decode(x_batch)
+                        for li, gi in enumerate(indices):
+                            wav = lowres[li].squeeze(0)
+                            # Cut to exact token length + safety tail, minus a few tokens of noise onset.
+                            keep = min(wav.numel(), (real_toks[li] - _TRIM_TOKENS) * _UPSAMPLE + _TAIL_SAMPS)
+                            gpu_outs[gi] = wav[:keep]
             self._stream.synchronize()
+        _t2 = _time.perf_counter()
+
         # Move to CPU after sync so transfers don't block the GPU stream.
-        return [t.cpu() for t in gpu_outs]
+        result = [t.cpu() for t in gpu_outs]
+        _t3 = _time.perf_counter()
+
+        print(
+            f"[decoder] B={B}  T_groups={len(groups)}"
+            f"  onnx={(_t1-_t0)*1000:.1f}ms"
+            f"  gpu={(_t2-_t1)*1000:.1f}ms"
+            f"  cpu_xfer={(_t3-_t2)*1000:.1f}ms"
+            f"  total={(_t3-_t0)*1000:.1f}ms",
+            flush=True,
+        )
+        return result

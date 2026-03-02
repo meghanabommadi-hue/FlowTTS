@@ -214,7 +214,7 @@ def normalize_text(text: str) -> str:
     Hindi/mixed sentences:  rupee amounts → Hindi words; other digits → digit-by-digit Hindi words.
     """
     # Always: Hindi full stop → ASCII period
-    text = text.replace("।", ".")
+    text = text.replace("।", " .")
 
     if not _is_hindi(text):
         # Pure English — convert numbers to English words

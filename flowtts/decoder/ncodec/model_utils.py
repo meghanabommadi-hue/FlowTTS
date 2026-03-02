@@ -15,13 +15,13 @@ from flowtts.decoder.ncodec.layers import (
 
 def remove_weight_norm_recursive(m):
     """
-    Removes weight normalization from a module (new parametrize API or old-style).
+    Recursively removes weight normalization from a module.
     """
     try:
-        if nn.utils.parametrize.is_parametrized(m, 'weight'):
-            nn.utils.parametrize.remove_parametrizations(m, 'weight', leave_parametrized=True)
-    except Exception:
-        pass
+        if hasattr(m, 'weight_g') and hasattr(m, 'weight_v'):
+            nn.utils.remove_weight_norm(m)
+    except Exception as e:
+        print(f"Could not remove weight norm from {m}: {e}")
 
 
 class DecoderBlock(nn.Module):
@@ -125,13 +125,7 @@ class AudioTokenizer():
             if trt_model is not None:
                 self.detokenizer = trt_model
                 return
-            print("[TRT] Falling back to plain FP16 + torch.compile.")
-
-        try:
-            self.detokenizer = torch.compile(self.detokenizer, mode="reduce-overhead")
-            print("[decoder] torch.compile applied (reduce-overhead).")
-        except Exception as e:
-            print(f"[decoder] torch.compile skipped: {e}")
+            print("[TRT] Falling back to plain FP16 decoder.")
 
     def _load_trt(self, gpu_chunk_size: int, model_path: str):
         """Load a pre-compiled TRT .ep engine. Returns the loaded model or None."""

@@ -28,10 +28,10 @@ from __future__ import annotations
 
 import json
 import threading
-from collections import defaultdict
-from dataclasses import dataclass
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Deque
 
 import structlog
 from prometheus_client import Counter, Gauge
@@ -76,6 +76,23 @@ _decode_latency: TimingStat = TimingStat()
 _ws_connections_opened: int = 0
 _ws_connections_closed: int = 0
 
+# Ring buffer of the last N WS events — viewable via GET /ws/log
+_WS_LOG_MAX = 20
+_ws_log: Deque[dict] = deque(maxlen=_WS_LOG_MAX)
+
+
+def _ws_log_append(event: dict) -> None:
+    import datetime as _dt
+    event.setdefault("ts", _dt.datetime.now().strftime("%H:%M:%S.%f")[:-3])
+    with _lock:
+        _ws_log.append(event)
+
+
+def ws_log_snapshot() -> list:
+    """Return a copy of the WS event ring buffer (oldest → newest)."""
+    with _lock:
+        return list(_ws_log)
+
 
 def record_synthesis_latency(call_id: str, text_id: str, duration_seconds: float) -> None:
     """Record time spent in the TTS model (text → audio tokens)."""
@@ -103,22 +120,70 @@ def record_decode_latency(call_id: str, duration_seconds: float) -> None:
     )
 
 
-def record_ws_connection_open(call_id: str) -> None:
+def record_ws_connection_open(call_id: str, *, port: int = 0) -> None:
     """Increment count of WebSocket connections opened."""
     global _ws_connections_opened
     with _lock:
         _ws_connections_opened += 1
+        active = _ws_connections_opened - _ws_connections_closed
     ACTIVE_WEBSOCKETS.inc()
+    _ws_log_append({"event": "open", "call_id": call_id, "port": port, "active_ws": active})
     logger.info("ws_connection_open", call_id=call_id)
 
 
-def record_ws_connection_close(call_id: str) -> None:
+def record_ws_connection_close(call_id: str, *, port: int = 0) -> None:
     """Increment count of WebSocket connections closed."""
     global _ws_connections_closed
     with _lock:
         _ws_connections_closed += 1
+        active = _ws_connections_opened - _ws_connections_closed
     ACTIVE_WEBSOCKETS.dec()
+    _ws_log_append({"event": "close", "call_id": call_id, "port": port, "active_ws": active})
     logger.info("ws_connection_close", call_id=call_id)
+
+
+def record_ws_done(
+    call_id: str,
+    *,
+    port: int = 0,
+    text_id: str = "",
+    token_count: int = 0,
+    llm_ms: int = 0,
+    decode_ms: int = 0,
+    total_ms: int = 0,
+    wav_bytes: int = 0,
+    ts_text_recv: str = "",
+    ts_llm_start: str = "",
+    ts_tokens_ready: str = "",
+    ts_audio_sent: str = "",
+) -> None:
+    """Record a successfully completed WS request with per-milestone timestamps."""
+    _ws_log_append({
+        "event": "done",
+        "call_id": call_id,
+        "text_id": text_id,
+        "port": port,
+        "token_count": token_count,
+        "llm_ms": llm_ms,
+        "decode_ms": decode_ms,
+        "total_ms": total_ms,
+        "wav_bytes": wav_bytes,
+        "ts_text_recv": ts_text_recv,
+        "ts_llm_start": ts_llm_start,
+        "ts_tokens_ready": ts_tokens_ready,
+        "ts_audio_sent": ts_audio_sent,
+    })
+
+
+def record_ws_error(call_id: str, *, port: int = 0, text_id: str = "", error: str = "") -> None:
+    """Record a WS request that ended in an error."""
+    _ws_log_append({
+        "event": "error",
+        "call_id": call_id,
+        "text_id": text_id,
+        "port": port,
+        "error": error,
+    })
 
 
 def record_call(

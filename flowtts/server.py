@@ -59,7 +59,7 @@ from websockets.exceptions import WebSocketException
 
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
-from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close
+from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot
 from flowtts.processing.text_normalize import normalize_text
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
@@ -107,7 +107,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     peer = ws.remote_address
     conn_id = f"{peer[0]}:{peer[1]}"
     print(f"[{_ts()}] :{port} connected  peer={conn_id}", flush=True)
-    record_ws_connection_open(conn_id)
+    record_ws_connection_open(conn_id, port=port)
 
     try:
         async for raw in ws:
@@ -132,27 +132,27 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
 
             text = normalize_text(text)
 
-            ts_recv = _tsms()
-            _log(f"{ts_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
-            print(f"[{_ts()}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
+            ts_text_recv = _tsms()
+            _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
+            print(f"[{ts_text_recv}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
 
             try:
                 synth = await _get_synthesizer()
                 t0 = time.perf_counter()
-                ts_in = _tsms()
-                _log(f"{ts_in}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
+                ts_llm_start = _tsms()
+                _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
                 audio_tokens = await asyncio.wait_for(synth.synthesize(text), timeout=30.0)
                 llm_s = round(time.perf_counter() - t0, 4)
                 llm_ms = round(llm_s * 1000)
-                ts_out = _tsms()
-                _log(f"{ts_out}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
+                ts_tokens_ready = _tsms()
+                _log(f"{ts_tokens_ready}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
 
                 token_count = audio_tokens.count("<|speech_token_")
 
                 # Save LLM output to JSONL
                 if _llm_out_log_file is not None:
                     _llm_out_log_file.write(json.dumps({
-                        "ts": ts_out,
+                        "ts": ts_tokens_ready,
                         "call_id": call_id,
                         "text_id": text_id,
                         "port": port,
@@ -170,7 +170,9 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 wav_tensor = await asyncio.wait_for(codec.decode_async(audio_tokens, ctx), timeout=30.0)
                 decode_s = round(time.perf_counter() - td, 4)
 
+                tw = time.perf_counter()
                 decoded = tensor_to_wav(wav_tensor)
+                wav_s = round(time.perf_counter() - tw, 4)
 
                 record_call(
                     call_id=call_id,
@@ -181,7 +183,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     llm_s=llm_s,
                     decode_s=decode_s,
                     wav_bytes=len(decoded.wav_bytes),
-                    ts=ts_out,
+                    ts=ts_tokens_ready,
                 )
 
                 if _audio_out_dir is not None:
@@ -204,15 +206,39 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 # Frame 2: raw WAV bytes (binary)
                 await ws.send(decoded.wav_bytes)
+                ts_audio_sent = _tsms()
 
+                total_s = llm_s + decode_s + wav_s
                 print(
-                    f"[{_ts()}] :{port} {call_id}  done  llm={llm_ms}ms  tokens={token_count}"
-                    f"  decode={round(decode_s*1000)}ms  wav={len(decoded.wav_bytes)}B",
+                    f"[{ts_audio_sent}] :{port} {call_id}  done"
+                    f"  llm={llm_ms}ms"
+                    f"  decode={round(decode_s*1000)}ms"
+                    f"  wav_enc={round(wav_s*1000)}ms"
+                    f"  total={round(total_s*1000)}ms"
+                    f"  tokens={token_count}"
+                    f"  wav={len(decoded.wav_bytes)}B",
                     flush=True,
                 )
 
+                record_ws_done(
+                    call_id,
+                    port=port,
+                    text_id=text_id,
+                    token_count=token_count,
+                    llm_ms=llm_ms,
+                    decode_ms=round(decode_s * 1000),
+                    total_ms=round(total_s * 1000),
+                    wav_bytes=len(decoded.wav_bytes),
+                    ts_text_recv=ts_text_recv,
+                    ts_llm_start=ts_llm_start,
+                    ts_tokens_ready=ts_tokens_ready,
+                    ts_audio_sent=ts_audio_sent,
+                )
+
             except Exception as e:
-                print(f"[{_ts()}] :{port} {call_id}  ERROR: {e}", flush=True)
+                ts_err = _tsms()
+                print(f"[{ts_err}] :{port} {call_id}  ERROR: {e}", flush=True)
+                record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
                 await ws.send(json.dumps({
                     "type": "error", "call_id": call_id, "text_id": text_id,
                     "error": str(e),
@@ -223,7 +249,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     except Exception as e:
         print(f"[{_ts()}] :{port} connection error: {e}", flush=True)
     finally:
-        record_ws_connection_close(conn_id)
+        record_ws_connection_close(conn_id, port=port)
         print(f"[{_ts()}] :{port} disconnected  peer={conn_id}", flush=True)
 
 
@@ -380,6 +406,11 @@ async def _http_ready(req: web.Request) -> web.Response:
     return web.json_response({"ready": True, "ports": sorted(_open_ports)})
 
 
+async def _http_ws_log(req: web.Request) -> web.Response:
+    """GET /ws/log  — last 20 WS events (open/done/error/close)."""
+    return web.json_response(ws_log_snapshot())
+
+
 async def _http_metrics(req: web.Request) -> web.Response:
     """GET /metrics  — Prometheus scrape endpoint."""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -392,6 +423,7 @@ async def _run_control_api(ctrl_port: int) -> None:
     app.router.add_get("/ports",      _http_list_ports)
     app.router.add_get("/ready",      _http_ready)
     app.router.add_get("/metrics",    _http_metrics)
+    app.router.add_get("/ws/log",     _http_ws_log)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", ctrl_port)
