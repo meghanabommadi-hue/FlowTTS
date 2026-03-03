@@ -139,6 +139,23 @@ _HINDI_FALLBACK: List[str] = [
     "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
 ]
 
+_HINDI_FALLBACK_new: List[str] = [
+    # spoken-number style (words instead of digits) — mixed Hindi/English
+    "ये कॉल आपके loan number जो three six nine पर end होता है, उसी के बारे में है। आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
+    "नमस्ते, मैं Bajaj Finance से बात कर रही हूं। आपका loan account जो four five two पर end होता है, उसकी किस्त due हो गई है।",
+    "आपके account में last payment five thousand three hundred rupees की थी, लेकिन इस बार EMI नहीं आई है।",
+    "कृपया ध्यान दें, आपका overdue amount eight zero five zero rupees है और last date thirty one march है।",
+    "आपका loan number जो seven eight one पर end होता है, उसकी next EMI date fifteen april है और amount three thousand two hundred rupees है।",
+    "हमारे records के अनुसार आपने last month की payment नहीं की है। Total outstanding amount twenty two thousand five hundred rupees है।",
+    "आपकी EMI amount two thousand eight hundred rupees है जो हर month की ten तारीख को deduct होती है।",
+    "इस call का उद्देश्य आपको remind करना है कि आपका loan जो nine zero three पर end होता है, उसकी payment pending है।",
+    "आपके account पर late fee of five hundred rupees लग गई है। Total payable amount now stands at fourteen thousand rupees।",
+    "क्या आप confirm कर सकते हैं कि आप अगले three to five working days में payment कर पाएंगे?",
+    "नमस्ते, मैं एक recorded message के through बात कर रही हूं। आपके loan account number जो two seven five पर end होता है, उस पर EMI bounce हो गई है और आपको जल्द से जल्द payment करनी होगी।",
+    "आपकी monthly EMI four thousand five hundred rupees है और यह हर month की fifth date को आपके registered bank account से deduct होती है, लेकिन इस बार transaction fail हो गई है।",
+    "हमारे customer care number पर call करके या फिर हमारी website पर जाकर आप online payment कर सकते हैं और अपना account number जो six three eight पर end होता है, use करें।",
+]
+
 _TELUGU_FALLBACK: List[str] = [
     # short
     "నేను రేపు హైదరాబాద్ వెళ్తాను, మీరు వస్తారా?",
@@ -162,7 +179,7 @@ try:
 except Exception:
     _checkpoint = "hindi"
 
-_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else _HINDI_FALLBACK
+_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else _HINDI_FALLBACK_new
 
 
 # ---------------------------------------------------------------------------
