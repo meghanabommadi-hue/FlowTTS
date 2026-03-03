@@ -1,0 +1,35 @@
+[Unit]
+Description=Promtail - Log Shipping Agent for Loki
+Documentation=https://grafana.com/docs/loki/latest/clients/promtail/
+After=network.target loki.service
+Wants=loki.service
+
+[Service]
+Type=simple
+User=promtail
+Group=promtail
+ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+ExecReload=/bin/kill -HUP $MAINPID
+TimeoutStopSec=20s
+Restart=on-failure
+RestartSec=5s
+
+LimitNOFILE=65536
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/promtail /home/ubuntu/FlowTTS/flowtts/monitoring
+ReadOnlyPaths=/etc/promtail
+
+# Must be in systemd-journal group to read journald
+# Must be in ubuntu group to read JSONL files
+SupplementaryGroups=systemd-journal ubuntu
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=promtail
+
+[Install]
+WantedBy=multi-user.target

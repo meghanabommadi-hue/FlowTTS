@@ -13,7 +13,7 @@ ExecStart=/home/ubuntu/FlowTTS/llm/bin/python3 -m flowtts.server \
     --base-port 8765 \
     --ports 1 \
     --ctrl-port 8764
-Restart=on-failure
+Restart=always
 RestartSec=5
 
 [Install]

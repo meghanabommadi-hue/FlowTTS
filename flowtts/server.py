@@ -59,7 +59,7 @@ from websockets.exceptions import WebSocketException
 
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
-from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot
+from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot, record_port_change
 from flowtts.processing.text_normalize import normalize_text
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
@@ -373,6 +373,7 @@ async def _bind_ws_port(port: int) -> bool:
         max_size=100 * 1024 * 1024,
     )
     _open_ports.add(port)
+    record_port_change(_open_ports)
     print(f"[{_ts()}] opened ws://0.0.0.0:{port}", flush=True)
     return True
 
@@ -413,8 +414,8 @@ async def _http_ws_log(req: web.Request) -> web.Response:
 
 async def _http_metrics(req: web.Request) -> web.Response:
     """GET /metrics  — Prometheus scrape endpoint."""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    from prometheus_client import generate_latest
+    return web.Response(body=generate_latest(), content_type="text/plain", charset="utf-8")
 
 
 async def _run_control_api(ctrl_port: int) -> None:

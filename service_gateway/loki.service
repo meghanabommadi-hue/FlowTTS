@@ -1,0 +1,30 @@
+[Unit]
+Description=Loki - Log Aggregation System
+Documentation=https://grafana.com/docs/loki/
+After=network.target
+
+[Service]
+Type=simple
+User=loki
+Group=loki
+ExecStart=/usr/local/bin/loki -config.file=/etc/loki/loki-config.yml
+ExecReload=/bin/kill -HUP $MAINPID
+TimeoutStopSec=20s
+Restart=on-failure
+RestartSec=5s
+
+LimitNOFILE=65536
+LimitNPROC=4096
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/loki /var/log/loki /etc/loki
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loki
+
+[Install]
+WantedBy=multi-user.target

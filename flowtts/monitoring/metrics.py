@@ -35,6 +35,8 @@ from typing import Dict, Deque
 
 import structlog
 from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import disable_created_metrics
+disable_created_metrics()
 
 # One JSON line per completed call — written by server.py via record_call().
 _CALLS_LOG = Path(__file__).parents[2] / "monitoring" / "calls.jsonl"
@@ -63,13 +65,13 @@ MAX_PORTS  = Gauge('tts_max_ports',  'Maximum WebSocket ports ever open simultan
 # Error counter
 TTS_ERRORS = Counter('tts_errors_total', 'Total failed TTS requests')
 
-# Latency histograms (enable p50/p95/p99 in Grafana)
-TTS_LLM_SECONDS    = Histogram('tts_llm_seconds',    'LLM inference latency in seconds',
-                                buckets=[.05, .1, .2, .3, .5, .75, 1, 1.5, 2, 3, 5])
-TTS_DECODE_SECONDS = Histogram('tts_decode_seconds', 'Decoder latency in seconds',
-                                buckets=[.02, .05, .1, .2, .3, .5, .75, 1, 2])
-TTS_E2E_SECONDS    = Histogram('tts_e2e_seconds',    'End-to-end latency in seconds',
-                                buckets=[.1, .25, .5, .75, 1, 1.5, 2, 3, 5, 10])
+# Latency histograms in milliseconds — 100ms-wide buckets matching latency_monitor.py output
+TTS_LLM_MS_HIST    = Histogram('tts_llm_latency_ms',    'LLM inference latency in milliseconds',
+                                buckets=list(range(0, 2100, 100)))
+TTS_DECODE_MS_HIST = Histogram('tts_decode_latency_ms', 'Decoder latency in milliseconds',
+                                buckets=list(range(0, 2100, 100)))
+TTS_E2E_MS_HIST    = Histogram('tts_e2e_latency_ms',    'End-to-end latency in milliseconds',
+                                buckets=list(range(0, 3100, 100)))
 
 
 @dataclass
@@ -241,9 +243,9 @@ def record_call(
     TTS_DECODE_MS.inc(decode_s * 1000)
     TTS_E2E_MS.inc((llm_s + decode_s) * 1000)
     TTS_TOKENS.inc(token_count)
-    TTS_LLM_SECONDS.observe(llm_s)
-    TTS_DECODE_SECONDS.observe(decode_s)
-    TTS_E2E_SECONDS.observe(llm_s + decode_s)
+    TTS_LLM_MS_HIST.observe(llm_s * 1000)
+    TTS_DECODE_MS_HIST.observe(decode_s * 1000)
+    TTS_E2E_MS_HIST.observe((llm_s + decode_s) * 1000)
 
 
 def record_port_change(open_ports: set) -> None:

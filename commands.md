@@ -16,7 +16,7 @@ python3 -m flowtts.test.open_ports --n 40
 
 ```bash
 # Full pipeline (LLM + decoder, returns WAV)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 7
 
 # LLM only — no decoder, measure pure generation latency
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-decoder
