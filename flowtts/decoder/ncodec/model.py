@@ -150,9 +150,12 @@ class AudioDecoder:
     def _run_onnx_chunk(self, chunk: list[tuple[str, str]]) -> list:
         """Run ONNX on a sub-list of requests as a single batched call.
 
-        Returns list of (tensor [1,C,T], real_token_count) tuples.
-        real_token_count is used by the caller to cut exactly the right
-        amount of audio — 1 token = 320 audio samples at 16kHz.
+        Returns list of (tensor [1,C,T_trimmed], real_token_count) tuples.
+        Each item's feature tensor is proportionally trimmed to its real token
+        length before returning, so the GPU decoder never processes padding frames.
+        T_trimmed = round(T_out_max * real_tokens[i] / max_spch), which correctly
+        accounts for whatever token-to-feature ratio the ONNX preprocessor uses.
+        real_token_count is kept separately for the audio-space noise-onset trim.
         """
         sess = self._get_session()
         parsed = [self._parse_tokens(ctx, spch) for ctx, spch in chunk]
@@ -176,7 +179,15 @@ class AudioDecoder:
             {"context_tokens": ctx_batch, "speech_tokens": spch_batch},
         )
         batch_out = torch.from_numpy(out[0]).to("cuda:0")  # [B, C, T_out]
-        return [(batch_out[i:i+1], real_lengths[i]) for i in range(B)]
+        T_out = batch_out.shape[2]
+        # Trim each item's features proportionally to its real token length.
+        # Shorter items get a smaller T_trimmed, so the GPU decoder only processes
+        # frames that correspond to real speech.  Items with real_length == max_spch
+        # are unaffected (round(T_out * 1.0) == T_out).
+        return [
+            (batch_out[i:i+1, :, : round(T_out * real_lengths[i] / max_spch)], real_lengths[i])
+            for i in range(B)
+        ]
 
     # ------------------------------------------------------------------ public
 
@@ -220,8 +231,11 @@ class AudioDecoder:
         _t1 = _time.perf_counter()
 
         # --- Phase 2: group by T, batch each group — no cross-item padding ---
-        # 1 speech token = 320 audio samples at 16 kHz (upsample factor 8*5*4*2).
-        # We know real_tokens per item, so we cut exactly real_tokens*320 + tail.
+        # Each item's feature tensor was already trimmed to its real length in
+        # _run_onnx_chunk, so items with similar real token counts share a T value
+        # and are batched together here without any cross-item padding.
+        # The audio trim below (real_toks - TRIM_TOKENS) * UPSAMPLE + TAIL_SAMPS
+        # applies a final noise-onset correction on top of the feature-level trim.
         _UPSAMPLE    = 320
         _TAIL_SAMPS  = 1600  # 100ms safety tail after last real token
         _TRIM_TOKENS = 3     # remove this many tokens from the end to cancel noise onset
