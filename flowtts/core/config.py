@@ -35,7 +35,10 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
+        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
+        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
+        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 

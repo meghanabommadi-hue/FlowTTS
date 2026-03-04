@@ -1,0 +1,15 @@
+[Unit]
+Description=FlowTTS Journald Prometheus Exporter
+After=flowtts.service
+BindsTo=flowtts.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/FlowTTS
+ExecStart=/home/ubuntu/FlowTTS/llm/bin/python3 external_monitoring/journald_exporter.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

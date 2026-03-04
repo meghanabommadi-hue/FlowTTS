@@ -137,6 +137,43 @@ _HINDI_FALLBACK: List[str] = [
     # long — English numerals in Hindi sentences
     "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
     "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
+    # long — extra variety
+    "आपकी loan application approve हो गई है और loan amount सीधे आपके bank account में transfer कर दी जाएगी, जिसमें दो से तीन कार्य दिवस लग सकते हैं।",
+    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
+    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
+    "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
+    "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
+    "हम आपको सूचित करना चाहते हैं कि आपकी KYC verification pending है, कृपया अपने नजदीकी branch में जाकर या हमारे app के माध्यम से इसे complete करें।",
+    # spoken-number style (numbers as Hindi words / romanized English)
+    "ये कॉल आपके loan number जो three six nine पर end होता है, उसी के बारे में है। आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
+    "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
+    "आपका account number जो seven eight nine zero पर end होता है, उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें और किसी भी assistance के लिए हमें call back करें।",
+    "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो आपको कोई extra charge नहीं लगेगा।",
+    "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं। आपके loan account number ending in three four five six पर total due amount is twenty two thousand five hundred rupees जिसमें principal amount fifteen thousand और late payment charges seven thousand five hundred rupees शामिल हैं, कृपया आज ही payment करें।",
+    "आपके loan की EMI जो हर महीने की five तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले three working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा जिससे future में loan लेने में problem हो सकती है।",
+]
+
+# Mixed very-long + very-short sentences — specifically for testing trimming under batch load.
+# Short sentences get batched with long ones → ONNX padding → trim logic exercised.
+_HINDI_MIXED_STRESS: List[str] = [
+    # very short
+    "नमस्ते।",
+    "ठीक है।",
+    "धन्यवाद।",
+    "क्या आप सुन सकते हैं?",
+    "कृपया रुकिए।",
+    "हाँ, बिल्कुल।",
+    # very long
+    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
+    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
+    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
+    "हम आपको सूचित करना चाहते हैं कि आपकी KYC verification pending है, कृपया अपने नजदीकी branch में जाकर या हमारे app के माध्यम से इसे complete करें।",
+    # very short again (interleaved)
+    "समझ गया।",
+    "एक मिनट।",
+    # very long
+    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
+    "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
 ]
 
 _TELUGU_FALLBACK: List[str] = [
@@ -162,7 +199,7 @@ try:
 except Exception:
     _checkpoint = "hindi"
 
-_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else _HINDI_FALLBACK
+_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
 
 
 # ---------------------------------------------------------------------------

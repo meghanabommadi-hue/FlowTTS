@@ -176,7 +176,8 @@ class AudioDecoder:
             {"context_tokens": ctx_batch, "speech_tokens": spch_batch},
         )
         batch_out = torch.from_numpy(out[0]).to("cuda:0")  # [B, C, T_out]
-        return [(batch_out[i:i+1], real_lengths[i]) for i in range(B)]
+        # was_padded: True if this item was shorter than the batch max (padding applied)
+        return [(batch_out[i:i+1], real_lengths[i], real_lengths[i] < max_spch) for i in range(B)]
 
     # ------------------------------------------------------------------ public
 
@@ -227,9 +228,9 @@ class AudioDecoder:
         _TRIM_TOKENS = 3     # remove this many tokens from the end to cancel noise onset
 
         from collections import defaultdict as _dd
-        groups: dict = _dd(list)  # T_feat -> [(orig_idx, tensor, real_tokens)]
-        for i, (o, real_tok) in enumerate(onnx_outs):
-            groups[o.shape[2]].append((i, o, real_tok))
+        groups: dict = _dd(list)  # T_feat -> [(orig_idx, tensor, real_tokens, was_padded)]
+        for i, (o, real_tok, was_padded) in enumerate(onnx_outs):
+            groups[o.shape[2]].append((i, o, real_tok, was_padded))
 
         chunk    = self._gpu_chunk_size
         gpu_outs: list = [None] * B
@@ -237,15 +238,24 @@ class AudioDecoder:
             for T_val, items in groups.items():
                 for sub_start in range(0, len(items), chunk):
                     sub = items[sub_start : sub_start + chunk]
-                    indices   = [idx      for idx, _, _  in sub]
-                    real_toks = [rt       for _,   _, rt in sub]
-                    x_batch   = torch.cat([o for _, o, _ in sub], dim=0)
+                    indices    = [idx        for idx, _, _, _  in sub]
+                    real_toks  = [rt         for _,   _, rt, _ in sub]
+                    padded     = [wp         for _,   _, _, wp in sub]
+                    x_batch    = torch.cat([o for _, o, _, _ in sub], dim=0)
                     with torch.cuda.stream(self._stream):
                         lowres = self.audio_detokenizer.decode(x_batch)
                         for li, gi in enumerate(indices):
                             wav = lowres[li].squeeze(0)
-                            # Cut to exact token length + safety tail, minus a few tokens of noise onset.
-                            keep = min(wav.numel(), (real_toks[li] - _TRIM_TOKENS) * _UPSAMPLE + _TAIL_SAMPS)
+                            # Only trim noise-onset tokens when padding was applied AND
+                            # the sentence is long enough that 3 tokens is not a big cut.
+                            # Single-sentence batches (no padding) and short sentences skip trim.
+                            if padded[li] and real_toks[li] >= 20:
+                                trim = _TRIM_TOKENS
+                            elif padded[li]:
+                                trim = 1  # short padded sentence: trim only 1 token
+                            else:
+                                trim = 0  # not padded: no trim needed
+                            keep = min(wav.numel(), (real_toks[li] - trim) * _UPSAMPLE + _TAIL_SAMPS)
                             gpu_outs[gi] = wav[:keep]
             self._stream.synchronize()
         _t2 = _time.perf_counter()

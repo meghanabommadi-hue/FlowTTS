@@ -35,6 +35,8 @@ from typing import Dict, Deque
 
 import structlog
 from prometheus_client import Counter, Gauge
+from prometheus_client import disable_created_metrics
+disable_created_metrics()
 
 # One JSON line per completed call — written by server.py via record_call().
 _CALLS_LOG = Path(__file__).parents[2] / "monitoring" / "calls.jsonl"
@@ -51,6 +53,21 @@ TTS_DECODE_MS     = Counter('tts_decode_ms_total',     'Total sum of decoder tim
 TTS_E2E_MS        = Counter('tts_e2e_ms_total',        'Total sum of end-to-end time in ms')
 TTS_TOKENS        = Counter('tts_tokens_total',        'Total sum of generated speech tokens')
 ACTIVE_WEBSOCKETS = Gauge('tts_active_websockets',     'Currently active WebSocket connections')
+
+# WebSocket lifetime counters
+WS_CONNECTIONS_OPENED = Counter('tts_ws_connections_opened_total', 'Total WebSocket connections opened')
+WS_CONNECTIONS_CLOSED = Counter('tts_ws_connections_closed_total', 'Total WebSocket connections closed')
+
+# Port tracking
+OPEN_PORTS = Gauge('tts_open_ports', 'Currently open WebSocket ports')
+MAX_PORTS  = Gauge('tts_max_ports',  'Maximum WebSocket ports ever open simultaneously')
+
+# Error counter
+TTS_ERRORS = Counter('tts_errors_total', 'Total failed TTS requests')
+
+# Clean disconnect counter (WebSocket close code 1000 = normal closure)
+WS_CLEAN_DISCONNECT = Counter('tts_ws_clean_disconnect_total',
+                              'WebSocket disconnects via ERROR 1000 (OK) clean close')
 
 
 @dataclass
@@ -127,6 +144,7 @@ def record_ws_connection_open(call_id: str, *, port: int = 0) -> None:
         _ws_connections_opened += 1
         active = _ws_connections_opened - _ws_connections_closed
     ACTIVE_WEBSOCKETS.inc()
+    WS_CONNECTIONS_OPENED.inc()
     _ws_log_append({"event": "open", "call_id": call_id, "port": port, "active_ws": active})
     logger.info("ws_connection_open", call_id=call_id)
 
@@ -138,6 +156,7 @@ def record_ws_connection_close(call_id: str, *, port: int = 0) -> None:
         _ws_connections_closed += 1
         active = _ws_connections_opened - _ws_connections_closed
     ACTIVE_WEBSOCKETS.dec()
+    WS_CONNECTIONS_CLOSED.inc()
     _ws_log_append({"event": "close", "call_id": call_id, "port": port, "active_ws": active})
     logger.info("ws_connection_close", call_id=call_id)
 
@@ -177,6 +196,10 @@ def record_ws_done(
 
 def record_ws_error(call_id: str, *, port: int = 0, text_id: str = "", error: str = "") -> None:
     """Record a WS request that ended in an error."""
+    if "1000" in error and "(OK)" in error:
+        WS_CLEAN_DISCONNECT.inc()
+    else:
+        TTS_ERRORS.inc()
     _ws_log_append({
         "event": "error",
         "call_id": call_id,
@@ -219,6 +242,14 @@ def record_call(
     TTS_DECODE_MS.inc(decode_s * 1000)
     TTS_E2E_MS.inc((llm_s + decode_s) * 1000)
     TTS_TOKENS.inc(token_count)
+
+
+def record_port_change(open_ports: set) -> None:
+    """Update port gauges whenever a WS port is opened. Call from server.py."""
+    n = len(open_ports)
+    OPEN_PORTS.set(n)
+    if n > MAX_PORTS._value.get():
+        MAX_PORTS.set(n)
 
 
 def snapshot_metrics() -> dict:
