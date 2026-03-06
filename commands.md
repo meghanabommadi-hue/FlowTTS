@@ -11,6 +11,8 @@ cd /root/FlowTTS && bash run.sh --ctrl-port 8764
 ```bash
 python3 -m flowtts.test.open_ports --n 40
 ```
+## lmdelpoy
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 70 --texts lmdeploy 
 
 ## Send N requests (1 per port)
 

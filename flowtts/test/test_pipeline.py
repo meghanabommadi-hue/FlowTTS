@@ -192,6 +192,21 @@ _TELUGU_FALLBACK: List[str] = [
     "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
 
+# Same short English sentences used in /root/lmdeploy/new_lmdeploy*.py — for apples-to-apples
+# perf comparison against the standalone lmdeploy benchmark.
+_LMDEPLOY_BENCH_TEXTS: List[str] = [
+    "Hello, this is a test text for generation.",
+    "The weather today is sunny and warm.",
+    "Welcome to our service, how can I help you?",
+    "Please hold while we connect your call.",
+    "Your order has been confirmed and will arrive soon.",
+    "Turn left at the next intersection ahead.",
+    "Your appointment is scheduled for tomorrow morning.",
+    "The meeting will begin in five minutes.",
+    "Thank you for your patience, we appreciate it.",
+    "Please enter your password to continue.",
+]
+
 # Pick fallback list based on configured checkpoint.
 try:
     from flowtts.core.config import settings as _cfg
@@ -235,6 +250,7 @@ async def _run_one(
     out_dir: Path,
     worker,       # DecoderWorker instance or None
     skip_decoder: bool = False,
+    texts: Optional[List[str]] = None,
 ) -> RequestResult:
     call_id = str(uuid.uuid4())
     text_id = str(uuid.uuid4())
@@ -245,8 +261,10 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Use bench texts if available, else built-in fallback list for active checkpoint
-            if _BENCH_TEXTS:
+            # Priority: explicit text list > bench texts > fallback list
+            if texts:
+                text = texts[req_id % len(texts)]
+            elif _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
             else:
                 text = _FALLBACK_TEXTS[req_id % len(_FALLBACK_TEXTS)]
@@ -391,6 +409,7 @@ async def run_test(
     base_port: int = 8765,
     save_audio: Optional[str] = None,
     skip_decoder: bool = False,
+    texts: Optional[List[str]] = None,
     # external-server args
     ports: Optional[List[int]] = None,
 ) -> List[RequestResult]:
@@ -481,7 +500,7 @@ async def run_test(
 
     tasks = [
         _run_one(i, routing_ports[i % len(routing_ports)], mode, out_dir, worker,
-                 skip_decoder=skip_decoder)
+                 skip_decoder=skip_decoder, texts=texts)
         for i in range(n_requests)
     ]
     results: List[RequestResult] = await asyncio.gather(*tasks)
@@ -635,6 +654,12 @@ def _resolve_ports(
 async def main(args: argparse.Namespace) -> None:
     out_dir = _make_out_dir()
 
+    # Resolve text list
+    texts: Optional[List[str]] = None
+    if getattr(args, "texts_preset", None) == "lmdeploy":
+        texts = _LMDEPLOY_BENCH_TEXTS
+        print(f"[texts] using lmdeploy benchmark texts ({len(texts)} sentences)", flush=True)
+
     if args.launch:
         results = await run_test(
             args.mode, args.requests, out_dir,
@@ -644,6 +669,7 @@ async def main(args: argparse.Namespace) -> None:
             base_port=args.base_port,
             save_audio=args.save_audio,
             skip_decoder=args.skip_decoder,
+            texts=texts,
         )
     else:
         # Prefer ctrl API for port discovery if available and no explicit port list given
@@ -660,6 +686,7 @@ async def main(args: argparse.Namespace) -> None:
             concurrency=args.concurrency,
             base_port=args.base_port,
             ports=port_list,
+            texts=texts,
         )
 
     ok = _print_summary(results, args.mode, out_dir)
@@ -692,6 +719,9 @@ if __name__ == "__main__":
                         help="Pass --save-audio DIR to the launched server")
     parser.add_argument("--skip-decoder", dest="skip_decoder", action="store_true", default=False,
                         help="Send skip_decoder=true in each WS request (LLM only, no WAV decode)")
+    parser.add_argument("--texts", dest="texts_preset", default=None,
+                        choices=["lmdeploy"],
+                        help="Text preset: 'lmdeploy' uses the same 10 English sentences as new_lmdeploy*.py")
 
     # External-server port selection
     pg = parser.add_mutually_exclusive_group()

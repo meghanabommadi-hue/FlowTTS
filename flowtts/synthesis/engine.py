@@ -6,7 +6,7 @@ Role in pipeline:
 
       audio_tokens = await synthesis_service.synthesize(text)
 
-  Ensures the sglang Engine and ncodec TTSCodec are loaded exactly once per
+  Ensures the lmdeploy pipeline and ncodec TTSCodec are loaded exactly once per
   process, no matter how many concurrent requests arrive.
 
 Lazy initialisation:
@@ -14,9 +14,9 @@ Lazy initialisation:
   startup (server._get_synthesizer). Subsequent calls are no-ops.
 
 Async safety:
-  synthesize() delegates to FlowTtsSynthesizer.synthesize() which calls
-  sgl.Engine.async_generate() — non-blocking, safe for concurrent coroutines.
-  The sglang Engine serialises GPU requests internally.
+  synthesize() delegates to FlowTtsSynthesizer.synthesize() which runs the
+  lmdeploy pipeline in an executor — non-blocking, safe for concurrent coroutines.
+  lmdeploy serialises GPU requests internally.
 """
 
 from __future__ import annotations

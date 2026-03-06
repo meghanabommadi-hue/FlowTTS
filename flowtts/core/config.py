@@ -5,7 +5,7 @@ Role in pipeline:
   imports `settings` from here rather than reading env-vars directly.
 
 Key sections and their pipeline consumers:
-  TtsModelSettings  → synthesis/models.py (sglang engine init, sampling params)
+  TtsModelSettings  → synthesis/models.py (lmdeploy pipeline init, sampling params)
                        synthesis/engine.py (model_dir, ref_audio paths)
   DecoderSettings   → api/websockets.py   (enabled flag, to_wav flag)
                        decoder/decoder.py  (sample_rate)
@@ -42,23 +42,22 @@ class TtsModelSettings(BaseModel):
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
-    # sglang engine parameters
-    mem_fraction_static: float = 0.65      # more KV cache for concurrent requests
-    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = -1         # small prefill chunks → decode starts sooner
-    # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
-    schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
-    cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
-    disable_radix_cache: bool = False
-    num_continuous_decode_steps: int = 4    # batch N decode steps before re-scheduling → less scheduler overhead
+    # lmdeploy TurbomindEngine parameters
+    tp: int = 1                                  # tensor parallelism degree
+    cache_max_entry_count: float = 0.5           # fraction of GPU mem allocated for KV cache
+    enable_prefix_caching: bool = True           # reuse KV cache across requests with shared prefix
+    max_batch_size: int = 128                    # max concurrent requests per engine instance
+
+    # Dynamic batcher: collect concurrent requests for this window, then send as one batch
+    llm_batch_timeout_ms: float = 1.0           # ms to wait accumulating a batch before flushing
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
+    max_tokens: int = 512                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.0               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
-    repetition_penalty: float = 1.6
+    repetition_penalty: float = 1.2
     min_p: float = 0.05
 
 
