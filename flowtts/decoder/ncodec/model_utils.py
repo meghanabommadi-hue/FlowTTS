@@ -123,6 +123,8 @@ class AudioTokenizer():
         missing_keys, unexpected_keys = self.detokenizer.load_state_dict(state_dict, strict=False)
         self.detokenizer = self.detokenizer.eval().float().to("cuda:0").half()
 
+        self._fp16_detokenizer = self.detokenizer  # kept as fallback if TRT shape OOB
+
         if use_trt:
             result = self._load_or_compile_trt(gpu_chunk_size, model_path)
             if result is not None:
@@ -131,14 +133,16 @@ class AudioTokenizer():
                 print("[TRT] Falling back to plain FP16 decoder.")
 
     # ------------------------------------------------------------------
-    # TRT helpers — compile via venv2 (tensorrt-cu12, works on driver 570).
-    # The main llmc venv has tensorrt-cu13 libs which require driver >= 575,
-    # so TRT compilation and the cache .ep file are managed entirely through
-    # the venv2 subprocess.  The main process always runs plain FP16.
+    # TRT helpers — compile and load via venv2 (tensorrt-cu12, driver 570+).
+    # venv2 site-packages are injected into sys.path / LD_LIBRARY_PATH at
+    # load time so the cu12 torch_tensorrt is used in-process instead of
+    # any cu13 build that may be present in the main venv.
     # ------------------------------------------------------------------
 
-    _COMPILE_PYTHON = "/root/BatchBicodec/venv2/bin/python3"
-    _COMPILE_SP     = "/root/BatchBicodec/venv2/lib/python3.12/site-packages"
+    #_COMPILE_PYTHON = "/root/BatchBicodec/venv2/bin/python3"
+    _COMPILE_PYTHON = "/root/FlowTTS/venv2/bin/python"
+    #_COMPILE_SP     = "/root/BatchBicodec/venv2/lib/python3.12/site-packages"
+    _COMPILE_SP = "/root/FlowTTS/venv2/lib/python3.12/site-packages"
 
     @classmethod
     def _trt_env(cls) -> dict:
@@ -166,19 +170,50 @@ class AudioTokenizer():
                 pass
         return env
 
-    def _load_or_compile_trt(self, gpu_chunk_size: int, model_path: str):
-        """Compile TRT engine via the venv2 subprocess if not already cached.
+    def _try_load_trt_inprocess(self, cache_path: Path):
+        """Load a cached .ep engine using venv2's tensorrt-cu12 libs.
 
-        The venv2 (torch-tensorrt 2.8, tensorrt-cu12) is compatible with
-        driver 570, unlike the main llmc venv's tensorrt-cu13 libs which
-        require driver >= 575.  As a result:
-          - Compilation happens in venv2 subprocess → writes .ep cache file.
-          - Loading the .ep into the main process is not supported on this
-            driver; _load_or_compile_trt always returns None so the caller
-            falls back to plain FP16 PyTorch inference.
+        Injects venv2's site-packages into sys.path and prepends its TRT/CUDA
+        shared-library dirs into LD_LIBRARY_PATH before the first import of
+        torch_tensorrt, so the cu12 build (compatible with driver 570) is used.
+
+        Returns the loaded module on success, or None on any failure.
+        """
+        import sys
+
+        sp = self._COMPILE_SP
+        trt_lib_dirs = [
+            f"{sp}/tensorrt_libs",
+            f"{sp}/nvidia/cuda_runtime/lib",
+            f"{sp}/nvidia/cudnn/lib",
+            f"{sp}/torch/lib",
+        ]
+        existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        new_ld = ":".join(d for d in trt_lib_dirs if os.path.isdir(d))
+        os.environ["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
+
+        try:
+            import torch_tensorrt
+            import torch.export
+            loaded = torch_tensorrt.load(str(cache_path))
+            if isinstance(loaded, torch.export.ExportedProgram):
+                loaded = loaded.module()
+            return loaded
+        except Exception as e:
+            print(f"[TRT] In-process load failed ({e}).")
+            return None
+
+    def _load_or_compile_trt(self, gpu_chunk_size: int, model_path: str):
+        """Compile TRT engine via venv2 subprocess if not cached, then load it.
+
+        venv2 (torch-tensorrt 2.8, tensorrt-cu12) is compatible with driver 570.
+        Compilation runs in a venv2 subprocess; loading is done in-process by
+        injecting venv2's cu12 libs before importing torch_tensorrt.
 
         Cache: decoder_trt_b{gpu_chunk_size}.ep next to model weights.
-              Run compile_trt_mig.py in venv2 to pre-build this file.
         """
         import subprocess, textwrap
 
@@ -186,7 +221,10 @@ class AudioTokenizer():
 
         if cache_path.exists():
             print(f"[TRT] Cache exists: {cache_path}")
-            print("[TRT] In-process TRT load not available on this driver (570 < 575 required for cu13 TRT).")
+            loaded = self._try_load_trt_inprocess(cache_path)
+            if loaded is not None:
+                print("[TRT] Engine loaded successfully.")
+                return loaded
             print("[TRT] Falling back to plain FP16 decoder.")
             return None
 
@@ -213,7 +251,7 @@ class AudioTokenizer():
                 inputs=[torch_tensorrt.Input(
                     min_shape=(1, 1024, 50),
                     opt_shape=({gpu_chunk_size}, 1024, 172),
-                    max_shape=({gpu_chunk_size}, 1024, 350),
+                    max_shape=({gpu_chunk_size}, 1024, 600),
                     dtype=torch.float16,
                 )],
                 enabled_precisions={{torch.float16}},
@@ -234,10 +272,15 @@ class AudioTokenizer():
         if result.returncode != 0 or not cache_path.exists():
             print(f"[TRT] Subprocess compile failed (rc={result.returncode}). Using plain FP16.")
         else:
-            print(f"[TRT] Engine cached at {cache_path}. Plain FP16 used in this process.")
-        # In-process TRT load is not available on driver 570 (cu13 TRT requires >= 575).
-        # The compiled .ep is available for future use when the driver is upgraded.
+            print(f"[TRT] Engine cached at {cache_path}. Restart to load it.")
         return None
 
     def decode(self, x):
-        return self.detokenizer(x)
+        try:
+            return self.detokenizer(x)
+        except Exception as e:
+            fb = self._fp16_detokenizer
+            if fb is not self.detokenizer:
+                print(f"[TRT] decode error ({e}), retrying with FP16 for this chunk.")
+                return fb(x)
+            raise

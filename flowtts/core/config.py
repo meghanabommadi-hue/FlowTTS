@@ -33,8 +33,8 @@ class TtsModelSettings(BaseModel):
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.9       # more KV cache for concurrent requests
-    attention_backend: str = "flashinfer"   # triton is fastest # fastest for decode-heavy TTS
+    mem_fraction_static: float = 0.7       # more KV cache for concurrent requests
+    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
     chunked_prefill_size: int = 4096         # small prefill chunks → decode starts sooner
     max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
@@ -62,11 +62,11 @@ class DecoderSettings(BaseModel):
     model_gpu_id: int = 0
     decoder_gpu_id: int = 0
 
-    sample_rate: int = 48000
+    sample_rate: int = 16000
 
     # Set to False to skip ncodec decoding and forward raw LLM tokens instead.
     # Useful for latency profiling and when decoder is not yet ready.
-    enabled: bool = False
+    enabled: bool = True
 
     # Set to False to decode to raw PCM bytes only (skip WAV encoding).
     # Saves ~1-5ms per request. Use when client handles raw float32 PCM.
@@ -74,10 +74,10 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 10.0   # ms to wait collecting a batch
-    gpu_chunk_size: int = 90         # max items per GPU forward pass
-    onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = False            # compile decoder with TensorRT FP16
+    batch_timeout_ms: float = 1.0   # ms to wait collecting a batch
+    gpu_chunk_size: int = 60         # max items per GPU forward pass
+    onnx_workers: int = 2            # parallel ONNX worker threads
+    use_trt: bool = True            # compile decoder with TensorRT FP16
 
 
 class WebSocketSettings(BaseModel):

@@ -160,7 +160,7 @@ try:
     from flowtts.core.config import settings as _cfg
     _checkpoint = _cfg.tts_model.checkpoint_lg
 except Exception:
-    _checkpoint = "hindi"
+    _checkpoint = "telugu"
 
 _FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else _HINDI_FALLBACK
 
