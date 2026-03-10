@@ -96,6 +96,7 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
 
 async def run_worker() -> None:
     client = await _initialize_redis()
+    active_tasks: set[asyncio.Task] = set()
 
     logger.info("flowtts_worker_started", queue=settings.redis.tts_queue_name)
     while True:
@@ -104,14 +105,25 @@ async def run_worker() -> None:
             if result is None:
                 continue
             _, job_data = result
-            await _process_job(client, job_data)
+            task = asyncio.create_task(_process_job(client, job_data))
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
         except Exception as e:  # noqa: BLE001
             logger.error("worker_loop_error", error=str(e))
             await asyncio.sleep(1.0)
 
 
 def main() -> None:
-    asyncio.run(run_worker())
+    worker = SynthesizerWorker()
+    asyncio.run(_run_synthesizer_worker(worker))
+
+
+async def _run_synthesizer_worker(worker: "SynthesizerWorker") -> None:
+    await worker.initialize()
+    try:
+        await worker.run()
+    finally:
+        await worker.shutdown()
 
 
 if __name__ == "__main__":
@@ -203,6 +215,7 @@ class SynthesizerWorker:
                 "generated_at": time.time(),
                 "queueing_latency": queueing_latency,
                 "synthesis_latency": synth_latency_val,
+                "llm_s": round(synth_latency_val, 4),
             }
             channel = f"{settings.redis.results_channel_prefix}:{call_id}"
             assert self.redis_client is not None

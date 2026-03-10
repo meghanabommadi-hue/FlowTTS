@@ -1,50 +1,18 @@
 #!/usr/bin/env python3
 """
-Pipeline position: SINGLE-PROCESS GATEWAY (primary production entry point via run.sh).
+Single-process FlowTTS WebSocket server.
+Loads sglang + ncodec once; handles all ports in one asyncio event loop.
 
-Role in pipeline:
-  Self-contained TTS server — no Redis, no worker process, no uvicorn per port.
-  Loads sglang + ncodec once, then handles all WebSocket ports in one asyncio
-  event loop. This is the recommended way to run FlowTTS in production.
-
-  Client
-    │  WebSocket (text) on port 8765…8765+N
-    ▼
-  server.py  (one process, one GPU load)
-    │  synthesis_service.synthesize(text)  [sglang in-process]
-    │  → audio_tokens string
-    ▼
-  Client  (audio_tokens JSON — no decode in this path)
-
-Compared to main.py (Redis-backed):
-  Simpler:   no Redis, no worker, no inter-process coordination.
-  Faster:    no queue latency, inference starts immediately.
-  Less flexible: all ports share one sglang Engine, no horizontal scaling
-                 across machines without running multiple server.py instances.
-
-Port model:
-  --ports N opens N consecutive ports starting at --base-port.
-  All ports share the same synthesis_service singleton (one model load).
-  Concurrent requests from different ports are handled by asyncio concurrency
-  — sglang's async_generate serialises GPU work internally.
-
-Warmup:
-  On startup, one warmup sentence is synthesized to prime the GPU and JIT
-  caches before real traffic arrives.
-
-Usage (preferred):
-    ./run.sh --ports 100              # 100 ports: 8765…8864
-    ./run.sh --ports 3 --port 9000   # ports 9000, 9001, 9002
-
-Direct:
-    python -m flowtts.server --ports 3
-    python -m flowtts.server --ports 100 --base-port 8765
+Usage:
+    ./run.sh --ports 100
+    python -m flowtts.server --ports 3 --base-port 8765
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import datetime
 import json
 import time
@@ -68,6 +36,11 @@ logging.getLogger("websockets").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 _synthesizer: FlowTtsSynthesizer | None = None
+_synthesizer_lock = asyncio.Lock()
+# 16-worker norm pool: all concurrent requests normalize in parallel so LLM dispatch stays bunched.
+# Separate wav pool: WAV encoding never queues behind normalization.
+_norm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="norm")
+_wav_executor  = concurrent.futures.ThreadPoolExecutor(max_workers=4,  thread_name_prefix="wav_enc")
 _audio_out_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
 _llm_log: Path = Path(__file__).parents[1] / "llm.log"
@@ -79,14 +52,10 @@ _llm_out_log_file = None  # opened once in main()
 def _ts() -> str:
     return time.strftime("%H:%M:%S")
 
-
 def _tsms() -> str:
-    """Current time as HH:MM:SS.mmm (millisecond precision)."""
     return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-
 def _log(line: str) -> None:
-    """Append a timestamped line to llm.log (no-op if file not open)."""
     if _llm_log_file is not None:
         _llm_log_file.write(line + "\n")
         _llm_log_file.flush()
@@ -94,20 +63,161 @@ def _log(line: str) -> None:
 
 async def _get_synthesizer() -> FlowTtsSynthesizer:
     global _synthesizer
-    if _synthesizer is None:
-        _synthesizer = FlowTtsSynthesizer()
-        print(f"[{_ts()}] loading model...", flush=True)
-        await _synthesizer.initialize()
-        print(f"[{_ts()}] model ready", flush=True)
+    if _synthesizer is not None:
+        return _synthesizer
+    async with _synthesizer_lock:
+        if _synthesizer is None:  # re-check after acquiring lock
+            s = FlowTtsSynthesizer()
+            print(f"[{_ts()}] loading model...", flush=True)
+            await s.initialize()
+            print(f"[{_ts()}] model ready", flush=True)
+            _synthesizer = s
     return _synthesizer
 
 
+async def _handle_request(
+    ws: websockets.ServerConnection,
+    send_lock: asyncio.Lock,
+    data: dict,
+    conn_id: str,
+    port: int,
+    ts_text_recv: str,
+) -> None:
+    """Run one TTS request; send_lock keeps JSON+WAV frame pairs atomic."""
+    call_id = data.get("call_id") or conn_id
+    text_id = data.get("text_id") or str(uuid.uuid4())
+    raw_text = (data.get("text") or "").strip()
+
+    loop = asyncio.get_event_loop()
+    text = await loop.run_in_executor(_norm_executor, normalize_text, raw_text)
+
+    _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
+    print(f"[{ts_text_recv}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
+
+    try:
+        synth = await _get_synthesizer()
+        t0 = time.perf_counter()
+        ts_llm_start = _tsms()
+        _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
+        # No wait_for wrapper — the extra Task it creates adds scheduling overhead
+        # when 50 coroutines are in-flight simultaneously.
+        audio_tokens = await synth.synthesize(text)
+        llm_s = round(time.perf_counter() - t0, 4)
+        llm_ms = round(llm_s * 1000)
+        ts_tokens_ready = _tsms()
+        _log(f"{ts_tokens_ready}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
+
+        token_count = audio_tokens.count("<|speech_token_")
+
+        if _llm_out_log_file is not None:
+            _llm_out_log_file.write(json.dumps({
+                "ts": ts_tokens_ready,
+                "call_id": call_id,
+                "text_id": text_id,
+                "port": port,
+                "text": text,
+                "audio_tokens": audio_tokens,
+                "token_count": token_count,
+                "llm_ms": llm_ms,
+            }, ensure_ascii=False) + "\n")
+
+        # Batch decode: all concurrent requests across all connections are
+        # coalesced by TTSCodec's internal batch queue into one GPU forward pass.
+        codec = synth._tts_codec
+        ctx = synth._context_tokens
+        td = time.perf_counter()
+        wav_tensor = await codec.decode_async(audio_tokens, ctx)
+        decode_s = round(time.perf_counter() - td, 4)
+
+        tw = time.perf_counter()
+        decoded = await asyncio.get_event_loop().run_in_executor(
+            _wav_executor, tensor_to_wav, wav_tensor
+        )
+        wav_s = round(time.perf_counter() - tw, 4)
+
+        record_call(
+            call_id=call_id,
+            text_id=text_id,
+            port=port,
+            text=text,
+            token_count=token_count,
+            llm_s=llm_s,
+            decode_s=decode_s,
+            wav_bytes=len(decoded.wav_bytes),
+            ts=ts_tokens_ready,
+        )
+
+        if _audio_out_dir is not None:
+            wav_file = _audio_out_dir / f"{text_id}.wav"
+            wav_file.write_bytes(decoded.wav_bytes)
+            print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
+
+        async with send_lock:
+            await ws.send(json.dumps({
+                "type": "audio",
+                "call_id": call_id,
+                "text_id": text_id,
+                "text": text,
+                "audio_tokens": audio_tokens,
+                "sample_rate": SAMPLE_RATE,
+                "wav_bytes": len(decoded.wav_bytes),
+                "is_final": True,
+                "llm_s": llm_s,
+                "decode_s": decode_s,
+            }))
+            await ws.send(decoded.wav_bytes)
+
+        ts_audio_sent = _tsms()
+        total_s = llm_s + decode_s + wav_s
+        print(
+            f"[{ts_audio_sent}] :{port} {call_id}  done"
+            f"  llm={llm_ms}ms"
+            f"  decode={round(decode_s*1000)}ms"
+            f"  wav_enc={round(wav_s*1000)}ms"
+            f"  total={round(total_s*1000)}ms"
+            f"  tokens={token_count}"
+            f"  wav={len(decoded.wav_bytes)}B",
+            flush=True,
+        )
+
+        record_ws_done(
+            call_id,
+            port=port,
+            text_id=text_id,
+            token_count=token_count,
+            llm_ms=llm_ms,
+            decode_ms=round(decode_s * 1000),
+            total_ms=round(total_s * 1000),
+            wav_bytes=len(decoded.wav_bytes),
+            ts_text_recv=ts_text_recv,
+            ts_llm_start=ts_llm_start,
+            ts_tokens_ready=ts_tokens_ready,
+            ts_audio_sent=ts_audio_sent,
+        )
+
+    except Exception as e:
+        ts_err = _tsms()
+        print(f"[{ts_err}] :{port} {call_id}  ERROR: {e}", flush=True)
+        record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
+        async with send_lock:
+            try:
+                await ws.send(json.dumps({
+                    "type": "error", "call_id": call_id, "text_id": text_id,
+                    "error": str(e),
+                }))
+            except Exception:
+                pass
+
+
 async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
-    """Handle one persistent WebSocket connection (one call = one socket)."""
+    """Dispatch each incoming message as an independent asyncio Task."""
     peer = ws.remote_address
     conn_id = f"{peer[0]}:{peer[1]}"
     print(f"[{_ts()}] :{port} connected  peer={conn_id}", flush=True)
     record_ws_connection_open(conn_id, port=port)
+
+    send_lock = asyncio.Lock()
+    active_tasks: set[asyncio.Task] = set()
 
     try:
         async for raw in ws:
@@ -117,138 +227,37 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                await ws.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
+                async with send_lock:
+                    await ws.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
                 continue
 
             text = (data.get("text") or "").strip()
-            call_id = data.get("call_id") or f"{peer[0]}:{peer[1]}"
-            text_id = data.get("text_id") or str(uuid.uuid4())
             if not text:
-                await ws.send(json.dumps({
-                    "type": "error", "call_id": call_id, "text_id": text_id,
-                    "error": "Missing text",
-                }))
+                call_id = data.get("call_id") or conn_id
+                text_id = data.get("text_id") or str(uuid.uuid4())
+                async with send_lock:
+                    await ws.send(json.dumps({
+                        "type": "error", "call_id": call_id, "text_id": text_id,
+                        "error": "Missing text",
+                    }))
                 continue
 
-            text = normalize_text(text)
-
             ts_text_recv = _tsms()
-            _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
-            print(f"[{ts_text_recv}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
-
-            try:
-                synth = await _get_synthesizer()
-                t0 = time.perf_counter()
-                ts_llm_start = _tsms()
-                _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
-                audio_tokens = await asyncio.wait_for(synth.synthesize(text), timeout=30.0)
-                llm_s = round(time.perf_counter() - t0, 4)
-                llm_ms = round(llm_s * 1000)
-                ts_tokens_ready = _tsms()
-                _log(f"{ts_tokens_ready}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
-
-                token_count = audio_tokens.count("<|speech_token_")
-
-                # Save LLM output to JSONL
-                if _llm_out_log_file is not None:
-                    _llm_out_log_file.write(json.dumps({
-                        "ts": ts_tokens_ready,
-                        "call_id": call_id,
-                        "text_id": text_id,
-                        "port": port,
-                        "text": text,
-                        "audio_tokens": audio_tokens,
-                        "token_count": token_count,
-                        "llm_ms": llm_ms,
-                    }, ensure_ascii=False) + "\n")
-
-                # Batch decode: all concurrent requests are coalesced by
-                # TTSCodec's internal batch queue into one GPU forward pass.
-                codec = synth._tts_codec
-                ctx = synth._context_tokens
-                td = time.perf_counter()
-                wav_tensor = await asyncio.wait_for(codec.decode_async(audio_tokens, ctx), timeout=30.0)
-                decode_s = round(time.perf_counter() - td, 4)
-
-                tw = time.perf_counter()
-                decoded = tensor_to_wav(wav_tensor)
-                wav_s = round(time.perf_counter() - tw, 4)
-
-                record_call(
-                    call_id=call_id,
-                    text_id=text_id,
-                    port=port,
-                    text=text,
-                    token_count=token_count,
-                    llm_s=llm_s,
-                    decode_s=decode_s,
-                    wav_bytes=len(decoded.wav_bytes),
-                    ts=ts_tokens_ready,
-                )
-
-                if _audio_out_dir is not None:
-                    wav_file = _audio_out_dir / f"{text_id}.wav"
-                    wav_file.write_bytes(decoded.wav_bytes)
-                    print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
-
-                # Frame 1: JSON metadata (text)
-                await ws.send(json.dumps({
-                    "type": "audio",
-                    "call_id": call_id,
-                    "text_id": text_id,
-                    "text": text,
-                    "audio_tokens": audio_tokens,
-                    "sample_rate": SAMPLE_RATE,
-                    "wav_bytes": len(decoded.wav_bytes),
-                    "is_final": True,
-                    "llm_s": llm_s,
-                    "decode_s": decode_s,
-                }))
-                # Frame 2: raw WAV bytes (binary)
-                await ws.send(decoded.wav_bytes)
-                ts_audio_sent = _tsms()
-
-                total_s = llm_s + decode_s + wav_s
-                print(
-                    f"[{ts_audio_sent}] :{port} {call_id}  done"
-                    f"  llm={llm_ms}ms"
-                    f"  decode={round(decode_s*1000)}ms"
-                    f"  wav_enc={round(wav_s*1000)}ms"
-                    f"  total={round(total_s*1000)}ms"
-                    f"  tokens={token_count}"
-                    f"  wav={len(decoded.wav_bytes)}B",
-                    flush=True,
-                )
-
-                record_ws_done(
-                    call_id,
-                    port=port,
-                    text_id=text_id,
-                    token_count=token_count,
-                    llm_ms=llm_ms,
-                    decode_ms=round(decode_s * 1000),
-                    total_ms=round(total_s * 1000),
-                    wav_bytes=len(decoded.wav_bytes),
-                    ts_text_recv=ts_text_recv,
-                    ts_llm_start=ts_llm_start,
-                    ts_tokens_ready=ts_tokens_ready,
-                    ts_audio_sent=ts_audio_sent,
-                )
-
-            except Exception as e:
-                ts_err = _tsms()
-                print(f"[{ts_err}] :{port} {call_id}  ERROR: {e}", flush=True)
-                record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
-                await ws.send(json.dumps({
-                    "type": "error", "call_id": call_id, "text_id": text_id,
-                    "error": str(e),
-                }))
+            task = asyncio.create_task(
+                _handle_request(ws, send_lock, data, conn_id, port, ts_text_recv)
+            )
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
 
     except WebSocketException:
         pass  # client disconnected — normal
     except Exception as e:
         print(f"[{_ts()}] :{port} connection error: {e}", flush=True)
     finally:
+        for task in list(active_tasks):
+            task.cancel()
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
         record_ws_connection_close(conn_id, port=port)
         print(f"[{_ts()}] :{port} disconnected  peer={conn_id}", flush=True)
 
@@ -415,7 +424,9 @@ async def _http_ws_log(req: web.Request) -> web.Response:
 async def _http_metrics(req: web.Request) -> web.Response:
     """GET /metrics  — Prometheus scrape endpoint."""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    # aiohttp rejects content_type values that include charset (e.g. "text/plain; charset=utf-8")
+    ct = CONTENT_TYPE_LATEST.split(";")[0].strip()
+    return web.Response(body=generate_latest(), content_type=ct)
 
 
 async def _run_control_api(ctrl_port: int) -> None:

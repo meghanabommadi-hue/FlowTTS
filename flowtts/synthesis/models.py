@@ -29,7 +29,11 @@ Performance notes:
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import datetime
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -39,6 +43,17 @@ from flowtts.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
+# Tracks how many async_generate calls are in-flight at any moment.
+_llm_inflight = 0
+_llm_inflight_lock = threading.Lock()
+
+# Thread pool for CPU-bound tokenization so it never blocks the event loop.
+_tokenizer_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="tok")
+
+
+def _tsms() -> str:
+    return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
 
 class FlowTtsSynthesizer:
     """Loads sgl.Engine + TTSCodec once; synthesizes text → audio token string."""
@@ -46,6 +61,7 @@ class FlowTtsSynthesizer:
     def __init__(self) -> None:
         self._engine = None
         self._tts_codec = None
+        self._tokenizer = None      # HF tokenizer — used to pre-tokenize prompts off the event loop
         self._context_tokens: str = ""
         self._ref_speech_tokens = None
         self._sampling_params: dict = {}
@@ -120,10 +136,20 @@ class FlowTtsSynthesizer:
             "skip_special_tokens": False,
         }
 
+        # Load the HF tokenizer once so synthesize() can pre-tokenize prompts
+        # in a thread (avoiding the blocking tokenizer call inside sglang's
+        # async_generate → _tokenize_one_request path).
+        logger.info("loading_hf_tokenizer", path=model_path)
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=True
+        )
+
         self._tts_codec = tts_codec
         self._context_tokens = context_tokens
         self._ref_speech_tokens = ref_speech_tokens
         self._engine = engine
+        self._tokenizer = tokenizer
         self._sampling_params = sampling_params
         logger.info("synthesizer_ready")
 
@@ -177,19 +203,63 @@ class FlowTtsSynthesizer:
             text, self._context_tokens, self._ref_speech_tokens
         )
 
-        t0 = time.monotonic()
-        logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt))
+        # Pre-tokenize in a thread so the event loop isn't blocked.
+        # Passing input_ids= to async_generate skips sglang's internal
+        # synchronous tokenizer call (_tokenize_one_request line 403),
+        # which was serializing all concurrent requests on the event loop.
+        loop = asyncio.get_event_loop()
+        tok = self._tokenizer
+        input_ids: list[int] = await loop.run_in_executor(
+            _tokenizer_executor,
+            lambda: tok(prompt, return_tensors=None)["input_ids"],
+        )
 
-        result = await self._engine.async_generate(prompt, self._sampling_params)
-        # result = await self._engine.generate(prompt, self._sampling_params)
+        global _llm_inflight
+        with _llm_inflight_lock:
+            _llm_inflight += 1
+            inflight_at_start = _llm_inflight
+
+        t0 = time.monotonic()
+        ts_start = _tsms()
+        print(
+            f"[{ts_start}] llm_start  inflight={inflight_at_start}"
+            f"  text={text[:40]!r}  input_ids={len(input_ids)}",
+            flush=True,
+        )
+        logger.info(
+            "llm_call_start",
+            text_preview=text[:40],
+            prompt_len=len(prompt),
+            input_ids_len=len(input_ids),
+            inflight=inflight_at_start,
+            ts=ts_start,
+        )
+
+        result = await self._engine.async_generate(
+            input_ids=input_ids,
+            sampling_params=self._sampling_params,
+        )
         full_text = result["text"]
 
         duration = time.monotonic() - t0
+        ts_end = _tsms()
+        with _llm_inflight_lock:
+            _llm_inflight -= 1
+            inflight_at_end = _llm_inflight
+
+        print(
+            f"[{ts_end}] llm_end    inflight={inflight_at_end}"
+            f"  dur={round(duration, 3)}s  tokens={len(full_text)}"
+            f"  text={text[:40]!r}",
+            flush=True,
+        )
         logger.info(
             "llm_call_end",
             text_preview=text[:40],
             duration_seconds=round(duration, 4),
             token_len=len(full_text),
+            inflight=inflight_at_end,
+            ts=ts_end,
         )
         return full_text
 

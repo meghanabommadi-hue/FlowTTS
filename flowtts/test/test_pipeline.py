@@ -216,6 +216,7 @@ class RequestResult(NamedTuple):
     token_chars: int        # 0 for decoded/worker mode
     llm_s: Optional[float]
     decode_s: Optional[float]
+    sent_at: Optional[str]  # HH:MM:SS.mmm wall-clock when request was sent
 
 
 
@@ -258,9 +259,9 @@ async def _run_one(
                 **({"skip_decoder": True} if skip_decoder else {}),
             }
             await ws.send(json.dumps(req))
-            _log(req_id, port, "sent synthesize request")
+            sent_at = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            _log(req_id, port, f"sent  ts={sent_at}  text={text[:50]!r}")
 
-            _log(req_id, port, "waiting for WS response…")
             t0 = time.time()
             # Frame 1: JSON metadata
             raw = await ws.recv()
@@ -272,7 +273,7 @@ async def _run_one(
             if msg.get("type") == "error":
                 _log(req_id, port, f"FAIL gateway error: {msg.get('error')}")
                 return RequestResult(req_id, port, False, latency, None,
-                                     msg.get("error"), 0, 0, None, None)
+                                     msg.get("error"), 0, 0, None, None, sent_at)
 
             # Frame 2: raw WAV bytes
             wav_data = await ws.recv()
@@ -289,18 +290,18 @@ async def _run_one(
                 if not wav_data:
                     _log(req_id, port, f"FAIL empty WAV bytes")
                     return RequestResult(req_id, port, False, latency, None,
-                                         "empty WAV bytes", 0, token_chars, llm_s, decode_s)
+                                         "empty WAV bytes", 0, token_chars, llm_s, decode_s, sent_at)
                 wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
                 wav_path.write_bytes(wav_data)
             _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
-                                 None, wav_bytes_len, token_chars, llm_s, decode_s)
+                                 None, wav_bytes_len, token_chars, llm_s, decode_s, sent_at)
 
     except Exception as e:
         err = str(e) or type(e).__name__
         _log(req_id, port, f"FAIL {type(e).__name__}: {err}")
-        return RequestResult(req_id, port, False, 0.0, None, err, 0, 0, None, None)
+        return RequestResult(req_id, port, False, 0.0, None, err, 0, 0, None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -517,19 +518,43 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     lines.append(f"SUMMARY  mode={mode}  total={len(results)}  passed={len(passed)}  failed={len(failed)}")
     lines.append(f"{'='*70}")
 
-    header = f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  {'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
+    header = f"{'req':>4}  {'port':>5}  {'ok':>4}  {'sent_at':>12}  {'lat(s)':>7}  {'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}"
     lines.append(header)
-    lines.append("-" * 80)
+    lines.append("-" * 85)
 
-    for r in sorted(results, key=lambda x: x.req_id):
-        detail = str(r.wav_path.name) if r.wav_path else (r.error or "")
+    sorted_results = sorted(results, key=lambda x: x.req_id)
+    for r in sorted_results:
+        sent = r.sent_at or "-"
         lines.append(
             f"{r.req_id:>4}  {r.port:>5}  {'✓' if r.passed else '✗':>4}  "
+            f"{sent:>12}  "
             f"{r.latency_s:>7.3f}  "
             f"{r.llm_s if r.llm_s is not None else '-':>6}  "
             f"{r.decode_s if r.decode_s is not None else '-':>6}  "
-            f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
+            f"{r.wav_bytes:>8}  {r.token_chars:>7}"
         )
+
+    # Dispatch timeline — shows ms offset of each send relative to the first,
+    # making it immediately obvious whether all requests were fired in parallel.
+    def _parse_ts(s: str) -> int:
+        h, m, rest = s.split(":")
+        sec, ms = rest.split(".")
+        return int(h) * 3600000 + int(m) * 60000 + int(sec) * 1000 + int(ms)
+
+    timed_results = [(r, _parse_ts(r.sent_at)) for r in sorted_results if r.sent_at]
+    if len(timed_results) > 1:
+        t0_ms = min(ts for _, ts in timed_results)
+        t_max = max(ts for _, ts in timed_results)
+        spread_ms = t_max - t0_ms
+        lines.append(f"\n  dispatch timeline (ms offset from first send, spread={spread_ms}ms):")
+        for r, ts in timed_results:
+            offset = ts - t0_ms
+            bar = "█" * min(40, max(1, int(offset / max(1, spread_ms / 20))))
+            if offset == 0:
+                bar = "|"
+            lines.append(f"    req{r.req_id:03d}  +{offset:>5}ms  {bar}")
+        label = "parallel (<50ms)" if spread_ms < 50 else "sequential-ish (>=50ms)"
+        lines.append(f"  send spread: {spread_ms}ms  ({label})")
 
     if passed:
         lats  = [r.latency_s for r in passed]
@@ -548,6 +573,16 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         if llms and decs and len(llms) == len(decs):
             overhead = [l - d for l, d in zip(llms, decs)]
             lines.append(f"  llm - decode  : {_fmt(overhead)}  (net inference)")
+        # Parallelism check: if sglang batches all N requests, max ≈ min (finish together).
+        # If serial, max ≈ N × min. effective_batch = sum/max ≈ how many ran in parallel.
+        if llms and len(llms) > 1:
+            ratio = max(llms) / min(llms) if min(llms) > 0 else 0
+            effective_batch = round(sum(llms) / max(llms), 1)
+            lines.append(
+                f"  llm max/min   : {ratio:.2f}x  "
+                f"(1.0=perfect batch, {len(llms)}.0x=fully serial)  "
+                f"effective_parallel≈{effective_batch}"
+            )
         lines.append(f"{'─'*60}")
     if failed:
         lines.append(f"\nFailed requests:")
