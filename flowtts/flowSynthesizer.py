@@ -94,9 +94,9 @@ class FlowSynthesizer:
         self._ended = False
         self.is_ready = False
 
-        # input_queue  : str  (plain text to synthesize)
-        # output_queue : SynthesisResult | Exception
-        self.input_queue: asyncio.Queue[str] = asyncio.Queue()
+        # input_queue  : (text, text_id, future) — future is None for fire-and-forget callers
+        # output_queue : SynthesisResult | Exception  (for fire-and-forget / queue-based consumers)
+        self.input_queue: asyncio.Queue[tuple] = asyncio.Queue()
         self.output_queue: asyncio.Queue[SynthesisResult | Exception] = asyncio.Queue()
 
         # maps text_id → asyncio.Future so _receiver can resolve the right request
@@ -113,8 +113,8 @@ class FlowSynthesizer:
         self._task = asyncio.get_event_loop().create_task(self._run_loop())
 
     def send_text(self, text: str) -> None:
-        """Queue *text* for synthesis (non-blocking, thread-safe)."""
-        self.input_queue.put_nowait(text)
+        """Queue *text* for synthesis (non-blocking, fire-and-forget)."""
+        self.input_queue.put_nowait((text, str(uuid.uuid4()), None))
 
     def terminate(self) -> None:
         """Stop the client and cancel background tasks."""
@@ -164,10 +164,10 @@ class FlowSynthesizer:
     # ------------------------------------------------------------------
 
     async def _sender(self, ws) -> None:
-        """Read text from input_queue and send synthesize requests."""
+        """Read (text, text_id, future) from input_queue and send synthesize requests."""
         while not self._ended:
             try:
-                text = await asyncio.wait_for(
+                text, text_id, fut = await asyncio.wait_for(
                     self.input_queue.get(),
                     timeout=5.0,
                 )
@@ -177,7 +177,6 @@ class FlowSynthesizer:
             except asyncio.CancelledError:
                 return
 
-            text_id = str(uuid.uuid4())
             message = {
                 "type": "synthesize",
                 "call_id": self.call_id,
@@ -186,9 +185,9 @@ class FlowSynthesizer:
                 "timestamp": int(time.time() * 1000),
             }
 
-            # Register a future so the receiver can deliver the result
-            loop = asyncio.get_event_loop()
-            fut: asyncio.Future[SynthesisResult] = loop.create_future()
+            # Register the caller's future (or a dummy one for fire-and-forget)
+            if fut is None:
+                fut = asyncio.get_event_loop().create_future()
             self._pending[text_id] = fut
 
             try:
@@ -197,10 +196,10 @@ class FlowSynthesizer:
                     "FlowSynthesizer SENT text_id=%s text=%r", text_id, text[:60]
                 )
             except (WebSocketException, Exception) as e:
-                # Connection broke — put the text back and bail out
+                # Connection broke — put the item back and bail out
                 fut.cancel()
                 self._pending.pop(text_id, None)
-                self.input_queue.put_nowait(text)
+                self.input_queue.put_nowait((text, text_id, None))
                 self.logger.debug("FlowSynthesizer send error: %s", e)
                 return
 
@@ -286,8 +285,8 @@ class FlowSynthesizer:
     async def synthesize(self, text: str) -> SynthesisResult:
         """Send *text* and wait for the synthesized audio result.
 
-        This is a higher-level convenience wrapper around
-        ``send_text`` + ``output_queue.get()``.
+        Safe for concurrent calls — each call gets its own Future keyed by
+        text_id, so results are always delivered to the correct caller.
 
         Raises
         ------
@@ -297,44 +296,21 @@ class FlowSynthesizer:
             If ``request_timeout`` is set and exceeded.
         """
         text_id = str(uuid.uuid4())
-        message = {
-            "type": "synthesize",
-            "call_id": self.call_id,
-            "text_id": text_id,
-            "text": text,
-            "timestamp": int(time.time() * 1000),
-        }
+        fut: asyncio.Future[SynthesisResult] = asyncio.get_event_loop().create_future()
 
-        loop = asyncio.get_event_loop()
-        fut: asyncio.Future[SynthesisResult] = loop.create_future()
-        self._pending[text_id] = fut
+        # Enqueue (text, text_id, future) so _sender registers the future in
+        # _pending before sending, and _receiver resolves it on reply.
+        self.input_queue.put_nowait((text, text_id, fut))
 
-        # Find the active WebSocket connection via the running task — we need to
-        # send directly without going through the input_queue so we can match
-        # the future by text_id.  For simplicity, use send_text + poll output_queue
-        # and match by text_id.
-        fut.cancel()
-        self._pending.pop(text_id, None)
-
-        # Simpler path: use the queue and match by text_id
-        self.send_text(text)
-
-        # Poll output_queue for the matching result
-        deadline = (time.monotonic() + self.request_timeout) if self.request_timeout else None
-        while True:
-            remaining = (deadline - time.monotonic()) if deadline else None
-            try:
-                item = await asyncio.wait_for(
-                    self.output_queue.get(),
-                    timeout=remaining,
-                )
-            except asyncio.TimeoutError:
-                raise asyncio.TimeoutError(
-                    f"FlowSynthesizer: no response for {text!r} within {self.request_timeout}s"
-                )
-            if isinstance(item, Exception):
-                raise item
-            return item
+        try:
+            if self.request_timeout is not None:
+                return await asyncio.wait_for(asyncio.shield(fut), timeout=self.request_timeout)
+            return await fut
+        except asyncio.TimeoutError:
+            self._pending.pop(text_id, None)
+            raise asyncio.TimeoutError(
+                f"FlowSynthesizer: no response for {text!r} within {self.request_timeout}s"
+            )
 
 
 # ---------------------------------------------------------------------------
