@@ -133,15 +133,18 @@ class FlowTtsSynthesizer:
         # selected by model_runner.init_attention_backend() after model load.
         si = getattr(engine, "scheduler_info", {}) or {}
         sa = engine.server_args
+        # Read attention_backend directly from server_args (set by sglang after check_server_args())
+        # then confirm via get_server_info() which merges asdict(server_args) into the response.
+        resolved_attn = getattr(sa, "attention_backend", None) or "n/a"
+        mem = {}
         try:
             srv_info = engine.get_server_info()
-            # internal_states is per-worker; pick first scheduler's state
             internal = srv_info.get("internal_states", [{}])
             mem = internal[0].get("memory_usage", {}) if internal else {}
-            resolved_attn = srv_info.get("attention_backend", "n/a")
+            # get_server_info includes asdict(server_args) so attention_backend is a top-level key
+            resolved_attn = srv_info.get("attention_backend") or resolved_attn
         except Exception:
-            mem = {}
-            resolved_attn = "n/a (get_server_info failed)"
+            pass
 
         # ref_audio: inspect what we actually encoded
         ctx_token_count = context_tokens.count("<|context_token_")
@@ -165,11 +168,7 @@ class FlowTtsSynthesizer:
         print("=" * 60 + "\n", flush=True)
 
     async def synthesize(self, text: str) -> str:
-        """Return full audio token string for the given text.
-
-        The returned string looks like "<|speech_token_0|><|speech_token_1|>..."
-        which the decoder (ncodec TTSCodec.decode) converts to PCM.
-        """
+        """Return full audio token string for the given text."""
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
@@ -181,7 +180,6 @@ class FlowTtsSynthesizer:
         logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt))
 
         result = await self._engine.async_generate(prompt, self._sampling_params)
-        # result = await self._engine.generate(prompt, self._sampling_params)
         full_text = result["text"]
 
         duration = time.monotonic() - t0
@@ -192,6 +190,32 @@ class FlowTtsSynthesizer:
             token_len=len(full_text),
         )
         return full_text
+
+    async def synthesize_stream(self, text: str):
+        """Async generator yielding incremental speech token strings as the LLM produces them.
+
+        Each yielded value is a string fragment like "<|speech_token_42|><|speech_token_7|>..."
+        The final yield is an empty string signalling EOS.
+        """
+        if self._engine is None or self._tts_codec is None:
+            raise RuntimeError("FlowTtsSynthesizer not initialized")
+
+        prompt = self._tts_codec.format_prompt(
+            text, self._context_tokens, self._ref_speech_tokens
+        )
+
+        stream_params = {**self._sampling_params}
+        generator = await self._engine.async_generate(prompt, stream_params, stream=True)
+
+        prev_len = 0
+        async for chunk in generator:
+            full_so_far: str = chunk.get("text", "")
+            delta = full_so_far[prev_len:]
+            prev_len = len(full_so_far)
+            if delta:
+                yield delta
+        # signal end
+        yield ""
 
     @staticmethod
     def _default_context() -> str:

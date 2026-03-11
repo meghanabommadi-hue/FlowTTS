@@ -45,8 +45,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import datetime
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -68,6 +70,9 @@ logging.getLogger("websockets").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 _synthesizer: FlowTtsSynthesizer | None = None
+_wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
+_RE_SPEECH = re.compile(r"<\|speech_token_\d+\|>", re.ASCII)
+_STREAM_CHUNK_TOKENS = 50  # target speech tokens per decode+send chunk (100-150)
 _audio_out_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
 _llm_log: Path = Path(__file__).parents[1] / "llm.log"
@@ -102,6 +107,141 @@ async def _get_synthesizer() -> FlowTtsSynthesizer:
     return _synthesizer
 
 
+async def _handle_streaming_request(
+    ws: websockets.ServerConnection,
+    synth: "FlowTtsSynthesizer",
+    text: str,
+    call_id: str,
+    text_id: str,
+    port: int,
+    ts_text_recv: str,
+) -> None:
+    """Stream audio chunks to the client as the LLM produces speech tokens.
+
+    Accumulates speech tokens in a rolling buffer.  Every _STREAM_CHUNK_TOKENS
+    tokens the buffer is decoded to PCM and sent as two frames:
+      - JSON  { type:"audio_chunk", chunk_index, call_id, text_id, is_final }
+      - bytes  raw WAV for that chunk
+    A final { type:"audio_done", ... } JSON frame is sent after all chunks.
+    """
+    codec = synth._tts_codec
+    ctx   = synth._context_tokens
+
+    t0            = time.perf_counter()
+    ts_llm_start  = _tsms()
+    _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
+
+    buffer        = ""          # accumulates raw LLM delta text (may contain non-token chars)
+    token_buf     = []          # complete <|speech_token_N|> strings ready to decode
+    chunk_index   = 0
+    total_tokens  = 0
+    total_wav_b   = 0
+    decode_total  = 0.0
+    wav_total     = 0.0
+    first_chunk_sent = False
+
+    loop = asyncio.get_event_loop()
+
+    async def _flush_chunk(is_final: bool) -> None:
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent
+        if not token_buf:
+            return
+        chunk_tokens = "".join(token_buf)
+        token_buf.clear()
+
+        td = time.perf_counter()
+        wav_tensor = await codec.decode_async(chunk_tokens, ctx)
+        decode_total += time.perf_counter() - td
+
+        tw = time.perf_counter()
+        decoded = await loop.run_in_executor(_wav_executor, tensor_to_wav, wav_tensor)
+        wav_total += time.perf_counter() - tw
+
+        n_tok = chunk_tokens.count("<|speech_token_")
+        total_tokens += n_tok
+        total_wav_b  += len(decoded.wav_bytes)
+
+        ts_chunk = _tsms()
+        if not first_chunk_sent:
+            ttft = round((time.perf_counter() - t0) * 1000)
+            print(f"[{ts_chunk}] :{port} {call_id}  first_chunk  ttft={ttft}ms  tokens={n_tok}", flush=True)
+            first_chunk_sent = True
+
+        await ws.send(json.dumps({
+            "type":        "audio_chunk",
+            "call_id":     call_id,
+            "text_id":     text_id,
+            "chunk_index": chunk_index,
+            "sample_rate": SAMPLE_RATE,
+            "wav_bytes":   len(decoded.wav_bytes),
+            "tokens":      n_tok,
+            "is_final":    is_final,
+        }))
+        await ws.send(decoded.wav_bytes)
+        chunk_index += 1
+
+    try:
+        async for delta in synth.synthesize_stream(text):
+            if not delta:
+                # EOS signal — flush remainder
+                await _flush_chunk(is_final=True)
+                break
+
+            buffer += delta
+            # Extract all complete speech tokens from buffer; keep tail after last match.
+            last_end = 0
+            for m in _RE_SPEECH.finditer(buffer):
+                token_buf.append(m.group())
+                last_end = m.end()
+            if last_end:
+                buffer = buffer[last_end:]
+
+            if len(token_buf) >= _STREAM_CHUNK_TOKENS:
+                await _flush_chunk(is_final=False)
+
+        llm_s   = round(time.perf_counter() - t0, 4)
+        llm_ms  = round(llm_s * 1000)
+        total_s = round(time.perf_counter() - t0, 4)
+        ts_done = _tsms()
+        _log(f"{ts_done}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
+
+        await ws.send(json.dumps({
+            "type":        "audio_done",
+            "call_id":     call_id,
+            "text_id":     text_id,
+            "text":        text,
+            "chunks":      chunk_index,
+            "total_tokens": total_tokens,
+            "total_wav_bytes": total_wav_b,
+            "sample_rate": SAMPLE_RATE,
+            "llm_s":       llm_s,
+            "decode_s":    round(decode_total, 4),
+        }))
+
+        print(
+            f"[{ts_done}] :{port} {call_id}  stream_done"
+            f"  chunks={chunk_index}"
+            f"  tokens={total_tokens}"
+            f"  llm={llm_ms}ms"
+            f"  decode={round(decode_total*1000)}ms"
+            f"  wav_enc={round(wav_total*1000)}ms"
+            f"  total={round(total_s*1000)}ms"
+            f"  wav={total_wav_b}B",
+            flush=True,
+        )
+
+    except Exception as e:
+        ts_err = _tsms()
+        print(f"[{ts_err}] :{port} {call_id}  STREAM ERROR: {e}", flush=True)
+        record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
+        try:
+            await ws.send(json.dumps({
+                "type": "error", "call_id": call_id, "text_id": text_id, "error": str(e),
+            }))
+        except Exception:
+            pass
+
+
 async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     """Handle one persistent WebSocket connection (one call = one socket)."""
     peer = ws.remote_address
@@ -131,13 +271,19 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 continue
 
             text = normalize_text(text)
+            streaming = bool(data.get("streaming", False))
 
             ts_text_recv = _tsms()
-            _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
-            print(f"[{ts_text_recv}] :{port} {call_id}  req  {text[:60]!r}", flush=True)
+            _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  streaming={streaming}  text={text[:60]!r}")
+            print(f"[{ts_text_recv}] :{port} {call_id}  {'stream' if streaming else 'req'}  {text[:60]!r}", flush=True)
+
+            synth = await _get_synthesizer()
+
+            if streaming:
+                await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv)
+                continue
 
             try:
-                synth = await _get_synthesizer()
                 t0 = time.perf_counter()
                 ts_llm_start = _tsms()
                 _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
@@ -415,7 +561,8 @@ async def _http_ws_log(req: web.Request) -> web.Response:
 async def _http_metrics(req: web.Request) -> web.Response:
     """GET /metrics  — Prometheus scrape endpoint."""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    ct = CONTENT_TYPE_LATEST.split(";")[0].strip()
+    return web.Response(body=generate_latest(), content_type=ct)
 
 
 async def _run_control_api(ctrl_port: int) -> None:

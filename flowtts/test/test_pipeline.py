@@ -216,6 +216,7 @@ class RequestResult(NamedTuple):
     token_chars: int        # 0 for decoded/worker mode
     llm_s: Optional[float]
     decode_s: Optional[float]
+    ttff_s: Optional[float] = None  # time-to-first-chunk (streaming only)
 
 
 
@@ -235,6 +236,8 @@ async def _run_one(
     out_dir: Path,
     worker,       # DecoderWorker instance or None
     skip_decoder: bool = False,
+    streaming: bool = False,
+    save_chunks: bool = False,
 ) -> RequestResult:
     call_id = str(uuid.uuid4())
     text_id = str(uuid.uuid4())
@@ -256,12 +259,17 @@ async def _run_one(
                 "text_id": text_id,
                 "text": text,
                 **({"skip_decoder": True} if skip_decoder else {}),
+                **({"streaming": True} if streaming else {}),
             }
             await ws.send(json.dumps(req))
-            _log(req_id, port, "sent synthesize request")
+            _log(req_id, port, f"sent {'streaming' if streaming else 'synthesize'} request")
+
+            t0 = time.time()
+
+            if streaming:
+                return await _recv_streaming(req_id, port, out_dir, ws, call_id, text_id, t0, save_chunks)
 
             _log(req_id, port, "waiting for WS response…")
-            t0 = time.time()
             # Frame 1: JSON metadata
             raw = await ws.recv()
             latency = round(time.time() - t0, 3)
@@ -301,6 +309,134 @@ async def _run_one(
         err = str(e) or type(e).__name__
         _log(req_id, port, f"FAIL {type(e).__name__}: {err}")
         return RequestResult(req_id, port, False, 0.0, None, err, 0, 0, None, None)
+
+
+def _wav_chunks_to_combined(chunk_wavs: list[bytes]) -> bytes:
+    """Concatenate WAV chunks into one valid WAV file by decoding each and re-encoding."""
+    import io
+    import struct
+
+    def _pcm_from_wav(data: bytes) -> tuple[bytes, int, int]:
+        """Extract raw PCM from a WAV, return (pcm, sample_rate, num_channels)."""
+        # Minimal WAV parser: find 'data' chunk
+        if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            return data, 16000, 1  # fallback: treat as raw PCM
+        pos = 12
+        sr, ch = 16000, 1
+        while pos + 8 <= len(data):
+            chunk_id = data[pos:pos+4]
+            chunk_sz = struct.unpack_from("<I", data, pos+4)[0]
+            if chunk_id == b"fmt ":
+                ch = struct.unpack_from("<H", data, pos+10)[0]
+                sr = struct.unpack_from("<I", data, pos+12)[0]
+            elif chunk_id == b"data":
+                return data[pos+8 : pos+8+chunk_sz], sr, ch
+            pos += 8 + chunk_sz
+        return b"", sr, ch
+
+    if not chunk_wavs:
+        return b""
+    if len(chunk_wavs) == 1:
+        return chunk_wavs[0]
+
+    all_pcm = b""
+    sr, ch = 16000, 1
+    for wav in chunk_wavs:
+        pcm, sr, ch = _pcm_from_wav(wav)
+        all_pcm += pcm
+
+    # Build a new WAV header around the concatenated PCM
+    bits = 16
+    byte_rate = sr * ch * bits // 8
+    block_align = ch * bits // 8
+    data_sz = len(all_pcm)
+    buf = io.BytesIO()
+    buf.write(b"RIFF")
+    buf.write(struct.pack("<I", 36 + data_sz))
+    buf.write(b"WAVE")
+    buf.write(b"fmt ")
+    buf.write(struct.pack("<IHHIIHH", 16, 1, ch, sr, byte_rate, block_align, bits))
+    buf.write(b"data")
+    buf.write(struct.pack("<I", data_sz))
+    buf.write(all_pcm)
+    return buf.getvalue()
+
+
+async def _recv_streaming(
+    req_id: int,
+    port: int,
+    out_dir: Path,
+    ws,
+    call_id: str,
+    text_id: str,
+    t0: float,
+    save_chunks: bool,
+) -> RequestResult:
+    """Receive streamed audio_chunk frames; save concatenated WAV at audio_done."""
+    chunk_wavs: list[bytes] = []
+    llm_s = None
+    decode_s = None
+    total_tokens = 0
+    first_chunk_latency: Optional[float] = None
+    wav_path: Optional[Path] = None
+
+    try:
+        while True:
+            raw = await ws.recv()
+            if isinstance(raw, bytes):
+                continue  # unexpected binary before JSON header
+            msg = json.loads(raw)
+            mtype = msg.get("type")
+
+            if mtype == "error":
+                _log(req_id, port, f"FAIL stream error: {msg.get('error')}")
+                return RequestResult(req_id, port, False, round(time.time() - t0, 3), None,
+                                     msg.get("error"), 0, 0, None, None)
+
+            if mtype == "audio_chunk":
+                chunk_idx = msg.get("chunk_index", 0)
+                n_tok = msg.get("tokens", 0)
+                total_tokens += n_tok
+
+                wav_chunk = await ws.recv()
+                if isinstance(wav_chunk, str):
+                    wav_chunk = wav_chunk.encode()
+
+                if first_chunk_latency is None:
+                    first_chunk_latency = round(time.time() - t0, 3)
+                    _log(req_id, port, f"first_chunk  latency={first_chunk_latency}s  tokens={n_tok}")
+
+                chunk_wavs.append(wav_chunk)
+
+                if save_chunks:
+                    chunk_path = out_dir / f"req{req_id:04d}_port{port}_chunk{chunk_idx:03d}.wav"
+                    chunk_path.write_bytes(wav_chunk)
+
+            elif mtype == "audio_done":
+                latency   = round(time.time() - t0, 3)
+                llm_s     = msg.get("llm_s")
+                decode_s  = msg.get("decode_s")
+                chunks    = msg.get("chunks", len(chunk_wavs))
+                total_wav_b = sum(len(w) for w in chunk_wavs)
+
+                if chunk_wavs:
+                    wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
+                    wav_path.write_bytes(_wav_chunks_to_combined(chunk_wavs))
+
+                _log(req_id, port,
+                     f"OK  stream_done  chunks={chunks}  tokens={total_tokens}"
+                     f"  {total_wav_b}B → {wav_path.name if wav_path else '-'}"
+                     f"  ttff={first_chunk_latency}s  total={latency}s"
+                     f"  llm_s={llm_s}  decode_s={decode_s}")
+
+                return RequestResult(req_id, port, True, latency, wav_path,
+                                     None, total_wav_b, total_tokens * 20, llm_s, decode_s,
+                                     ttff_s=first_chunk_latency)
+
+    except Exception as e:
+        err = str(e) or type(e).__name__
+        _log(req_id, port, f"FAIL stream {type(e).__name__}: {err}")
+        return RequestResult(req_id, port, False, round(time.time() - t0, 3), None, err, 0, 0, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +527,8 @@ async def run_test(
     base_port: int = 8765,
     save_audio: Optional[str] = None,
     skip_decoder: bool = False,
+    streaming: bool = False,
+    save_chunks: bool = False,
     # external-server args
     ports: Optional[List[int]] = None,
 ) -> List[RequestResult]:
@@ -481,7 +619,7 @@ async def run_test(
 
     tasks = [
         _run_one(i, routing_ports[i % len(routing_ports)], mode, out_dir, worker,
-                 skip_decoder=skip_decoder)
+                 skip_decoder=skip_decoder, streaming=streaming, save_chunks=save_chunks)
         for i in range(n_requests)
     ]
     results: List[RequestResult] = await asyncio.gather(*tasks)
@@ -517,16 +655,23 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     lines.append(f"SUMMARY  mode={mode}  total={len(results)}  passed={len(passed)}  failed={len(failed)}")
     lines.append(f"{'='*70}")
 
-    header = f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  {'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
+    has_ttff = any(r.ttff_s is not None for r in results)
+    header = (
+        f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  "
+        + (f"{'ttff(s)':>7}  " if has_ttff else "")
+        + f"{'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
+    )
     lines.append(header)
-    lines.append("-" * 80)
+    lines.append("-" * (88 if has_ttff else 80))
 
     for r in sorted(results, key=lambda x: x.req_id):
         detail = str(r.wav_path.name) if r.wav_path else (r.error or "")
+        ttff_col = (f"{r.ttff_s:>7.3f}  " if r.ttff_s is not None else f"{'─':>7}  ") if has_ttff else ""
         lines.append(
             f"{r.req_id:>4}  {r.port:>5}  {'✓' if r.passed else '✗':>4}  "
             f"{r.latency_s:>7.3f}  "
-            f"{r.llm_s if r.llm_s is not None else '-':>6}  "
+            + ttff_col
+            + f"{r.llm_s if r.llm_s is not None else '-':>6}  "
             f"{r.decode_s if r.decode_s is not None else '-':>6}  "
             f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
         )
@@ -535,6 +680,7 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         lats  = [r.latency_s for r in passed]
         llms  = [r.llm_s     for r in passed if r.llm_s    is not None]
         decs  = [r.decode_s  for r in passed if r.decode_s is not None]
+        ttffs = [r.ttff_s    for r in passed if r.ttff_s   is not None]
 
         def _fmt(vals: list, unit: str = "s") -> str:
             if not vals:
@@ -543,6 +689,8 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
 
         lines.append(f"\n{'─'*60}")
         lines.append(f"  total latency : {_fmt(lats)}")
+        if ttffs:
+            lines.append(f"  time-to-first : {_fmt(ttffs)}  (first audio chunk)")
         lines.append(f"  llm           : {_fmt(llms)}")
         lines.append(f"  decoder       : {_fmt(decs)}")
         if llms and decs and len(llms) == len(decs):
@@ -635,6 +783,9 @@ def _resolve_ports(
 async def main(args: argparse.Namespace) -> None:
     out_dir = _make_out_dir()
 
+    streaming   = getattr(args, "streaming", False)
+    save_chunks = getattr(args, "save_chunks", False)
+
     if args.launch:
         results = await run_test(
             args.mode, args.requests, out_dir,
@@ -644,6 +795,8 @@ async def main(args: argparse.Namespace) -> None:
             base_port=args.base_port,
             save_audio=args.save_audio,
             skip_decoder=args.skip_decoder,
+            streaming=streaming,
+            save_chunks=save_chunks,
         )
     else:
         # Prefer ctrl API for port discovery if available and no explicit port list given
@@ -660,6 +813,8 @@ async def main(args: argparse.Namespace) -> None:
             concurrency=args.concurrency,
             base_port=args.base_port,
             ports=port_list,
+            streaming=streaming,
+            save_chunks=save_chunks,
         )
 
     ok = _print_summary(results, args.mode, out_dir)
@@ -692,6 +847,10 @@ if __name__ == "__main__":
                         help="Pass --save-audio DIR to the launched server")
     parser.add_argument("--skip-decoder", dest="skip_decoder", action="store_true", default=False,
                         help="Send skip_decoder=true in each WS request (LLM only, no WAV decode)")
+    parser.add_argument("--streaming", action="store_true", default=False,
+                        help="Use streaming mode: server sends audio chunks as LLM produces tokens")
+    parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
+                        help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
 
     # External-server port selection
     pg = parser.add_mutually_exclusive_group()

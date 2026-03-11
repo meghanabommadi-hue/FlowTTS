@@ -86,7 +86,7 @@ class DecoderSettings(BaseModel):
     batch_timeout_ms: float = 1.0   # ms to wait collecting a batch (longer = better packing)
     gpu_chunk_size: int = 90         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
+    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 
 class WebSocketSettings(BaseModel):

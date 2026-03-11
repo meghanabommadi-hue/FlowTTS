@@ -120,19 +120,23 @@ class AudioTokenizer():
         missing_keys, unexpected_keys = self.detokenizer.load_state_dict(state_dict, strict=False)
         self.detokenizer = self.detokenizer.eval().float().to("cuda:0").half()
 
+        self._trt_max_t: int | None = None
+        self._fp16_fallback = None
         if use_trt:
-            trt_model = self._load_trt(gpu_chunk_size, model_path)
+            trt_model, trt_max_t = self._load_trt(gpu_chunk_size, model_path)
             if trt_model is not None:
+                self._fp16_fallback = self.detokenizer  # keep FP16 for oversized batches
                 self.detokenizer = trt_model
+                self._trt_max_t = trt_max_t
                 return
             print("[TRT] Falling back to plain FP16 decoder.")
 
     def _load_trt(self, gpu_chunk_size: int, model_path: str):
-        """Load a pre-compiled TRT .ep engine. Returns the loaded model or None."""
+        """Load a pre-compiled TRT .ep engine. Returns (model, max_T) or (None, None)."""
         cache_path = Path(model_path).parent / f"decoder_trt_b{gpu_chunk_size}.ep"
         if not cache_path.exists():
             print(f"[TRT] No cached engine at {cache_path}. Falling back.")
-            return None
+            return None, None
 
         print(f"[TRT] Loading cached engine: {cache_path}")
         try:
@@ -141,11 +145,41 @@ class AudioTokenizer():
             loaded = torch_tensorrt.load(str(cache_path))
             if hasattr(loaded, "module"):
                 loaded = loaded.module()
-            print("[TRT] Engine loaded successfully.")
-            return loaded
+
+            # Try to read the max sequence-length (T) from the TRT profile so we
+            # can fall back gracefully for longer inputs.
+            max_t = None
+            try:
+                raw = loaded
+                if hasattr(raw, "_model"):
+                    raw = raw._model
+                if hasattr(raw, "engine"):
+                    eng = raw.engine
+                    for i in range(eng.num_io_tensors):
+                        name = eng.get_tensor_name(i)
+                        if eng.get_tensor_mode(name).name == "INPUT":
+                            shape = eng.get_tensor_profile_shape(name, 0)
+                            # shape is a tuple of (min, opt, max) each a tuple/list
+                            max_t = int(shape[2][-1])  # last dim of max shape
+                            break
+            except Exception:
+                pass
+            if max_t:
+                print(f"[TRT] Engine loaded successfully. max_T={max_t}")
+            else:
+                print("[TRT] Engine loaded successfully. (max_T unknown — using 350 as default)")
+                max_t = 350
+            return loaded, max_t
         except Exception as e:
             print(f"[TRT] Load failed ({e}). Falling back.")
-            return None
+            return None, None
 
     def decode(self, x):
+        # If TRT is loaded and input T exceeds its profile, fall back to FP16.
+        if (
+            self._trt_max_t is not None
+            and x.shape[-1] > self._trt_max_t
+            and hasattr(self, "_fp16_fallback")
+        ):
+            return self._fp16_fallback(x)
         return self.detokenizer(x)
