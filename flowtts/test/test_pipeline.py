@@ -55,6 +55,8 @@ from typing import List, NamedTuple, Optional
 
 import websockets
 
+from flowtts.core.config import settings as _settings
+
 # ---------------------------------------------------------------------------
 # Output directory
 # ---------------------------------------------------------------------------
@@ -783,7 +785,9 @@ def _resolve_ports(
 async def main(args: argparse.Namespace) -> None:
     out_dir = _make_out_dir()
 
-    streaming   = getattr(args, "streaming", False)
+    streaming   = getattr(args, "streaming", None)
+    if streaming is None:
+        streaming = _settings.streaming.enabled
     save_chunks = getattr(args, "save_chunks", False)
 
     if args.launch:
@@ -847,8 +851,8 @@ if __name__ == "__main__":
                         help="Pass --save-audio DIR to the launched server")
     parser.add_argument("--skip-decoder", dest="skip_decoder", action="store_true", default=False,
                         help="Send skip_decoder=true in each WS request (LLM only, no WAV decode)")
-    parser.add_argument("--streaming", action="store_true", default=False,
-                        help="Use streaming mode: server sends audio chunks as LLM produces tokens")
+    parser.add_argument("--streaming", action="store_true", default=None,
+                        help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
 

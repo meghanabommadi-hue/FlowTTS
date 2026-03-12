@@ -18,12 +18,21 @@ python3 -m flowtts.test.open_ports --n 40
 # Full pipeline (LLM + decoder, returns WAV)
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75
 
+# Streaming — audio chunks sent as they are generated (shows time-to-first-chunk)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
+
+# Streaming + save each chunk as an individual WAV file
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming --save-chunks
+
 # LLM only — no decoder, measure pure generation latency
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-decoder
 ```
 
 - Auto-discovers all open ports from the server
 - Assigns exactly 1 request per port (round-robin matches when requests == ports)
+- `--streaming` uses the streaming pipeline: LLM tokens → decoder → WAV in chunks; summary shows `ttff(s)` (time to first audio chunk) per request
+- `--save-chunks` (requires `--streaming`) saves each chunk WAV individually alongside the combined output
+- Streaming chunk size, crossfade, and fade-out are configured in `flowtts/core/config.py → StreamingSettings` (or via env vars)
 - `--skip-decoder` sends `skip_decoder=true` per-request to the running server (no WAV decode, tokens only)
 
 ---
@@ -126,3 +135,5 @@ FLOWTTS_DECODER__USE_TRT=true cd /root/FlowTTS && bash run.sh --ports 1
 - WAV output saved to `/root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/`
 - `--skip-decoder` skips ONNX/GPU decode — returns tokens only, no audio_base64
 - Decoder config lives in `DecoderSettings` (`max_batch`, `gpu_chunk_size`, `onnx_workers`, `use_trt`)
+- Streaming config lives in `StreamingSettings` (`chunk_tokens`, `crossfade_samples`, `fade_out_samples`)
+  - Override via env: `FLOWTTS_STREAMING__CHUNK_TOKENS=50`, `FLOWTTS_STREAMING__CROSSFADE_SAMPLES=0`, `FLOWTTS_STREAMING__FADE_OUT_SAMPLES=480`

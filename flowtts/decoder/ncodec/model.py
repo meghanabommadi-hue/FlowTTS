@@ -169,7 +169,7 @@ class AudioDecoder:
             T = spch.shape[1]
             spch_batch[i, :T] = spch[0]
             if T < max_spch:
-                spch_batch[i, T:] = spch[0, -1]  # pad with last real token, not 0
+                spch_batch[i, T:] = 2  # pad with silence token (empirically verified: RMS ~0.00035)
 
         out = sess.run(
             ["preprocessed_output"],
@@ -223,14 +223,13 @@ class AudioDecoder:
         # --- Phase 2: group by T, batch each group — no cross-item padding ---
         # 1 speech token = 320 audio samples at 16 kHz (upsample factor 8*5*4*2).
         # We know real_tokens per item, so we cut exactly real_tokens*320 + tail.
-        _UPSAMPLE    = 320
-        _TAIL_SAMPS  = 1600  # 100ms safety tail after last real token
-        _TRIM_TOKENS = 3     # remove this many tokens from the end to cancel noise onset
+        _UPSAMPLE   = 320
+        _TAIL_SAMPS = 480   # 30ms safety tail after last real token
 
         from collections import defaultdict as _dd
-        groups: dict = _dd(list)  # T_feat -> [(orig_idx, tensor, real_tokens, was_padded)]
-        for i, (o, real_tok, was_padded) in enumerate(onnx_outs):
-            groups[o.shape[2]].append((i, o, real_tok, was_padded))
+        groups: dict = _dd(list)  # T_feat -> [(orig_idx, tensor, real_tokens)]
+        for i, (o, real_tok, _) in enumerate(onnx_outs):
+            groups[o.shape[2]].append((i, o, real_tok))
 
         chunk    = self._gpu_chunk_size
         gpu_outs: list = [None] * B
@@ -238,24 +237,14 @@ class AudioDecoder:
             for T_val, items in groups.items():
                 for sub_start in range(0, len(items), chunk):
                     sub = items[sub_start : sub_start + chunk]
-                    indices    = [idx        for idx, _, _, _  in sub]
-                    real_toks  = [rt         for _,   _, rt, _ in sub]
-                    padded     = [wp         for _,   _, _, wp in sub]
-                    x_batch    = torch.cat([o for _, o, _, _ in sub], dim=0)
+                    indices   = [idx for idx, _, _  in sub]
+                    real_toks = [rt  for _,   _, rt in sub]
+                    x_batch   = torch.cat([o for _, o, _ in sub], dim=0)
                     with torch.cuda.stream(self._stream):
                         lowres = self.audio_detokenizer.decode(x_batch)
                         for li, gi in enumerate(indices):
-                            wav = lowres[li].squeeze(0)
-                            # Only trim noise-onset tokens when padding was applied AND
-                            # the sentence is long enough that 3 tokens is not a big cut.
-                            # Single-sentence batches (no padding) and short sentences skip trim.
-                            if padded[li] and real_toks[li] >= 20:
-                                trim = _TRIM_TOKENS
-                            elif padded[li]:
-                                trim = 1  # short padded sentence: trim only 1 token
-                            else:
-                                trim = 0  # not padded: no trim needed
-                            keep = min(wav.numel(), (real_toks[li] - trim) * _UPSAMPLE + _TAIL_SAMPS)
+                            wav  = lowres[li].squeeze(0)
+                            keep = min(wav.numel(), real_toks[li] * _UPSAMPLE + _TAIL_SAMPS)
                             gpu_outs[gi] = wav[:keep]
             self._stream.synchronize()
         _t2 = _time.perf_counter()

@@ -38,6 +38,23 @@ def resample_audio(
     return np.interp(indices, np.arange(len(audio)), audio).astype(audio.dtype)
 
 
+def fade_out(
+    audio: np.ndarray,
+    fade_samples: int,
+) -> np.ndarray:
+    """Apply a linear fade-out to the last *fade_samples* of *audio*.
+
+    Useful for suppressing codec tail noise on non-final streaming chunks.
+    If fade_samples >= len(audio) the entire array is faded.
+    """
+    if fade_samples <= 0 or len(audio) == 0:
+        return audio
+    fade_samples = min(fade_samples, len(audio))
+    out = audio.copy()
+    out[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples, dtype=audio.dtype)
+    return out
+
+
 def crossfade(
     chunk_a: np.ndarray,
     chunk_b: np.ndarray,

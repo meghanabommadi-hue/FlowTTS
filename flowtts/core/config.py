@@ -89,6 +89,26 @@ class DecoderSettings(BaseModel):
     use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 
+class StreamingSettings(BaseModel):
+    """Streaming audio chunk configuration."""
+
+    # Set to True to make streaming the default mode (no --streaming flag needed).
+    enabled: bool = True
+
+    # Number of speech tokens accumulated before decoding and sending a chunk.
+    # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
+    # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
+    chunk_tokens: int = 30
+
+    # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
+    # 320 = 20ms. Set to 0 to disable crossfade.
+    crossfade_samples: int = 400
+
+    # Linear fade-out applied to the tail of each non-final chunk to suppress
+    # codec boundary noise (samples at 16 kHz). 480 = 30ms.
+    fade_out_samples: int = 160
+
+
 class WebSocketSettings(BaseModel):
     """Gateway WebSocket server settings."""
 
@@ -104,6 +124,7 @@ class Settings(BaseSettings):
     ws: WebSocketSettings = WebSocketSettings()
     tts_model: TtsModelSettings = TtsModelSettings()
     decoder: DecoderSettings = DecoderSettings()
+    streaming: StreamingSettings = StreamingSettings()
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):

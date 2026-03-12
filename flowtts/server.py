@@ -50,6 +50,8 @@ import datetime
 import json
 import re
 import time
+
+import numpy as np
 import uuid
 from pathlib import Path
 
@@ -62,6 +64,7 @@ from websockets.exceptions import WebSocketException
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
 from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot, record_port_change
+from flowtts.processing.audio_processing import crossfade, fade_out  # noqa: F401 (kept for future use)
 from flowtts.processing.text_normalize import normalize_text
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
@@ -72,9 +75,27 @@ logging.getLogger("aiohttp").setLevel(logging.WARNING)
 _synthesizer: FlowTtsSynthesizer | None = None
 _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
 _RE_SPEECH = re.compile(r"<\|speech_token_\d+\|>", re.ASCII)
-_STREAM_CHUNK_TOKENS = 50  # target speech tokens per decode+send chunk (100-150)
+_STREAM_CHUNK_TOKENS = settings.streaming.chunk_tokens
+_CROSSFADE_SAMPLES   = settings.streaming.crossfade_samples
+_FADE_OUT_SAMPLES    = settings.streaming.fade_out_samples
 _audio_out_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
+
+# Rolling RTF tracking (thread-safe via GIL for simple int/float ops)
+_rtf_count: int   = 0
+_rtf_sum:   float = 0.0
+
+
+def _record_rtf(total_s: float, tokens: int) -> float:
+    """Record RTF for one request, return current avg RTF."""
+    global _rtf_count, _rtf_sum
+    if tokens <= 0:
+        return 0.0
+    audio_s = tokens * 320 / 16000
+    rtf = total_s / audio_s
+    _rtf_count += 1
+    _rtf_sum   += rtf
+    return _rtf_sum / _rtf_count
 _llm_log: Path = Path(__file__).parents[1] / "llm.log"
 _llm_log_file = None  # opened once in main()
 _llm_out_log: Path = Path(__file__).parents[1] / "monitoring" / "llm_outputs.jsonl"
@@ -133,6 +154,8 @@ async def _handle_streaming_request(
 
     buffer        = ""          # accumulates raw LLM delta text (may contain non-token chars)
     token_buf     = []          # complete <|speech_token_N|> strings ready to decode
+    overlap_tokens: list = []   # tail tokens from previous chunk prepended for codec context
+    _OVERLAP      = 4           # tokens prepended for conv context; their audio is discarded
     chunk_index   = 0
     total_tokens  = 0
     total_wav_b   = 0
@@ -143,21 +166,34 @@ async def _handle_streaming_request(
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens
         if not token_buf:
             return
-        chunk_tokens = "".join(token_buf)
+
+        real_tokens   = list(token_buf)
         token_buf.clear()
+        decode_tokens = overlap_tokens + real_tokens
+        chunk_tokens  = "".join(decode_tokens)
+        n_overlap     = len(overlap_tokens)
+        # Keep last _OVERLAP tokens of this chunk as overlap for the next chunk
+        overlap_tokens = real_tokens[-_OVERLAP:]
 
         td = time.perf_counter()
         wav_tensor = await codec.decode_async(chunk_tokens, ctx)
         decode_total += time.perf_counter() - td
 
         tw = time.perf_counter()
-        decoded = await loop.run_in_executor(_wav_executor, tensor_to_wav, wav_tensor)
+
+        pcm = np.asarray(wav_tensor, dtype=np.float32).squeeze()
+        # Discard the audio corresponding to overlap tokens prepended for context
+        if n_overlap > 0:
+            discard = n_overlap * 320  # 1 token = 320 samples at 16kHz
+            pcm = pcm[discard:]
+
+        decoded = await loop.run_in_executor(_wav_executor, tensor_to_wav, pcm)
         wav_total += time.perf_counter() - tw
 
-        n_tok = chunk_tokens.count("<|speech_token_")
+        n_tok = len(real_tokens)
         total_tokens += n_tok
         total_wav_b  += len(decoded.wav_bytes)
 
@@ -196,7 +232,7 @@ async def _handle_streaming_request(
             if last_end:
                 buffer = buffer[last_end:]
 
-            if len(token_buf) >= _STREAM_CHUNK_TOKENS:
+            while len(token_buf) >= _STREAM_CHUNK_TOKENS:
                 await _flush_chunk(is_final=False)
 
         llm_s   = round(time.perf_counter() - t0, 4)
@@ -204,6 +240,10 @@ async def _handle_streaming_request(
         total_s = round(time.perf_counter() - t0, 4)
         ts_done = _tsms()
         _log(f"{ts_done}  OUT  port={port}  text_id={text_id}  call_id={call_id}  llm_ms={llm_ms}")
+
+        avg_rtf = _record_rtf(total_s, total_tokens)
+        audio_s = total_tokens * 320 / 16000
+        rtf     = total_s / audio_s if audio_s > 0 else 0.0
 
         await ws.send(json.dumps({
             "type":        "audio_done",
@@ -216,6 +256,8 @@ async def _handle_streaming_request(
             "sample_rate": SAMPLE_RATE,
             "llm_s":       llm_s,
             "decode_s":    round(decode_total, 4),
+            "rtf":         round(rtf, 3),
+            "avg_rtf":     round(avg_rtf, 3),
         }))
 
         print(
@@ -226,7 +268,9 @@ async def _handle_streaming_request(
             f"  decode={round(decode_total*1000)}ms"
             f"  wav_enc={round(wav_total*1000)}ms"
             f"  total={round(total_s*1000)}ms"
-            f"  wav={total_wav_b}B",
+            f"  wav={total_wav_b}B"
+            f"  rtf={rtf:.3f}"
+            f"  avg_rtf={avg_rtf:.3f}",
             flush=True,
         )
 
@@ -271,7 +315,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 continue
 
             text = normalize_text(text)
-            streaming = bool(data.get("streaming", False))
+            streaming = bool(data.get("streaming", True))
 
             ts_text_recv = _tsms()
             _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  streaming={streaming}  text={text[:60]!r}")
@@ -355,6 +399,9 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 ts_audio_sent = _tsms()
 
                 total_s = llm_s + decode_s + wav_s
+                avg_rtf = _record_rtf(total_s, token_count)
+                audio_s = token_count * 320 / 16000
+                rtf     = total_s / audio_s if audio_s > 0 else 0.0
                 print(
                     f"[{ts_audio_sent}] :{port} {call_id}  done"
                     f"  llm={llm_ms}ms"
@@ -362,7 +409,9 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     f"  wav_enc={round(wav_s*1000)}ms"
                     f"  total={round(total_s*1000)}ms"
                     f"  tokens={token_count}"
-                    f"  wav={len(decoded.wav_bytes)}B",
+                    f"  wav={len(decoded.wav_bytes)}B"
+                    f"  rtf={rtf:.3f}"
+                    f"  avg_rtf={avg_rtf:.3f}",
                     flush=True,
                 )
 
