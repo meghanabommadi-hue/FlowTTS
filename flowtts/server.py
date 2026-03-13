@@ -178,6 +178,7 @@ async def _handle_streaming_request(
             "wav_bytes":   len(decoded.wav_bytes),
             "tokens":      n_tok,
             "is_final":    is_final,
+            "cache_hit":   False,
         }))
         await ws.send(decoded.wav_bytes)
         chunk_index += 1
@@ -218,6 +219,7 @@ async def _handle_streaming_request(
             "sample_rate": SAMPLE_RATE,
             "llm_s":       llm_s,
             "decode_s":    round(decode_total, 4),
+            "cache_hit":   False,
         }))
 
         print(
@@ -371,6 +373,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     "is_final": True,
                     "llm_s": llm_s,
                     "decode_s": decode_s,
+                    "cache_hit": False,
                 }))
                 # Frame 2: raw WAV bytes (binary)
                 await ws.send(decoded.wav_bytes)

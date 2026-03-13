@@ -107,7 +107,7 @@ class Settings(BaseSettings):
 
     # Directory of pre-generated WAV files named by SHA256 of raw transcript.
     # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
-    wav_cache_dir: str | None = None
+    wav_cache_dir: str | None = "/home/ubuntu/FlowTTS/cached_data/cached_audio_files"
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):
