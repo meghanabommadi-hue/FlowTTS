@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     tts_model: TtsModelSettings = TtsModelSettings()
     decoder: DecoderSettings = DecoderSettings()
 
+    # Directory of pre-generated WAV files named by SHA256 of raw transcript.
+    # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
+    wav_cache_dir: str | None = None
+
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):
         host: str = "localhost"

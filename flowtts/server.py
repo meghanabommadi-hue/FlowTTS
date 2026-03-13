@@ -47,6 +47,7 @@ import argparse
 import asyncio
 import concurrent.futures
 import datetime
+import hashlib
 import json
 import re
 import time
@@ -74,6 +75,7 @@ _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name
 _RE_SPEECH = re.compile(r"<\|speech_token_\d+\|>", re.ASCII)
 _STREAM_CHUNK_TOKENS = 50  # target speech tokens per decode+send chunk (100-150)
 _audio_out_dir: Path | None = None
+_wav_cache_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
 _llm_log: Path = Path(__file__).parents[1] / "llm.log"
 _llm_log_file = None  # opened once in main()
@@ -269,6 +271,26 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     "error": "Missing text",
                 }))
                 continue
+
+            # Cache lookup: check for pre-generated WAV keyed by SHA256 of raw text
+            if _wav_cache_dir is not None:
+                text_hash = hashlib.sha256(text.encode()).hexdigest()
+                cached_wav = _wav_cache_dir / f"{text_hash}.wav"
+                if cached_wav.exists():
+                    wav_bytes = cached_wav.read_bytes()
+                    print(f"[{_ts()}] :{port} {call_id}  cache_hit  {text[:60]!r}", flush=True)
+                    await ws.send(json.dumps({
+                        "type": "audio",
+                        "call_id": call_id,
+                        "text_id": text_id,
+                        "text": text,
+                        "sample_rate": SAMPLE_RATE,
+                        "wav_bytes": len(wav_bytes),
+                        "is_final": True,
+                        "cache_hit": True,
+                    }))
+                    await ws.send(wav_bytes)
+                    continue
 
             text = normalize_text(text)
             streaming = bool(data.get("streaming", False))
@@ -627,6 +649,11 @@ def main() -> None:
         _audio_out_dir = Path(args.save_audio)
         _audio_out_dir.mkdir(parents=True, exist_ok=True)
         print(f"[FlowTTS] Saving audio to {_audio_out_dir}/", flush=True)
+
+    global _wav_cache_dir
+    if settings.wav_cache_dir:
+        _wav_cache_dir = Path(settings.wav_cache_dir)
+        print(f"[FlowTTS] WAV cache: {_wav_cache_dir}/", flush=True)
 
     try:
         asyncio.run(run_server(args.base_port, args.ports, args.ctrl_port))
