@@ -37,8 +37,9 @@ class TtsModelSettings(BaseModel):
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
-        # ref_audio: str = "/home/ubuntu/FlowTTS/cavit.wav"
+        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        # ref_audio: str = "/home/ubuntu/FlowTTS/diff_voices_and_cache/aakash_aryan.wav"
+        ref_audio: str = "/home/ubuntu/FlowTTS/diff_voices_and_cache/krishna.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -56,7 +57,7 @@ class TtsModelSettings(BaseModel):
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 1024                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.0               # greedy — fastest, deterministic
+    temperature: float = 0.8               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
     repetition_penalty: float = 1.6
@@ -87,7 +88,7 @@ class DecoderSettings(BaseModel):
     batch_timeout_ms: float = 1.0   # ms to wait collecting a batch (longer = better packing)
     gpu_chunk_size: int = 90         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
+    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 
 class WebSocketSettings(BaseModel):

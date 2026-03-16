@@ -104,7 +104,7 @@ async def main() -> None:
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Parallel WS requests (default: 1)")
     parser.add_argument("--output-dir", type=Path, default=Path("cached_audio_files"),
-                        help="Output directory (default: ./cached_audio_files)")
+                        help="Output directory (default: ./cached_data_vikram)")
     args = parser.parse_args()
 
     if not args.input.is_file():

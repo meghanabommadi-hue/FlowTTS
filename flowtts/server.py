@@ -414,8 +414,8 @@ async def _http_ws_log(req: web.Request) -> web.Response:
 
 async def _http_metrics(req: web.Request) -> web.Response:
     """GET /metrics  — Prometheus scrape endpoint."""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    return web.Response(body=generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    from prometheus_client import generate_latest
+    return web.Response(body=generate_latest(), content_type="text/plain", charset="utf-8")
 
 
 async def _run_control_api(ctrl_port: int) -> None:
