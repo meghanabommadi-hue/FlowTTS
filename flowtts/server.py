@@ -282,16 +282,30 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     wav_bytes = cached_wav.read_bytes()
                     print(f"[{_ts()}] :{port} {call_id}  cache_hit  {text[:60]!r}", flush=True)
                     await ws.send(json.dumps({
-                        "type": "audio",
-                        "call_id": call_id,
-                        "text_id": text_id,
-                        "text": text,
+                        "type":        "audio_chunk",
+                        "call_id":     call_id,
+                        "text_id":     text_id,
+                        "chunk_index": 0,
                         "sample_rate": SAMPLE_RATE,
-                        "wav_bytes": len(wav_bytes),
-                        "is_final": True,
-                        "cache_hit": True,
+                        "wav_bytes":   len(wav_bytes),
+                        "tokens":      0,
+                        "is_final":    True,
+                        "cache_hit":   True,
                     }))
                     await ws.send(wav_bytes)
+                    await ws.send(json.dumps({
+                        "type":            "audio_done",
+                        "call_id":         call_id,
+                        "text_id":         text_id,
+                        "text":            text,
+                        "chunks":          1,
+                        "total_tokens":    0,
+                        "total_wav_bytes": len(wav_bytes),
+                        "sample_rate":     SAMPLE_RATE,
+                        "llm_s":           0.0,
+                        "decode_s":        0.0,
+                        "cache_hit":       True,
+                    }))
                     continue
 
             text = normalize_text(text)
