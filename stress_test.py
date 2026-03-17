@@ -33,26 +33,38 @@ import websockets
 # ---------------------------------------------------------------------------
 TEXTS_GEN: List[str] = [
     # short
-    "आपका account number 9876543210 है, कृपया confirm करें।",
-    "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें।",
-    "आपकी EMI Rs. 3750 हर महीने देय है।",
+    # "आपका account number 9876543210 है, कृपया confirm करें।",
+    "आपका account number nine seven six है, कृपया confirm करें।",
+    # "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें।",
+    "आपका बकाया Rupess two thousand  है, कृपया आज ही जमा करें।",
+    # "आपकी EMI Rs. 3750 हर महीने देय है।",
+    "आपकी EMI Rupess three thousand हर महीने देय है।",
     "आपका payment successfully receive हो गया है।",
-    "कृपया अपना OTP 4 5 6 7 share करें।",
+    # "कृपया अपना OTP 4 5 6 7 share करें।",
+    "कृपया अपना OTP four five six seven share करें।",
     "आपका loan approved हो गया है।",
-    "आपकी next due date 15 April है।",
-    "आपका balance Rs. 1200 है।",
+    # "आपकी next due date 15 April है।",
+    "आपकी next due date fifteen April है।",
+    # "आपका balance Rs. 1200 है।",
+    "आपका balance Rupees tweleve hundred है।",
     "आपका case escalate कर दिया गया है।",
     # medium
     "नमस्ते, मैं Bajaj Finance से बात कर रही हूं, क्या मैं customer name से बात कर सकती हूं?",
-    "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
-    "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
+    # "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "आपके loan की किस्त Rupees three thousand seven hundred fifty अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    # "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
+    "आपके account number four five six seven eight nine zero one two three पर Rupees fifteen thousand का loan approve हुआ है, क्या आप details verify करेंगे?",
     "हमारे records के अनुसार आपकी last EMI bounce हो गई है, कृपया आज ही payment करें।",
-    "आपकी EMI की due date 30 April निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
+    # "आपकी EMI की due date 30 April निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
+    "आपकी EMI की due date thirty April निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
     "आप हमारे app के through NEFT, IMPS, या UPI से payment कर सकते हैं।",
     "आपकी KYC verification pending है, कृपया nearest branch में जाएं।",
     "आपका credit score improve करने के लिए time पर payment करना जरूरी है।",
-    "इस महीने की 5 तारीख तक payment नहीं हुई तो penalty charges लगेंगे।",
-    "आपका loan account number ending in 3456 पर outstanding balance है, कृपया contact करें।",
+    # "इस महीने की 5 तारीख तक payment नहीं हुई तो penalty charges लगेंगे।",
+    "इस महीने की five तारीख तक payment नहीं हुई तो penalty charges लगेंगे।",
+    # "आपका loan account number ending in 3456 पर outstanding balance है, कृपया contact करें।",
+    "आपका loan account number ending in three four five six पर outstanding balance है, कृपया contact करें।",
+
     # long
     # "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
     # "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
@@ -238,11 +250,12 @@ async def _run_one(r: Result, port: int, out_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 # Scheduler + runner
 # ---------------------------------------------------------------------------
-async def run(port: int, n_requests: int, duration_s: float,
+async def run(port: int, n_requests: int, duration_s: Optional[float],
               out_dir: Path, seed: Optional[int], max_concurrent: int,
               n_cache: int = 0, bursty: bool = False) -> List[Result]:
 
-    dur_s = duration_s
+    concurrent_mode = duration_s is None
+    dur_s = 0.0 if concurrent_mode else duration_s
     rng   = random.Random(seed)
 
     n_gen  = n_requests - n_cache
@@ -250,7 +263,9 @@ async def run(port: int, n_requests: int, duration_s: float,
             + [TEXTS_CACHE[i % len(TEXTS_CACHE)] for i in range(n_cache)])
     rng.shuffle(texts)
 
-    if bursty:
+    if concurrent_mode:
+        fire_ats = [0.0] * n_requests
+    elif bursty:
         # Pick a handful of burst centres spread over the window, then scatter
         # each request around a randomly chosen centre with Gaussian jitter.
         # This produces seconds with 0 requests and seconds with many requests.
@@ -274,8 +289,9 @@ async def run(port: int, n_requests: int, duration_s: float,
     for r in results:
         sec_to_ids.setdefault(int(r.fire_at_s), []).append(r.req_id)
 
-    dist_label = "bursty" if bursty else "uniform"
-    print(f"\n[schedule] {n_requests} requests over {dur_s:.0f}s  (gen={n_requests - n_cache}  cache={n_cache})  port={port}  seed={seed}  dist={dist_label}")
+    dist_label = "concurrent" if concurrent_mode else ("bursty" if bursty else "uniform")
+    dur_label  = "concurrent" if concurrent_mode else f"{dur_s:.0f}s"
+    print(f"\n[schedule] {n_requests} requests over {dur_label}  (gen={n_requests - n_cache}  cache={n_cache})  port={port}  seed={seed}  dist={dist_label}")
     print("[schedule] requests per second:")
     for s in sorted(sec_to_ids):
         print(f"  {s:>4}s │{'█' * len(sec_to_ids[s])} {len(sec_to_ids[s])}")
@@ -322,7 +338,7 @@ async def run(port: int, n_requests: int, duration_s: float,
 # ---------------------------------------------------------------------------
 # Save results to a single file
 # ---------------------------------------------------------------------------
-def _save(results: List[Result], out_dir: Path, port: int, duration_s: float) -> None:
+def _save(results: List[Result], out_dir: Path, port: int, duration_s: Optional[float]) -> None:
     passed = [r for r in results if r.passed]
     failed = [r for r in results if not r.passed]
 
@@ -411,7 +427,7 @@ def _save(results: List[Result], out_dir: Path, port: int, duration_s: float) ->
     body = "\n".join([
         "=" * 74,
         f"FlowTTS Stress Test  —  {ts}",
-        f"port={port}  requests={len(results)}  duration={duration_s:.0f}s  "
+        f"port={port}  requests={len(results)}  duration={'concurrent' if duration_s is None else f'{duration_s:.0f}s'}  "
         f"passed={len(passed)}  failed={len(failed)}",
         "=" * 74,
         "",
@@ -464,10 +480,10 @@ async def _main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="FlowTTS streaming stress test — code-mixed Hindi-English")
     p.add_argument("--requests",       type=int,   default=100,  help="Number of requests  (default: 100)")
-    p.add_argument("--seconds",        type=float, default=60.0, help="Spread duration in seconds  (default: 60)")
+    p.add_argument("--seconds",        type=float, default=None, help="Spread duration in seconds  (default: fire all concurrently)")
     p.add_argument("--port",           type=int,   default=8765, help="WebSocket port  (default: 8765)")
     p.add_argument("--cache",          type=int,   default=0,    help="Number of requests to serve from cache texts  (default: 0)")
     p.add_argument("--seed",           type=int,   default=None, help="Random seed for reproducible schedule")
-    p.add_argument("--max-concurrent", type=int,   default=64,   help="Max simultaneous WS connections  (default: 64)")
+    p.add_argument("--max-concurrent", type=int,   default=100,   help="Max simultaneous WS connections  (default: 64)")
     p.add_argument("--bursty",         action="store_true",      help="Cluster requests into random bursts instead of spreading uniformly")
     asyncio.run(_main(p.parse_args()))

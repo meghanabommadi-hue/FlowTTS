@@ -73,7 +73,7 @@ logging.getLogger("aiohttp").setLevel(logging.WARNING)
 _synthesizer: FlowTtsSynthesizer | None = None
 _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
 _RE_SPEECH = re.compile(r"<\|speech_token_\d+\|>", re.ASCII)
-_STREAM_CHUNK_TOKENS = 50  # target speech tokens per decode+send chunk (100-150)
+_STREAM_CHUNK_TOKENS = 20  # target speech tokens per decode+send chunk (100-150)
 _audio_out_dir: Path | None = None
 _wav_cache_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports

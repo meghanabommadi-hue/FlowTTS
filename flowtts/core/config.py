@@ -84,9 +84,9 @@ class DecoderSettings(BaseModel):
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
     batch_timeout_ms: float = 1.0   # ms to wait collecting a batch (longer = better packing)
-    gpu_chunk_size: int = 90         # max items per GPU forward pass
+    gpu_chunk_size: int = 70         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
+    use_trt: bool = False           # load pre-compiled TRT .ep engine for decoder
 
 
 class WebSocketSettings(BaseModel):
@@ -107,7 +107,7 @@ class Settings(BaseSettings):
 
     # Directory of pre-generated WAV files named by SHA256 of raw transcript.
     # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
-    wav_cache_dir: str | None = "/home/ubuntu/FlowTTS/cached_data/cached_audio_files"
+    wav_cache_dir: str | None = "/home/ubuntu/FlowTTS/cached_data_simran"
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):
