@@ -5,8 +5,9 @@ Fires N requests spread randomly over S seconds, all in streaming mode.
 Measures TTFF and RTF per request. Results saved to a single file.
 
 Usage:
-    python stress_test.py --requests 100 --seconds 60 --port 8765 --cache 10
-    python stress_test.py --requests 50  --seconds 120 --port 8766 
+    python3 stress_test.py --requests 100 --seconds 60 --cache 10
+    python stress_test.py --requests 50  --seconds 120 --port 8766
+    python stress_test.py --requests 100 --seconds 60 --bursty          # sparse/bursty distribution
 """
 
 from __future__ import annotations
@@ -53,20 +54,20 @@ TEXTS_GEN: List[str] = [
     "इस महीने की 5 तारीख तक payment नहीं हुई तो penalty charges लगेंगे।",
     "आपका loan account number ending in 3456 पर outstanding balance है, कृपया contact करें।",
     # long
-    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
-    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
-    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
-    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
-    "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
-    "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं, आपके loan account number ending in 3456 पर total due amount Rs. 22500 है जिसमें principal Rs. 15000 और late charges Rs. 7500 शामिल हैं, कृपया आज ही payment करें।",
-    "आपके loan की EMI जो हर महीने की 5 तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले 3 working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा।",
-    "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
-    # spoken-number / call-centre style
-    "ये कॉल आपके loan number जो three six nine पर end होता है उसी के बारे में है, आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
-    "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
-    "आपका account number जो seven eight nine zero पर end होता है उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें।",
-    "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो कोई extra charge नहीं लगेगा।",
-    "इस call के दौरान आप हमें बता सकते हैं कि आप payment कब करेंगे, हम आपके लिए एक convenient date और time arrange कर सकते हैं।",
+    # "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
+    # "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
+    # "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
+    # "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
+    # "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
+    # "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं, आपके loan account number ending in 3456 पर total due amount Rs. 22500 है जिसमें principal Rs. 15000 और late charges Rs. 7500 शामिल हैं, कृपया आज ही payment करें।",
+    # "आपके loan की EMI जो हर महीने की 5 तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले 3 working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा।",
+    # "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
+    # # spoken-number / call-centre style
+    # "ये कॉल आपके loan number जो three six nine पर end होता है उसी के बारे में है, आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
+    # "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
+    # "आपका account number जो seven eight nine zero पर end होता है उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें।",
+    # "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो कोई extra charge नहीं लगेगा।",
+    # "इस call के दौरान आप हमें बता सकते हैं कि आप payment कब करेंगे, हम आपके लिए एक convenient date और time arrange कर सकते हैं।",
 ]
 
 TEXTS_CACHE: List[str] = [
@@ -239,7 +240,7 @@ async def _run_one(r: Result, port: int, out_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 async def run(port: int, n_requests: int, duration_s: float,
               out_dir: Path, seed: Optional[int], max_concurrent: int,
-              n_cache: int = 0) -> List[Result]:
+              n_cache: int = 0, bursty: bool = False) -> List[Result]:
 
     dur_s = duration_s
     rng   = random.Random(seed)
@@ -249,7 +250,23 @@ async def run(port: int, n_requests: int, duration_s: float,
             + [TEXTS_CACHE[i % len(TEXTS_CACHE)] for i in range(n_cache)])
     rng.shuffle(texts)
 
-    fire_ats = sorted(rng.uniform(0, dur_s) for _ in range(n_requests))
+    if bursty:
+        # Pick a handful of burst centres spread over the window, then scatter
+        # each request around a randomly chosen centre with Gaussian jitter.
+        # This produces seconds with 0 requests and seconds with many requests.
+        n_bursts     = max(2, n_requests // 6)
+        burst_sigma  = max(0.3, dur_s / (n_bursts * 4))   # jitter width
+        centres      = [rng.uniform(0, dur_s) for _ in range(n_bursts)]
+        raw_times    = []
+        for _ in range(n_requests):
+            centre = rng.choice(centres)
+            t = centre + rng.gauss(0, burst_sigma)
+            t = max(0.0, min(dur_s, t))   # clamp to window
+            raw_times.append(t)
+        fire_ats = sorted(raw_times)
+    else:
+        fire_ats = sorted(rng.uniform(0, dur_s) for _ in range(n_requests))
+
     results  = [Result(i, round(t, 4), texts[i]) for i, t in enumerate(fire_ats)]
 
     # Build and display per-second schedule
@@ -257,7 +274,8 @@ async def run(port: int, n_requests: int, duration_s: float,
     for r in results:
         sec_to_ids.setdefault(int(r.fire_at_s), []).append(r.req_id)
 
-    print(f"\n[schedule] {n_requests} requests over {dur_s:.0f}s  (gen={n_requests - n_cache}  cache={n_cache})  port={port}  seed={seed}")
+    dist_label = "bursty" if bursty else "uniform"
+    print(f"\n[schedule] {n_requests} requests over {dur_s:.0f}s  (gen={n_requests - n_cache}  cache={n_cache})  port={port}  seed={seed}  dist={dist_label}")
     print("[schedule] requests per second:")
     for s in sorted(sec_to_ids):
         print(f"  {s:>4}s │{'█' * len(sec_to_ids[s])} {len(sec_to_ids[s])}")
@@ -438,6 +456,7 @@ async def _main(args: argparse.Namespace) -> None:
         seed          = args.seed,
         max_concurrent= args.max_concurrent,
         n_cache       = args.cache,
+        bursty        = args.bursty,
     )
     _save(results, out_dir, args.port, args.seconds)
 
@@ -450,4 +469,5 @@ if __name__ == "__main__":
     p.add_argument("--cache",          type=int,   default=0,    help="Number of requests to serve from cache texts  (default: 0)")
     p.add_argument("--seed",           type=int,   default=None, help="Random seed for reproducible schedule")
     p.add_argument("--max-concurrent", type=int,   default=64,   help="Max simultaneous WS connections  (default: 64)")
+    p.add_argument("--bursty",         action="store_true",      help="Cluster requests into random bursts instead of spreading uniformly")
     asyncio.run(_main(p.parse_args()))
