@@ -66,20 +66,20 @@ TEXTS_GEN: List[str] = [
     "आपका loan account number ending in three four five six पर outstanding balance है, कृपया contact करें।",
 
     # long
-    # "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
-    # "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
-    # "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
-    # "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
-    # "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
-    # "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं, आपके loan account number ending in 3456 पर total due amount Rs. 22500 है जिसमें principal Rs. 15000 और late charges Rs. 7500 शामिल हैं, कृपया आज ही payment करें।",
-    # "आपके loan की EMI जो हर महीने की 5 तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले 3 working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा।",
-    # "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
-    # # spoken-number / call-centre style
-    # "ये कॉल आपके loan number जो three six nine पर end होता है उसी के बारे में है, आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
-    # "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
-    # "आपका account number जो seven eight nine zero पर end होता है उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें।",
-    # "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो कोई extra charge नहीं लगेगा।",
-    # "इस call के दौरान आप हमें बता सकते हैं कि आप payment कब करेंगे, हम आपके लिए एक convenient date और time arrange कर सकते हैं।",
+    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
+    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
+    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
+    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
+    "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
+    "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं, आपके loan account number ending in 3456 पर total due amount Rs. 22500 है जिसमें principal Rs. 15000 और late charges Rs. 7500 शामिल हैं, कृपया आज ही payment करें।",
+    "आपके loan की EMI जो हर महीने की 5 तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले 3 working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा।",
+    "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
+    # spoken-number / call-centre style
+    "ये कॉल आपके loan number जो three six nine पर end होता है उसी के बारे में है, आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
+    "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
+    "आपका account number जो seven eight nine zero पर end होता है उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें।",
+    "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो कोई extra charge नहीं लगेगा।",
+    "इस call के दौरान आप हमें बता सकते हैं कि आप payment कब करेंगे, हम आपके लिए एक convenient date और time arrange कर सकते हैं।",
 ]
 
 TEXTS_CACHE: List[str] = [
