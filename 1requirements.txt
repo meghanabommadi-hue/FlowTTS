@@ -6,7 +6,6 @@ torchaudio==2.8.0
 torchvision==0.23.0
 triton==3.4.0
 sglang
-sgl-kernel
 flashinfer-python==0.3.1
 flashinfer-cubin==0.5.2
 transformers==4.57.3
