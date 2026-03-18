@@ -57,7 +57,7 @@ class TtsModelSettings(BaseModel):
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.2               # greedy — fastest, deterministic
     top_p: float = 0.7
-    top_k: int = 50
+    top_k: int = 30
     repetition_penalty: float = 1.6
     min_p: float = 0.05
 
