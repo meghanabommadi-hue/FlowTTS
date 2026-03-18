@@ -55,7 +55,7 @@ class TtsModelSettings(BaseModel):
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.0               # greedy — fastest, deterministic
+    temperature: float = 0.2               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50
     repetition_penalty: float = 1.6
