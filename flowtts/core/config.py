@@ -83,7 +83,7 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 1.0   # ms to wait collecting a batch (longer = better packing)
+    batch_timeout_ms: float = 50.0   # ms to wait collecting a batch (longer = better packing)
     gpu_chunk_size: int = 70         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
     use_trt: bool = False           # load pre-compiled TRT .ep engine for decoder
