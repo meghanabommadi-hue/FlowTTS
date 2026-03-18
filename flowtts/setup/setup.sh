@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+echo "==> Installing 2requirements.txt"
+uv pip install -r "$REPO_ROOT/2requirements.txt"
 echo "==> Installing 1requirements.txt"
 uv pip install -r "$REPO_ROOT/1requirements.txt"
 
-echo "==> Installing 2requirements.txt"
-uv pip install -r "$REPO_ROOT/2requirements.txt"
 
 echo "==> Installing FlashSR from git"
 uv pip install git+https://github.com/ysharma3501/FlashSR.git@2a69326250613c0a0f6c1c8d9f0c48cb779842b8
