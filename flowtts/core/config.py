@@ -43,19 +43,23 @@ class TtsModelSettings(BaseModel):
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.65      # more KV cache for concurrent requests
-    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = -1         # small prefill chunks → decode starts sooner
-    # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
-    schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
-    cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
+    # 0.83 × 139.72 GiB ≈ 116 GiB to sglang → ~23 GiB free for decoder ONNX sessions,
+    # AudioTokenizer FP16 weights, and batch tensors (~10-12 GiB needed).
+    # At 0.85 only 3.9 GiB remained → OOM at req 122. All other values restored from
+    # the proven A100 baseline that achieved 0.9s TTFT at 200 requests.
+    mem_fraction_static: float = 0.83
+    attention_backend: str = "triton"
+    chunked_prefill_size: int = 8192
+    max_running_requests: int = 200
+    schedule_policy: str = "lpm"
+    cuda_graph_max_bs: int = 160
     disable_radix_cache: bool = False
-    num_continuous_decode_steps: int = 4    # batch N decode steps before re-scheduling → less scheduler overhead
+    num_continuous_decode_steps: int = 10
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.0               # greedy — fastest, deterministic
+    temperature: float = 0.1
     top_p: float = 0.7
     top_k: int = 50
     repetition_penalty: float = 1.6
@@ -81,11 +85,11 @@ class DecoderSettings(BaseModel):
     # Saves ~1-5ms per request. Use when client handles raw float32 PCM.
     to_wav: bool = True
 
-    # TTSCodec batch queue settings
-    max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 1.0   # ms to wait collecting a batch (longer = better packing)
-    gpu_chunk_size: int = 90         # max items per GPU forward pass
-    onnx_workers: int = 1            # parallel ONNX worker threads
+    # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
+    max_batch: int = 256             # H200 handles larger batches without OOM
+    batch_timeout_ms: float = 0.5   # ms to wait collecting a batch (longer = better packing)
+    gpu_chunk_size: int = 160        # H200 has 2x HBM bandwidth vs A100 — double the chunk
+    onnx_workers: int = 2            # two ONNX threads to keep GPU fed between batches
     use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 
@@ -98,7 +102,7 @@ class StreamingSettings(BaseModel):
     # Number of speech tokens accumulated before decoding and sending a chunk.
     # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
     # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
-    chunk_tokens: int = 30
+    chunk_tokens: int = 15
 
     # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
     # 320 = 20ms. Set to 0 to disable crossfade.

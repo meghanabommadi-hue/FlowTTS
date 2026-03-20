@@ -218,7 +218,8 @@ class RequestResult(NamedTuple):
     token_chars: int        # 0 for decoded/worker mode
     llm_s: Optional[float]
     decode_s: Optional[float]
-    ttff_s: Optional[float] = None  # time-to-first-chunk (streaming only)
+    ttff_s: Optional[float] = None   # time-to-first-chunk (streaming only)
+    rtf: Optional[float] = None      # real-time factor for this request
 
 
 
@@ -293,6 +294,7 @@ async def _run_one(
             token_chars = len(msg.get("audio_tokens", ""))
             llm_s = msg.get("llm_s")
             decode_s = msg.get("decode_s")
+            rtf = msg.get("rtf")
             wav_bytes_len = len(wav_data)
 
             if not skip_decoder:
@@ -302,10 +304,10 @@ async def _run_one(
                                          "empty WAV bytes", 0, token_chars, llm_s, decode_s)
                 wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
                 wav_path.write_bytes(wav_data)
-            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}")
+            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
-                                 None, wav_bytes_len, token_chars, llm_s, decode_s)
+                                 None, wav_bytes_len, token_chars, llm_s, decode_s, rtf=rtf)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -418,6 +420,7 @@ async def _recv_streaming(
                 latency   = round(time.time() - t0, 3)
                 llm_s     = msg.get("llm_s")
                 decode_s  = msg.get("decode_s")
+                rtf       = msg.get("rtf")
                 chunks    = msg.get("chunks", len(chunk_wavs))
                 total_wav_b = sum(len(w) for w in chunk_wavs)
 
@@ -429,11 +432,11 @@ async def _recv_streaming(
                      f"OK  stream_done  chunks={chunks}  tokens={total_tokens}"
                      f"  {total_wav_b}B → {wav_path.name if wav_path else '-'}"
                      f"  ttff={first_chunk_latency}s  total={latency}s"
-                     f"  llm_s={llm_s}  decode_s={decode_s}")
+                     f"  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
 
                 return RequestResult(req_id, port, True, latency, wav_path,
                                      None, total_wav_b, total_tokens * 20, llm_s, decode_s,
-                                     ttff_s=first_chunk_latency)
+                                     ttff_s=first_chunk_latency, rtf=rtf)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -658,24 +661,29 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     lines.append(f"{'='*70}")
 
     has_ttff = any(r.ttff_s is not None for r in results)
+    has_rtf  = any(r.rtf   is not None for r in results)
     header = (
         f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  "
         + (f"{'ttff(s)':>7}  " if has_ttff else "")
-        + f"{'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
+        + f"{'llm_s':>6}  {'dec_s':>6}  "
+        + (f"{'rtf':>5}  " if has_rtf else "")
+        + f"{'bytes':>8}  {'tokens':>7}  detail"
     )
     lines.append(header)
-    lines.append("-" * (88 if has_ttff else 80))
+    lines.append("-" * (93 if has_ttff and has_rtf else 88 if has_ttff or has_rtf else 80))
 
     for r in sorted(results, key=lambda x: x.req_id):
         detail = str(r.wav_path.name) if r.wav_path else (r.error or "")
         ttff_col = (f"{r.ttff_s:>7.3f}  " if r.ttff_s is not None else f"{'─':>7}  ") if has_ttff else ""
+        rtf_col  = (f"{r.rtf:>5.3f}  " if r.rtf is not None else f"{'─':>5}  ") if has_rtf else ""
         lines.append(
             f"{r.req_id:>4}  {r.port:>5}  {'✓' if r.passed else '✗':>4}  "
             f"{r.latency_s:>7.3f}  "
             + ttff_col
             + f"{r.llm_s if r.llm_s is not None else '-':>6}  "
             f"{r.decode_s if r.decode_s is not None else '-':>6}  "
-            f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
+            + rtf_col
+            + f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
         )
 
     if passed:
@@ -683,6 +691,7 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         llms  = [r.llm_s     for r in passed if r.llm_s    is not None]
         decs  = [r.decode_s  for r in passed if r.decode_s is not None]
         ttffs = [r.ttff_s    for r in passed if r.ttff_s   is not None]
+        rtfs  = [r.rtf       for r in passed if r.rtf      is not None]
 
         def _fmt(vals: list, unit: str = "s") -> str:
             if not vals:
@@ -698,6 +707,10 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         if llms and decs and len(llms) == len(decs):
             overhead = [l - d for l, d in zip(llms, decs)]
             lines.append(f"  llm - decode  : {_fmt(overhead)}  (net inference)")
+        if rtfs:
+            over_rt = sum(1 for v in rtfs if v > 1.0)
+            lines.append(f"  rtf           : {_fmt(rtfs, '')}  (realtime factor, <1 = faster than realtime)")
+            lines.append(f"  rtf > 1.0     : {over_rt}/{len(rtfs)} requests  ({100*over_rt/len(rtfs):.1f}% slower than realtime)")
         lines.append(f"{'─'*60}")
     if failed:
         lines.append(f"\nFailed requests:")

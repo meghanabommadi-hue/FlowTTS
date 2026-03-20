@@ -1,7 +1,10 @@
 # FlowTTS Commands
 
 ## Launch server
-
+```bash
+cd FlowTTS/
+source llmc/bin/activate
+```
 ```bash
 cd /root/FlowTTS && bash run.sh --ctrl-port 8764
 ```

@@ -102,7 +102,7 @@ class FlowTtsSynthesizer:
             dtype=cfg.dtype,
             attention_backend=cfg.attention_backend,
             chunked_prefill_size=cfg.chunked_prefill_size,
-            # max_running_requests=cfg.max_running_requests,
+            max_running_requests=cfg.max_running_requests,
             schedule_policy=cfg.schedule_policy,
             cuda_graph_max_bs=cfg.cuda_graph_max_bs,
             disable_radix_cache=cfg.disable_radix_cache,
