@@ -2,8 +2,11 @@
 """Batch TTS audio generation using an already-running FlowTTS server.
 
 Connects to the server via WebSocket (no model reload).
-Output files are named <SHA256-of-original-text>.wav.
+Text is normalized locally using text_normalize.py before sending.
+The server's built-in normalization is bypassed via "pre_normalized": true.
+Output files are named after the normalized text (sanitized, truncated).
 Already-existing files are skipped — safe to resume.
+All output and logs are saved to <output-dir>/batch_log.txt.
 
 Usage:
     python generate_audio_batch.py sentences.txt
@@ -16,17 +19,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import sys
 import time
 import uuid
 from pathlib import Path
 
+import hashlib
+
 import websockets
 
+# Local normalization — this is the only normalization applied.
+from text_normalize import normalize_text, split_and_expand_sentences
 
-def sha256_filename(text: str) -> str:
+
+def normalized_filename(text: str) -> str:
+    """SHA256 of the normalized text as the filename."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest() + ".wav"
 
 
@@ -35,22 +43,59 @@ def load_sentences(path: Path) -> list[str]:
     return [ln.strip() for ln in lines if ln.strip()]
 
 
+class Tee:
+    """Write to both stdout and a log file simultaneously."""
+
+    def __init__(self, log_path: Path, mode: str = "w"):
+        self._log = open(log_path, mode, encoding="utf-8", buffering=1)
+        self._stdout = sys.__stdout__
+
+    def write(self, data: str) -> int:
+        self._stdout.write(data)
+        self._stdout.flush()
+        self._log.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self._stdout.flush()
+        self._log.flush()
+
+    def close(self) -> None:
+        self._log.close()
+
+    # Make it usable as sys.stdout/sys.stderr
+    @property
+    def encoding(self) -> str:
+        return self._stdout.encoding
+
+    @property
+    def errors(self) -> str:
+        return self._stdout.errors
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self):
+        return self._stdout.fileno()
+
+
 async def synthesize_one(
     text: str,
     port: int,
     semaphore: asyncio.Semaphore,
 ) -> bytes:
-    """Send one synthesis request; return raw WAV bytes."""
+    """Send one pre-normalized synthesis request; return raw WAV bytes."""
     call_id = str(uuid.uuid4())
     url = f"ws://localhost:{port}/ws/{call_id}"
 
     async with semaphore:
         async with websockets.connect(url, open_timeout=10, max_size=100 * 1024 * 1024) as ws:
             await ws.send(json.dumps({
-                "type":    "synthesize",
-                "call_id": call_id,
-                "text_id": str(uuid.uuid4()),
-                "text":    text,
+                "type":           "synthesize",
+                "call_id":        call_id,
+                "text_id":        str(uuid.uuid4()),
+                "text":           text,
+                "pre_normalized": True,   # tell server to skip its own normalize_text()
             }))
 
             # Frame 1: JSON metadata
@@ -75,25 +120,37 @@ async def process_sentence(
     semaphore: asyncio.Semaphore,
     counters: dict,
 ) -> None:
-    out_path = out_dir / sha256_filename(raw_text)
+    sub_sentences = split_and_expand_sentences(raw_text)
+    n_parts = len(sub_sentences)
 
-    if out_path.exists():
-        counters["skipped"] += 1
-        print(f"[{idx}/{total}] SKIP  {out_path.name}  \"{raw_text}\"")
-        return
+    for part_idx, sub in enumerate(sub_sentences, 1):
+        label = f"{idx}/{total}" if n_parts == 1 else f"{idx}{chr(96 + part_idx)}/{total}"
+        normalized = normalize_text(sub)
+        out_path = out_dir / normalized_filename(normalized)
 
-    t0 = time.perf_counter()
-    try:
-        wav_bytes = await synthesize_one(raw_text, port, semaphore)
-        if not wav_bytes:
-            raise RuntimeError("empty WAV response")
-        out_path.write_bytes(wav_bytes)
-        elapsed = time.perf_counter() - t0
-        counters["generated"] += 1
-        print(f"[{idx}/{total}] OK    {out_path.name}  {elapsed:.2f}s  \"{raw_text}\"")
-    except Exception as exc:
-        counters["errors"] += 1
-        print(f"[{idx}/{total}] ERROR {exc}  \"{raw_text}\"", file=sys.stderr)
+        if out_path.exists():
+            counters["skipped"] += 1
+            print(f"[{label}] SKIP  {out_path.name}")
+            print(f"          raw:  {sub!r}")
+            print(f"          norm: {normalized!r}")
+            continue
+
+        t0 = time.perf_counter()
+        try:
+            wav_bytes = await synthesize_one(normalized, port, semaphore)
+            if not wav_bytes:
+                raise RuntimeError("empty WAV response")
+            out_path.write_bytes(wav_bytes)
+            elapsed = time.perf_counter() - t0
+            counters["generated"] += 1
+            print(f"[{label}] OK    {out_path.name}  {elapsed:.2f}s")
+            print(f"          raw:  {sub!r}")
+            print(f"          norm: {normalized!r}")
+        except Exception as exc:
+            counters["errors"] += 1
+            print(f"[{label}] ERROR {exc}")
+            print(f"          raw:  {sub!r}")
+            print(f"          norm: {normalized!r}")
 
 
 async def main() -> None:
@@ -104,7 +161,7 @@ async def main() -> None:
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Parallel WS requests (default: 1)")
     parser.add_argument("--output-dir", type=Path, default=Path("cached_audio_files"),
-                        help="Output directory (default: ./cached_data_vikram)")
+                        help="Output directory (default: ./cached_audio_files)")
     args = parser.parse_args()
 
     if not args.input.is_file():
@@ -113,14 +170,21 @@ async def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Redirect all output to both terminal and log file
+    log_path = args.output_dir / "batch_log.txt"
+    tee = Tee(log_path)
+    sys.stdout = tee
+    sys.stderr = tee
+
     sentences = load_sentences(args.input)
     total = len(sentences)
     if total == 0:
-        print("[ERROR] No sentences found in input file.", file=sys.stderr)
+        print("[ERROR] No sentences found in input file.")
         sys.exit(1)
 
     print(f"[INFO] {total} sentences  port={args.port}  concurrency={args.concurrency}")
-    print(f"[INFO] Output → {args.output_dir.resolve()}\n")
+    print(f"[INFO] Output  → {args.output_dir.resolve()}")
+    print(f"[INFO] Log     → {log_path.resolve()}\n")
 
     semaphore = asyncio.Semaphore(args.concurrency)
     counters = {"generated": 0, "skipped": 0, "errors": 0}
@@ -136,6 +200,10 @@ async def main() -> None:
     elapsed = time.perf_counter() - t_start
     print(f"\n[DONE] generated={counters['generated']}  skipped={counters['skipped']}"
           f"  errors={counters['errors']}  total_time={elapsed:.1f}s")
+
+    tee.close()
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
 
 
 if __name__ == "__main__":

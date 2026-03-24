@@ -130,7 +130,8 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 continue
 
-            text = normalize_text(text)
+            if not data.get("pre_normalized"):
+                text = normalize_text(text)
 
             ts_text_recv = _tsms()
             _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  text={text[:60]!r}")
