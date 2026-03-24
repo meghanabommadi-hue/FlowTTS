@@ -37,9 +37,9 @@ class TtsModelSettings(BaseModel):
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
-        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
         # ref_audio: str = "/home/ubuntu/FlowTTS/diff_voices_and_cache/aakash_aryan.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/diff_voices_and_cache/krishna.wav"
+        # ref_audio: str = "/home/ubuntu/FlowTTS/diff_voices_and_cache/krishna.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"

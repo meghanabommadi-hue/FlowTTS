@@ -11,6 +11,88 @@ Handles:
 
 import re
 
+# ---------------------------------------------------------------------------
+# Contraction expansion (English)
+# ---------------------------------------------------------------------------
+
+CONTRACTIONS: dict[str, str] = {
+    # Negative contractions
+    "aren't":    "are not",
+    "can't":     "cannot",
+    "couldn't":  "could not",
+    "daren't":   "dare not",
+    "didn't":    "did not",
+    "doesn't":   "does not",
+    "don't":     "do not",
+    "hadn't":    "had not",
+    "hasn't":    "has not",
+    "haven't":   "have not",
+    "isn't":     "is not",
+    "mightn't":  "might not",
+    "mustn't":   "must not",
+    "needn't":   "need not",
+    "shan't":    "shall not",
+    "shouldn't": "should not",
+    "wasn't":    "was not",
+    "weren't":   "were not",
+    "won't":     "will not",
+    "wouldn't":  "would not",
+    # Subject + verb
+    "he'd":      "he would",
+    "he'll":     "he will",
+    "he's":      "he is",
+    "how's":     "how is",
+    "i'd":       "i would",
+    "i'll":      "i will",
+    "i'm":       "i am",
+    "i've":      "i have",
+    "it'd":      "it would",
+    "it'll":     "it will",
+    "it's":      "it is",
+    "let's":     "let us",
+    "she'd":     "she would",
+    "she'll":    "she will",
+    "she's":     "she is",
+    "that'd":    "that would",
+    "that'll":   "that will",
+    "that's":    "that is",
+    "there'd":   "there would",
+    "there'll":  "there will",
+    "there's":   "there is",
+    "they'd":    "they would",
+    "they'll":   "they will",
+    "they're":   "they are",
+    "they've":   "they have",
+    "we'd":      "we would",
+    "we'll":     "we will",
+    "we're":     "we are",
+    "we've":     "we have",
+    "what'd":    "what did",
+    "what'll":   "what will",
+    "what's":    "what is",
+    "what've":   "what have",
+    "when's":    "when is",
+    "where'd":   "where did",
+    "where's":   "where is",
+    "who'd":     "who would",
+    "who'll":    "who will",
+    "who's":     "who is",
+    "who've":    "who have",
+    "why's":     "why is",
+    "you'd":     "you would",
+    "you'll":    "you will",
+    "you're":    "you are",
+    "you've":    "you have",
+}
+
+# Pre-compiled patterns (word-boundary, case-insensitive).
+# Longer keys first so e.g. "shouldn't" matches before any shorter suffix.
+_CONTRACTION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\b' + re.escape(k) + r'\b', re.IGNORECASE), v)
+    for k, v in sorted(CONTRACTIONS.items(), key=lambda x: -len(x[0]))
+]
+
+
 ALWAYS_EXPAND = {
     "mr.": "mister",
     "mrs.": "missus",
@@ -215,6 +297,11 @@ def normalize_text(text: str) -> str:
     """
     # Always: Hindi full stop → ASCII period
     text = text.replace("।", " .")
+
+    # Normalise curly/smart apostrophes → straight, then expand contractions
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
+    for pattern, expansion in _CONTRACTION_PATTERNS:
+        text = pattern.sub(expansion, text)
     # Add space before the last comma only
     # idx = text.rfind(",")
     # if idx != -1:
