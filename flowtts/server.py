@@ -420,21 +420,34 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     wav_file.write_bytes(decoded.wav_bytes)
                     print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
 
-                # Frame 1: JSON metadata (text)
+                # # Frame 1: JSON metadata (text)
+                # await ws.send(json.dumps({
+                #     "type": "audio",
+                #     "call_id": call_id,
+                #     "text_id": text_id,
+                #     "text": text,
+                #     "audio_tokens": audio_tokens,
+                #     "sample_rate": SAMPLE_RATE,
+                #     "wav_bytes": len(decoded.wav_bytes),
+                #     "is_final": True,
+                #     "llm_s": llm_s,
+                #     "decode_s": decode_s,
+                #     "cache_hit": False,
+                # }))
+                # # Frame 2: raw WAV bytes (binary)
+                # await ws.send(decoded.wav_bytes)
+
                 await ws.send(json.dumps({
-                    "type": "audio",
-                    "call_id": call_id,
-                    "text_id": text_id,
-                    "text": text,
-                    "audio_tokens": audio_tokens,
+                    "type":        "audio_chunk",
+                    "call_id":     call_id,
+                    "text_id":     text_id,
+                    "chunk_index": chunk_index,
                     "sample_rate": SAMPLE_RATE,
-                    "wav_bytes": len(decoded.wav_bytes),
-                    "is_final": True,
-                    "llm_s": llm_s,
-                    "decode_s": decode_s,
-                    "cache_hit": False,
+                    "wav_bytes":   len(decoded.wav_bytes),
+                    "tokens":      n_tok,
+                    "is_final":    is_final,
+                    "cache_hit":   False,
                 }))
-                # Frame 2: raw WAV bytes (binary)
                 await ws.send(decoded.wav_bytes)
                 ts_audio_sent = _tsms()
 

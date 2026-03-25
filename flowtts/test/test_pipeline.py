@@ -238,7 +238,7 @@ async def _run_one(
     out_dir: Path,
     worker,       # DecoderWorker instance or None
     skip_decoder: bool = False,
-    streaming: bool = False,
+    streaming: bool = True,
     save_chunks: bool = False,
 ) -> RequestResult:
     call_id = str(uuid.uuid4())
@@ -529,7 +529,7 @@ async def run_test(
     base_port: int = 8765,
     save_audio: Optional[str] = None,
     skip_decoder: bool = False,
-    streaming: bool = False,
+    streaming: bool = True,
     save_chunks: bool = False,
     # external-server args
     ports: Optional[List[int]] = None,
