@@ -47,6 +47,8 @@ import argparse
 import asyncio
 import concurrent.futures
 import datetime
+import hashlib
+import base64
 import json
 import re
 import time
@@ -79,6 +81,7 @@ _STREAM_CHUNK_TOKENS = settings.streaming.chunk_tokens
 _CROSSFADE_SAMPLES   = settings.streaming.crossfade_samples
 _FADE_OUT_SAMPLES    = settings.streaming.fade_out_samples
 _audio_out_dir: Path | None = None
+_wav_cache_dir: Path | None = None
 _open_ports: set[int] = set()  # tracks all bound WS ports
 
 # Rolling RTF tracking (thread-safe via GIL for simple int/float ops)
@@ -212,8 +215,10 @@ async def _handle_streaming_request(
             "wav_bytes":   len(decoded.wav_bytes),
             "tokens":      n_tok,
             "is_final":    is_final,
+            "cache_hit":   False,
+            "audio": base64.b64encode(decoded.wav_bytes).decode(),
         }))
-        await ws.send(decoded.wav_bytes)
+        # await ws.send(decoded.wav_bytes)
         chunk_index += 1
 
     try:
@@ -258,6 +263,7 @@ async def _handle_streaming_request(
             "decode_s":    round(decode_total, 4),
             "rtf":         round(rtf, 3),
             "avg_rtf":     round(avg_rtf, 3),
+            "cache_hit":   False,
         }))
 
         print(
@@ -313,6 +319,40 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     "error": "Missing text",
                 }))
                 continue
+
+            # Cache lookup: check for pre-generated WAV keyed by SHA256 of raw text
+            if _wav_cache_dir is not None:
+                text_hash = hashlib.sha256(text.encode()).hexdigest()
+                cached_wav = _wav_cache_dir / f"{text_hash}.wav"
+                if cached_wav.exists():
+                    wav_bytes = cached_wav.read_bytes()
+                    print(f"[{_ts()}] :{port} {call_id}  cache_hit  {text[:60]!r}", flush=True)
+                    await ws.send(json.dumps({
+                        "type":        "audio_chunk",
+                        "call_id":     call_id,
+                        "text_id":     text_id,
+                        "chunk_index": 0,
+                        "sample_rate": SAMPLE_RATE,
+                        "wav_bytes":   len(wav_bytes),
+                        "tokens":      0,
+                        "is_final":    True,
+                        "cache_hit":   True,
+                    }))
+                    await ws.send(wav_bytes)
+                    await ws.send(json.dumps({
+                        "type":            "audio_done",
+                        "call_id":         call_id,
+                        "text_id":         text_id,
+                        "text":            text,
+                        "chunks":          1,
+                        "total_tokens":    0,
+                        "total_wav_bytes": len(wav_bytes),
+                        "sample_rate":     SAMPLE_RATE,
+                        "llm_s":           0.0,
+                        "decode_s":        0.0,
+                        "cache_hit":       True,
+                    }))
+                    continue
 
             text = normalize_text(text)
             streaming = bool(data.get("streaming", True))
@@ -393,6 +433,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     "is_final": True,
                     "llm_s": llm_s,
                     "decode_s": decode_s,
+                    "cache_hit": False,
                 }))
                 # Frame 2: raw WAV bytes (binary)
                 await ws.send(decoded.wav_bytes)
@@ -676,6 +717,11 @@ def main() -> None:
         _audio_out_dir = Path(args.save_audio)
         _audio_out_dir.mkdir(parents=True, exist_ok=True)
         print(f"[FlowTTS] Saving audio to {_audio_out_dir}/", flush=True)
+
+    global _wav_cache_dir
+    if settings.wav_cache_dir:
+        _wav_cache_dir = Path(settings.wav_cache_dir)
+        print(f"[FlowTTS] WAV cache: {_wav_cache_dir}/", flush=True)
 
     try:
         asyncio.run(run_server(args.base_port, args.ports, args.ctrl_port))

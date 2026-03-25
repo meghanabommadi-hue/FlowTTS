@@ -55,9 +55,9 @@ class TtsModelSettings(BaseModel):
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.0               # greedy — fastest, deterministic
+    temperature: float = 0.2               # greedy — fastest, deterministic
     top_p: float = 0.7
-    top_k: int = 50
+    top_k: int = 30
     repetition_penalty: float = 1.6
     min_p: float = 0.05
 
@@ -83,10 +83,10 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 1.0   # ms to wait collecting a batch (longer = better packing)
-    gpu_chunk_size: int = 90         # max items per GPU forward pass
+    batch_timeout_ms: float = 50.0   # ms to wait collecting a batch (longer = better packing)
+    gpu_chunk_size: int = 70         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
+    use_trt: bool = False           # load pre-compiled TRT .ep engine for decoder
 
 
 class StreamingSettings(BaseModel):
@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     tts_model: TtsModelSettings = TtsModelSettings()
     decoder: DecoderSettings = DecoderSettings()
     streaming: StreamingSettings = StreamingSettings()
+
+    # Directory of pre-generated WAV files named by SHA256 of raw transcript.
+    # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
+    wav_cache_dir: str | None = "/home/ubuntu/FlowTTS/cached_data_simran"
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):
