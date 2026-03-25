@@ -206,18 +206,19 @@ async def _handle_streaming_request(
             print(f"[{ts_chunk}] :{port} {call_id}  first_chunk  ttft={ttft}ms  tokens={n_tok}", flush=True)
             first_chunk_sent = True
 
-        await ws.send(json.dumps({
-            "type":        "audio_chunk",
-            "call_id":     call_id,
-            "text_id":     text_id,
-            "chunk_index": chunk_index,
-            "sample_rate": SAMPLE_RATE,
-            "wav_bytes":   len(decoded.wav_bytes),
-            "tokens":      n_tok,
-            "is_final":    is_final,
-            "cache_hit":   False,
-        }))
-        await ws.send(decoded.wav_bytes)
+        await ws.send(
+            json.dumps({
+                "type":        "audio_chunk",
+                "call_id":     call_id,
+                "text_id":     text_id,
+                "chunk_index": chunk_index,
+                "sample_rate": SAMPLE_RATE,
+                "wav_bytes":   len(decoded.wav_bytes),
+                "tokens":      n_tok,
+                "is_final":    is_final,
+                "cache_hit":   False,
+            }).encode() + decoded.wav_bytes
+        )
         chunk_index += 1
 
     try:
@@ -326,18 +327,19 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 if cached_wav.exists():
                     wav_bytes = cached_wav.read_bytes()
                     print(f"[{_ts()}] :{port} {call_id}  cache_hit  {text[:60]!r}", flush=True)
-                    await ws.send(json.dumps({
-                        "type":        "audio_chunk",
-                        "call_id":     call_id,
-                        "text_id":     text_id,
-                        "chunk_index": 0,
-                        "sample_rate": SAMPLE_RATE,
-                        "wav_bytes":   len(wav_bytes),
-                        "tokens":      0,
-                        "is_final":    True,
-                        "cache_hit":   True,
-                    }))
-                    await ws.send(wav_bytes)
+                    await ws.send(
+                        json.dumps({
+                            "type":        "audio_chunk",
+                            "call_id":     call_id,
+                            "text_id":     text_id,
+                            "chunk_index": 0,
+                            "sample_rate": SAMPLE_RATE,
+                            "wav_bytes":   len(wav_bytes),
+                            "tokens":      0,
+                            "is_final":    True,
+                            "cache_hit":   True,
+                        }).encode() + wav_bytes
+                    )
                     await ws.send(json.dumps({
                         "type":            "audio_done",
                         "call_id":         call_id,
@@ -436,18 +438,19 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 # # Frame 2: raw WAV bytes (binary)
                 # await ws.send(decoded.wav_bytes)
 
-                await ws.send(json.dumps({
-                    "type":        "audio_chunk",
-                    "call_id":     call_id,
-                    "text_id":     text_id,
-                    "chunk_index": chunk_index,
-                    "sample_rate": SAMPLE_RATE,
-                    "wav_bytes":   len(decoded.wav_bytes),
-                    "tokens":      n_tok,
-                    "is_final":    is_final,
-                    "cache_hit":   False,
-                }))
-                await ws.send(decoded.wav_bytes)
+                await ws.send(
+                    json.dumps({
+                        "type":        "audio_chunk",
+                        "call_id":     call_id,
+                        "text_id":     text_id,
+                        "chunk_index": chunk_index,
+                        "sample_rate": SAMPLE_RATE,
+                        "wav_bytes":   len(decoded.wav_bytes),
+                        "tokens":      n_tok,
+                        "is_final":    is_final,
+                        "cache_hit":   False,
+                    }).encode() + decoded.wav_bytes
+                )
                 ts_audio_sent = _tsms()
 
                 total_s = llm_s + decode_s + wav_s

@@ -272,10 +272,18 @@ async def _run_one(
                 return await _recv_streaming(req_id, port, out_dir, ws, call_id, text_id, t0, save_chunks)
 
             _log(req_id, port, "waiting for WS response…")
-            # Frame 1: JSON metadata
             raw = await ws.recv()
             latency = round(time.time() - t0, 3)
-            msg = json.loads(raw)
+            # Combined frame: json_bytes + wav_bytes, or plain JSON text frame
+            if isinstance(raw, bytes):
+                end = raw.index(b'}') + 1
+                msg = json.loads(raw[:end])
+                wav_data = raw[end:]
+            else:
+                msg = json.loads(raw)
+                wav_data = await ws.recv()
+                if isinstance(wav_data, str):
+                    wav_data = wav_data.encode()
 
             _log(req_id, port, f"received type={msg.get('type')}  latency={latency}s")
 
@@ -283,11 +291,6 @@ async def _run_one(
                 _log(req_id, port, f"FAIL gateway error: {msg.get('error')}")
                 return RequestResult(req_id, port, False, latency, None,
                                      msg.get("error"), 0, 0, None, None)
-
-            # Frame 2: raw WAV bytes
-            wav_data = await ws.recv()
-            if isinstance(wav_data, str):
-                wav_data = wav_data.encode()
 
             wav_path: Optional[Path] = None
             token_chars = len(msg.get("audio_tokens", ""))
@@ -385,9 +388,15 @@ async def _recv_streaming(
     try:
         while True:
             raw = await ws.recv()
+            # Combined frame: json_bytes + wav_bytes in one binary message.
+            # Split at the first closing brace to separate header from audio.
             if isinstance(raw, bytes):
-                continue  # unexpected binary before JSON header
-            msg = json.loads(raw)
+                end = raw.index(b'}') + 1
+                msg = json.loads(raw[:end])
+                wav_inline = raw[end:]
+            else:
+                msg = json.loads(raw)
+                wav_inline = None
             mtype = msg.get("type")
 
             if mtype == "error":
@@ -400,9 +409,13 @@ async def _recv_streaming(
                 n_tok = msg.get("tokens", 0)
                 total_tokens += n_tok
 
-                wav_chunk = await ws.recv()
-                if isinstance(wav_chunk, str):
-                    wav_chunk = wav_chunk.encode()
+                # Inline wav from combined frame, or separate binary frame (fallback)
+                if wav_inline is not None:
+                    wav_chunk = wav_inline
+                else:
+                    wav_chunk = await ws.recv()
+                    if isinstance(wav_chunk, str):
+                        wav_chunk = wav_chunk.encode()
 
                 if first_chunk_latency is None:
                     first_chunk_latency = round(time.time() - t0, 3)
