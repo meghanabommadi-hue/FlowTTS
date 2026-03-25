@@ -216,9 +216,8 @@ async def _handle_streaming_request(
             "tokens":      n_tok,
             "is_final":    is_final,
             "cache_hit":   False,
-            "audio": base64.b64encode(decoded.wav_bytes).decode(),
         }))
-        # await ws.send(decoded.wav_bytes)
+        await ws.send(decoded.wav_bytes)
         chunk_index += 1
 
     try:
