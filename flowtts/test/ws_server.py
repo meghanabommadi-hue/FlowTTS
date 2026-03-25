@@ -6,17 +6,17 @@ to WAV and streams base64 audio back. Clients can request disconnection.
 
 Usage:
     # Single port (default 8765)
-    python ws_server.py
+    python3 -m flowtts.test.ws_server
 
     # Spin up 3 ports starting at 8765  →  8765, 8766, 8767
-    python ws_server.py --ports 3
+    python3 -m flowtts.test.ws_server --ports 3
 
     # Explicit base port
-    python ws_server.py --ports 3 --port 9000   →  9000, 9001, 9002
+    python3 -m flowtts.test.ws_server --ports 3 --port 9000   →  9000, 9001, 9002
 
     # Run parallel test against N ports (server must already be running)
-    python ws_server.py --test --ports 3
-    python ws_server.py --test --ports 3 --port 9000 --host 192.168.1.10
+    python3 -m flowtts.test.ws_server --test --ports 3
+    python3 -m flowtts.test.ws_server --test --ports 3 --port 9000 --host 192.168.1.10
 """
 
 from __future__ import annotations

@@ -5,9 +5,9 @@ Fires N requests spread randomly over S seconds, all in streaming mode.
 Measures TTFF and RTF per request. Results saved to a single file.
 
 Usage:
-    python3 stress_test.py --requests 100 --seconds 60 --cache 10
-    python stress_test.py --requests 50  --seconds 120 --port 8766
-    python stress_test.py --requests 100 --seconds 60 --bursty          # sparse/bursty distribution
+    python3 -m flowtts.test.stress_test --requests 100 --seconds 60 --cache 10
+    python3 -m flowtts.test.stress_test --requests 50  --seconds 120 --port 8766
+    python3 -m flowtts.test.stress_test --requests 100 --seconds 60 --bursty
 """
 
 from __future__ import annotations
