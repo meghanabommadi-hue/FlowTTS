@@ -67,7 +67,7 @@ from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
 from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot, record_port_change
 from flowtts.processing.audio_processing import crossfade, fade_out  # noqa: F401 (kept for future use)
-from flowtts.processing.text_normalize import normalize_text
+
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
 # Silence websockets' own logger — we do our own prints
@@ -353,7 +353,6 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     }))
                     continue
 
-            text = normalize_text(text)
             streaming = bool(data.get("streaming", True))
 
             ts_text_recv = _tsms()
@@ -561,7 +560,7 @@ async def _warmup(synth: FlowTtsSynthesizer) -> None:
 
     async def _one(sentence: str) -> bool:
         try:
-            await synth.synthesize(normalize_text(sentence))
+            await synth.synthesize(sentence)
             return True
         except Exception as e:
             print(f"[{_ts()}] warmup sentence failed: {e}", flush=True)
