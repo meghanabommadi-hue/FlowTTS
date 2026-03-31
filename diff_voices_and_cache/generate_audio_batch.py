@@ -13,6 +13,7 @@ Usage:
     python generate_audio_batch.py sentences.txt --port 8765
     python generate_audio_batch.py sentences.txt --concurrency 4
     python generate_audio_batch.py sentences.txt --output-dir /data/audio
+    python3 diff_voices_and_cache/generate_audio_batch.py bajaj_sentences_unique2.txt --output-dir cached_data_angry_tara
 """
 
 from __future__ import annotations
@@ -181,6 +182,20 @@ async def main() -> None:
     if total == 0:
         print("[ERROR] No sentences found in input file.")
         sys.exit(1)
+
+    # Build expanded sentence list and write a new .txt if any splits occur.
+    expanded: list[str] = []
+    split_count = 0
+    for s in sentences:
+        parts = list(split_and_expand_sentences(s))
+        expanded.extend(parts)
+        if len(parts) > 1:
+            split_count += 1
+
+    if split_count:
+        expanded_path = args.output_dir / (args.input.stem + "_expanded.txt")
+        expanded_path.write_text("\n".join(expanded) + "\n", encoding="utf-8")
+        print(f"[INFO] {split_count} sentence(s) were split → expanded list written to {expanded_path.resolve()}")
 
     print(f"[INFO] {total} sentences  port={args.port}  concurrency={args.concurrency}")
     print(f"[INFO] Output  → {args.output_dir.resolve()}")
