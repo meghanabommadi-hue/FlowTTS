@@ -106,7 +106,62 @@ def _load_bench_texts() -> List[str]:
 
 
 SAMPLE_TOKENS = _load_sample_tokens()
-_BENCH_TEXTS: List[str] = []  # loaded lazily on first use
+_BENCH_TEXTS: List[str] = []   # loaded by _build_cache_mix or lazily on first use
+_VOICE_ID: str = ""            # set via --voice arg
+_FIXED_SENTENCE: str = ""      # set via --sentence arg; repeats same text every request
+
+_BAJAJ_SENTENCES_FILE = Path.home() / "FlowTTS/sample_files/bajaj_sentences_unique.txt"
+
+
+def _build_cache_mix(n: int, cache_mix: str, voice: str) -> List[str]:
+    """Return n sentences with requested cache ratio from cached_texts.txt / bajaj_sentences_unique.txt."""
+    import hashlib as _hashlib
+    import random as _random
+
+    voice     = voice or "simran"
+    cache_dir = Path.home() / f"FlowTTS/cached_data_{voice}"
+    cached_txt = cache_dir / "cached_texts.txt"
+
+    if cached_txt.exists():
+        cached = [l.strip() for l in cached_txt.read_text(encoding="utf-8").splitlines() if l.strip()]
+        print(f"[cache_mix] {len(cached)} cached sentences from {cached_txt}", flush=True)
+    elif cache_dir.exists():
+        cached_hashes = {f.stem for f in cache_dir.glob("*.wav")}
+        try:
+            all_sents = [l.strip() for l in _BAJAJ_SENTENCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+            cached = [s for s in all_sents if _hashlib.sha256(s.encode()).hexdigest() in cached_hashes]
+        except Exception:
+            cached = []
+    else:
+        cached = []
+
+    try:
+        all_sents = [l.strip() for l in _BAJAJ_SENTENCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except Exception:
+        all_sents = cached[:]
+
+    cached_set = set(cached)
+    uncached   = [s for s in all_sents if s not in cached_set]
+
+    mix = cache_mix.lower().strip()
+    pct = (100 if mix in ("full", "100") else
+           0   if mix in ("none", "0")   else
+           50  if mix in ("half", "partial", "50") else
+           max(0, min(100, int(mix))) if mix.isdigit() else 50)
+
+    n_cached   = round(n * pct / 100)
+    n_uncached = n - n_cached
+
+    def _sample(pool: list, k: int) -> list:
+        if not pool or k == 0:
+            return []
+        return [_random.choice(pool) for _ in range(k)]
+
+    chosen = _sample(cached, n_cached) + _sample(uncached, n_uncached)
+    _random.shuffle(chosen)
+    print(f"[cache_mix] {pct}% cached → {n_cached} cached + {n_uncached} uncached"
+          f"  (pool: {len(cached)} cached, {len(uncached)} uncached)", flush=True)
+    return chosen
 
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
@@ -218,7 +273,11 @@ class RequestResult(NamedTuple):
     token_chars: int        # 0 for decoded/worker mode
     llm_s: Optional[float]
     decode_s: Optional[float]
-    ttff_s: Optional[float] = None  # time-to-first-chunk (streaming only)
+    ttff_s: Optional[float] = None        # time-to-first-audio-chunk (wall clock, streaming)
+    cache_hit: bool = False               # served from WAV cache, no LLM
+    llm_ttft_ms: Optional[float] = None  # time to first LLM token (server-side)
+    decoder_ttft_ms: Optional[float] = None  # time to first decoded chunk sent (server-side)
+    wav_enc_s: Optional[float] = None    # total WAV encoding time
 
 
 
@@ -250,8 +309,10 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Use bench texts if available, else built-in fallback list for active checkpoint
-            if _BENCH_TEXTS:
+            # Pick text: fixed > bench texts > fallback
+            if _FIXED_SENTENCE:
+                text = _FIXED_SENTENCE
+            elif _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
             else:
                 text = _FALLBACK_TEXTS[req_id % len(_FALLBACK_TEXTS)]
@@ -260,6 +321,7 @@ async def _run_one(
                 "call_id": call_id,
                 "text_id": text_id,
                 "text": text,
+                **({"voice_id": _VOICE_ID} if _VOICE_ID else {}),
                 **({"skip_decoder": True} if skip_decoder else {}),
                 **({"streaming": True} if streaming else {}),
             }
@@ -381,17 +443,30 @@ async def _recv_streaming(
     chunk_wavs: list[bytes] = []
     llm_s = None
     decode_s = None
+    wav_enc_s = None
+    llm_ttft_ms = None
+    decoder_ttft_ms = None
     total_tokens = 0
     first_chunk_latency: Optional[float] = None
     wav_path: Optional[Path] = None
+    is_cache_hit = False
 
     try:
         while True:
             raw = await ws.recv()
             # Combined frame: json_bytes + wav_bytes in one binary message.
-            # Split at the first closing brace to separate header from audio.
+            # Find the end of the JSON object by tracking brace depth.
             if isinstance(raw, bytes):
-                end = raw.index(b'}') + 1
+                depth = 0
+                end = 0
+                for i, b in enumerate(raw):
+                    if b == ord('{'):
+                        depth += 1
+                    elif b == ord('}'):
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
                 msg = json.loads(raw[:end])
                 wav_inline = raw[end:]
             else:
@@ -408,6 +483,8 @@ async def _recv_streaming(
                 chunk_idx = msg.get("chunk_index", 0)
                 n_tok = msg.get("tokens", 0)
                 total_tokens += n_tok
+                if msg.get("cache_hit"):
+                    is_cache_hit = True
 
                 # Inline wav from combined frame, or separate binary frame (fallback)
                 if wav_inline is not None:
@@ -428,10 +505,15 @@ async def _recv_streaming(
                     chunk_path.write_bytes(wav_chunk)
 
             elif mtype == "audio_done":
-                latency   = round(time.time() - t0, 3)
-                llm_s     = msg.get("llm_s")
-                decode_s  = msg.get("decode_s")
-                chunks    = msg.get("chunks", len(chunk_wavs))
+                latency         = round(time.time() - t0, 3)
+                llm_s           = msg.get("llm_s")
+                decode_s        = msg.get("decode_s")
+                wav_enc_s       = msg.get("wav_enc_s")
+                llm_ttft_ms     = msg.get("llm_ttft_ms")
+                decoder_ttft_ms = msg.get("decoder_ttft_ms")
+                if msg.get("cache_hit"):
+                    is_cache_hit = True
+                chunks      = msg.get("chunks", len(chunk_wavs))
                 total_wav_b = sum(len(w) for w in chunk_wavs)
 
                 if chunk_wavs:
@@ -442,11 +524,14 @@ async def _recv_streaming(
                      f"OK  stream_done  chunks={chunks}  tokens={total_tokens}"
                      f"  {total_wav_b}B → {wav_path.name if wav_path else '-'}"
                      f"  ttff={first_chunk_latency}s  total={latency}s"
-                     f"  llm_s={llm_s}  decode_s={decode_s}")
+                     f"  llm_ttft={llm_ttft_ms}ms  dec_ttft={decoder_ttft_ms}ms"
+                     f"  llm_s={llm_s}  decode_s={decode_s}  cache_hit={is_cache_hit}")
 
                 return RequestResult(req_id, port, True, latency, wav_path,
                                      None, total_wav_b, total_tokens * 20, llm_s, decode_s,
-                                     ttff_s=first_chunk_latency)
+                                     ttff_s=first_chunk_latency, cache_hit=is_cache_hit,
+                                     llm_ttft_ms=llm_ttft_ms, decoder_ttft_ms=decoder_ttft_ms,
+                                     wav_enc_s=wav_enc_s)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -670,53 +755,73 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     lines.append(f"SUMMARY  mode={mode}  total={len(results)}  passed={len(passed)}  failed={len(failed)}")
     lines.append(f"{'='*70}")
 
-    has_ttff = any(r.ttff_s is not None for r in results)
+    cache_hits = [r for r in passed if r.cache_hit]
+    llm_hits   = [r for r in passed if not r.cache_hit]
+
+    has_ttff     = any(r.ttff_s          is not None for r in results)
+    has_llm_ttft = any(r.llm_ttft_ms     is not None for r in results)
+    has_dec_ttft = any(r.decoder_ttft_ms is not None for r in results)
+
     header = (
         f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  "
         + (f"{'ttff(s)':>7}  " if has_ttff else "")
+        + (f"{'llm_ttft':>8}  " if has_llm_ttft else "")
+        + (f"{'dec_ttft':>8}  " if has_dec_ttft else "")
         + f"{'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
     )
     lines.append(header)
-    lines.append("-" * (88 if has_ttff else 80))
+    lines.append("-" * len(header))
 
     for r in sorted(results, key=lambda x: x.req_id):
-        detail = str(r.wav_path.name) if r.wav_path else (r.error or "")
-        ttff_col = (f"{r.ttff_s:>7.3f}  " if r.ttff_s is not None else f"{'─':>7}  ") if has_ttff else ""
+        detail       = str(r.wav_path.name) if r.wav_path else (r.error or "")
+        ttff_col     = (f"{r.ttff_s:>7.3f}  "              if r.ttff_s          is not None else f"{'─':>7}  ")  if has_ttff     else ""
+        llm_ttft_col = (f"{r.llm_ttft_ms/1000:>8.3f}  "    if r.llm_ttft_ms    is not None else f"{'─':>8}  ")  if has_llm_ttft else ""
+        dec_ttft_col = (f"{r.decoder_ttft_ms/1000:>8.3f}  " if r.decoder_ttft_ms is not None else f"{'─':>8}  ") if has_dec_ttft else ""
         lines.append(
             f"{r.req_id:>4}  {r.port:>5}  {'✓' if r.passed else '✗':>4}  "
             f"{r.latency_s:>7.3f}  "
-            + ttff_col
+            + ttff_col + llm_ttft_col + dec_ttft_col
             + f"{r.llm_s if r.llm_s is not None else '-':>6}  "
             f"{r.decode_s if r.decode_s is not None else '-':>6}  "
             f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
         )
 
     if passed:
-        lats  = [r.latency_s for r in passed]
-        llms  = [r.llm_s     for r in passed if r.llm_s    is not None]
-        decs  = [r.decode_s  for r in passed if r.decode_s is not None]
-        ttffs = [r.ttff_s    for r in passed if r.ttff_s   is not None]
+        lats      = [r.latency_s            for r in passed if r.latency_s       is not None]
+        llms      = [r.llm_s                for r in passed if r.llm_s           is not None]
+        decs      = [r.decode_s             for r in passed if r.decode_s        is not None]
+        wav_encs  = [r.wav_enc_s            for r in passed if r.wav_enc_s       is not None]
+        ttffs     = [r.ttff_s               for r in passed if r.ttff_s          is not None]
+        llm_ttfts = [r.llm_ttft_ms / 1000   for r in passed if r.llm_ttft_ms    is not None]
+        dec_ttfts = [r.decoder_ttft_ms/1000 for r in passed if r.decoder_ttft_ms is not None]
 
         def _fmt(vals: list, unit: str = "s") -> str:
             if not vals:
                 return "n/a"
-            return f"min={min(vals):.3f}{unit}  avg={sum(vals)/len(vals):.3f}{unit}  max={max(vals):.3f}{unit}"
+            sv = sorted(vals)
+            p95 = sv[int(len(sv) * 0.95)]
+            return f"min={min(vals):.3f}{unit}  avg={sum(vals)/len(vals):.3f}{unit}  p95={p95:.3f}{unit}  max={max(vals):.3f}{unit}"
 
         lines.append(f"\n{'─'*60}")
-        lines.append(f"  total latency : {_fmt(lats)}")
+        lines.append(f"  total latency    : {_fmt(lats)}")
         if ttffs:
-            lines.append(f"  time-to-first : {_fmt(ttffs)}  (first audio chunk)")
-        lines.append(f"  llm           : {_fmt(llms)}")
-        lines.append(f"  decoder       : {_fmt(decs)}")
-        if llms and decs and len(llms) == len(decs):
-            overhead = [l - d for l, d in zip(llms, decs)]
-            lines.append(f"  llm - decode  : {_fmt(overhead)}  (net inference)")
+            lines.append(f"  ttff (wall)      : {_fmt(ttffs)}  (client: first audio chunk received)")
+        if llm_ttfts:
+            lines.append(f"  llm ttft         : {_fmt(llm_ttfts)}  (server: first LLM token)")
+        if dec_ttfts:
+            lines.append(f"  decoder ttft     : {_fmt(dec_ttfts)}  (server: first decoded chunk sent)")
+        lines.append(f"  llm total        : {_fmt(llms)}")
+        lines.append(f"  decoder total    : {_fmt(decs)}")
+        if wav_encs:
+            lines.append(f"  wav encoding     : {_fmt(wav_encs)}")
         lines.append(f"{'─'*60}")
     if failed:
         lines.append(f"\nFailed requests:")
         for r in failed:
             lines.append(f"  req{r.req_id:04d} port={r.port}: {r.error}")
 
+    pct = round(len(cache_hits) / len(passed) * 100) if passed else 0
+    lines.append(f"\n  cache_hits={len(cache_hits)}  llm_requests={len(llm_hits)}  ({pct}% cached)")
     lines.append(f"\n{'✓ ALL PASSED' if not failed else f'✗ {len(failed)} FAILED'}")
     lines.append(f"{'='*70}")
 
@@ -796,12 +901,25 @@ def _resolve_ports(
 # Entry point
 # ---------------------------------------------------------------------------
 async def main(args: argparse.Namespace) -> None:
+    global _VOICE_ID, _FIXED_SENTENCE, _BENCH_TEXTS
     out_dir = _make_out_dir()
 
-    streaming   = getattr(args, "streaming", None)
+    streaming        = getattr(args, "streaming", None)
     if streaming is None:
         streaming = _settings.streaming.enabled
-    save_chunks = getattr(args, "save_chunks", False)
+    save_chunks      = getattr(args, "save_chunks", False)
+    _VOICE_ID        = getattr(args, "voice", "") or ""
+    _FIXED_SENTENCE  = getattr(args, "sentence", "") or ""
+    cache_mix        = getattr(args, "cache_mix", None)
+
+    if _VOICE_ID:
+        print(f"[voice] using voice_id={_VOICE_ID!r}", flush=True)
+    if _FIXED_SENTENCE:
+        print(f"[sentence] repeating: {_FIXED_SENTENCE!r}", flush=True)
+    if cache_mix and not _FIXED_SENTENCE:
+        _BENCH_TEXTS = _build_cache_mix(args.requests, cache_mix, _VOICE_ID)
+        if not _BENCH_TEXTS:
+            print("[cache_mix] fallback to default texts", flush=True)
 
     if args.launch:
         results = await run_test(
@@ -868,6 +986,12 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
+    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya"],
+                        help="Voice ID to use for synthesis (default: server default)")
+    parser.add_argument("--sentence", default="", metavar="TEXT",
+                        help="Repeat this single sentence for all requests")
+    parser.add_argument("--cache-mix", default=None, metavar="MIX",
+                        help="Sentence mix: full/100=all cached, none/0=all uncached, half/50, or 0-100")
 
     # External-server port selection
     pg = parser.add_mutually_exclusive_group()

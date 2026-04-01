@@ -22,7 +22,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import BaseModel
 from typing import ClassVar, Literal
 
-_MODELS_DIR = str(Path.home() / "models")
+_MODELS_DIR      = str(Path.home() / "models")
+_SAMPLE_FILES_DIR = str(Path.home() / "FlowTTS/sample_files")
+
+# Per-voice reference audio paths. Keys match voice_id values sent by clients.
+VOICE_REF_AUDIO: dict[str, str] = {
+    "simran": f"{_SAMPLE_FILES_DIR}/simran.wav",
+    "tara":   f"{_SAMPLE_FILES_DIR}/tara.wav",
+    "vikram": f"{_SAMPLE_FILES_DIR}/vikram.wav",
+    "daya":   f"{_SAMPLE_FILES_DIR}/daya.wav",
+}
 
 
 class TtsModelSettings(BaseModel):
@@ -35,9 +44,7 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
-        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -128,7 +135,7 @@ class Settings(BaseSettings):
 
     # Directory of pre-generated WAV files named by SHA256 of raw transcript.
     # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
-    wav_cache_dir: str | None = "/home/ubuntu/FlowTTS/cached_data_simran"
+    wav_cache_dir: str | None = str(Path.home() / "FlowTTS/cached_data_simran")
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):

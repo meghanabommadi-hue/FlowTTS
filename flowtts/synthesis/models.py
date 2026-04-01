@@ -30,6 +30,7 @@ Performance notes:
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 
@@ -43,12 +44,18 @@ logger = structlog.get_logger(__name__)
 class FlowTtsSynthesizer:
     """Loads sgl.Engine + TTSCodec once; synthesizes text → audio token string."""
 
+    # Silence-token filtering constants
+    _SILENCE_TOKEN  = "<|speech_token_2973|>"
+    _SILENCE_STREAK = 4   # consecutive silence tokens → early stop
+
     def __init__(self) -> None:
         self._engine = None
         self._tts_codec = None
         self._context_tokens: str = ""
         self._ref_speech_tokens = None
         self._sampling_params: dict = {}
+        # Per-voice encoded tokens: {voice_id: (context_tokens, ref_speech_tokens)}
+        self._voice_tokens: dict[str, tuple[str, object]] = {}
 
     async def initialize(self) -> None:
         """Load model. Mirrors main() in TTSIntegration/ws_server.py."""
@@ -64,6 +71,7 @@ class FlowTtsSynthesizer:
 
         logger.info("loading_codec_and_ref_audio", ref_audio=cfg.ref_audio)
         from flowtts.decoder.ncodec.codec import TTSCodec
+        from flowtts.core.config import VOICE_REF_AUDIO
         tts_codec = TTSCodec(
             max_batch_size=dec.max_batch,
             batch_timeout_ms=dec.batch_timeout_ms,
@@ -72,24 +80,30 @@ class FlowTtsSynthesizer:
             use_trt=dec.use_trt,
         )
 
-        # Encode reference audio to get context tokens + ref speech tokens
-        ref_path = cfg.ref_audio
-        context_tokens: str
-        ref_speech_tokens = None
-        if ref_path and os.path.isfile(ref_path):
-            try:
-                ref_enc = tts_codec.encode(ref_path)
-                if isinstance(ref_enc, tuple) and len(ref_enc) == 2:
-                    ref_speech_tokens, context_tokens = ref_enc[0], ref_enc[1]
-                else:
-                    context_tokens = ref_enc
-                logger.info("ref_audio_loaded", path=ref_path)
-            except Exception as e:
-                logger.warning("ref_audio_failed", error=str(e), using="default_context")
-                context_tokens = self._default_context()
-        else:
-            logger.warning("ref_audio_not_found", path=ref_path, using="default_context")
-            context_tokens = self._default_context()
+        def _encode_ref(ref_path: str) -> tuple[str, object]:
+            """Encode a ref audio → (context_tokens, ref_speech_tokens)."""
+            if ref_path and os.path.isfile(ref_path):
+                try:
+                    ref_enc = tts_codec.encode(ref_path)
+                    if isinstance(ref_enc, tuple) and len(ref_enc) == 2:
+                        return ref_enc[1], ref_enc[0]  # context_tokens, ref_speech_tokens
+                    return ref_enc, None
+                except Exception as e:
+                    logger.warning("ref_audio_failed", path=ref_path, error=str(e))
+            else:
+                logger.warning("ref_audio_not_found", path=ref_path)
+            return self._default_context(), None
+
+        # Encode default voice (used as fallback)
+        context_tokens, ref_speech_tokens = _encode_ref(cfg.ref_audio)
+        logger.info("ref_audio_loaded", path=cfg.ref_audio)
+
+        # Encode all named voices for per-request switching
+        voice_tokens: dict[str, tuple[str, object]] = {}
+        for voice_id, v_path in VOICE_REF_AUDIO.items():
+            v_ctx, v_ref = _encode_ref(v_path)
+            voice_tokens[voice_id] = (v_ctx, v_ref)
+            logger.info("voice_loaded", voice_id=voice_id, path=v_path)
 
         logger.info("loading_sglang_engine", model=model_path)
         import sglang as sgl
@@ -123,6 +137,7 @@ class FlowTtsSynthesizer:
         self._tts_codec = tts_codec
         self._context_tokens = context_tokens
         self._ref_speech_tokens = ref_speech_tokens
+        self._voice_tokens = voice_tokens
         self._engine = engine
         self._sampling_params = sampling_params
         logger.info("synthesizer_ready")
@@ -149,7 +164,7 @@ class FlowTtsSynthesizer:
         # ref_audio: inspect what we actually encoded
         ctx_token_count = context_tokens.count("<|context_token_")
         ref_speech_present = ref_speech_tokens is not None and bool(ref_speech_tokens)
-        ref_source = cfg.ref_audio if (ref_path and os.path.isfile(ref_path)) else "default_context (hardcoded)"
+        ref_source = cfg.ref_audio if os.path.isfile(cfg.ref_audio) else "default_context (hardcoded)"
 
         print("\n" + "=" * 60, flush=True)
         print("  FlowTTS — Engine runtime stats (from model)", flush=True)
@@ -167,20 +182,33 @@ class FlowTtsSynthesizer:
         print(f"  ref_speech_tokens    : {'present' if ref_speech_present else 'absent'}", flush=True)
         print("=" * 60 + "\n", flush=True)
 
-    async def synthesize(self, text: str) -> str:
+    def _tokens_for_voice(self, voice_id: str | None) -> tuple[str, object]:
+        """Return (context_tokens, ref_speech_tokens) for the given voice, falling back to default."""
+        if voice_id and voice_id in self._voice_tokens:
+            return self._voice_tokens[voice_id]
+        return self._context_tokens, self._ref_speech_tokens
+
+    @staticmethod
+    def _strip_trailing_silence(token_str: str) -> str:
+        """Remove trailing <|speech_token_2973|> (silence) from a full token string."""
+        silence = "<|speech_token_2973|>"
+        while token_str.endswith(silence):
+            token_str = token_str[: -len(silence)]
+        return token_str
+
+    async def synthesize(self, text: str, voice_id: str | None = None) -> str:
         """Return full audio token string for the given text."""
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
-        prompt = self._tts_codec.format_prompt(
-            text, self._context_tokens, self._ref_speech_tokens
-        )
+        ctx, ref = self._tokens_for_voice(voice_id)
+        prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
         t0 = time.monotonic()
-        logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt))
+        logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt), voice_id=voice_id)
 
         result = await self._engine.async_generate(prompt, self._sampling_params)
-        full_text = result["text"]
+        full_text = self._strip_trailing_silence(result["text"])
 
         duration = time.monotonic() - t0
         logger.info(
@@ -191,30 +219,55 @@ class FlowTtsSynthesizer:
         )
         return full_text
 
-    async def synthesize_stream(self, text: str):
+    async def synthesize_stream(self, text: str, voice_id: str | None = None):
         """Async generator yielding incremental speech token strings as the LLM produces them.
 
         Each yielded value is a string fragment like "<|speech_token_42|><|speech_token_7|>..."
         The final yield is an empty string signalling EOS.
+        Silence tokens (2973) are buffered; 4 consecutive triggers early stop.
         """
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
-        prompt = self._tts_codec.format_prompt(
-            text, self._context_tokens, self._ref_speech_tokens
-        )
+        ctx, ref = self._tokens_for_voice(voice_id)
+        prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
         stream_params = {**self._sampling_params}
         generator = await self._engine.async_generate(prompt, stream_params, stream=True)
 
-        prev_len = 0
+        prev_len       = 0
+        silence_streak = 0
+        pending_silence: list[str] = []  # silence tokens held until a real token follows
+
         async for chunk in generator:
             full_so_far: str = chunk.get("text", "")
             delta = full_so_far[prev_len:]
             prev_len = len(full_so_far)
-            if delta:
-                yield delta
-        # signal end
+            if not delta:
+                continue
+
+            tokens = re.findall(r"<\|speech_token_\d+\|>", delta)
+            to_yield: list[str] = []
+            for tok in tokens:
+                if tok == self._SILENCE_TOKEN:
+                    silence_streak += 1
+                    pending_silence.append(tok)
+                    if silence_streak >= self._SILENCE_STREAK:
+                        logger.info("silence_early_stop", text_preview=text[:40], streak=silence_streak)
+                        pending_silence.clear()
+                        yield ""
+                        return
+                else:
+                    if pending_silence:
+                        to_yield.extend(pending_silence)
+                        pending_silence.clear()
+                    silence_streak = 0
+                    to_yield.append(tok)
+
+            if to_yield:
+                yield "".join(to_yield)
+
+        # EOS — discard trailing silence, don't flush pending_silence
         yield ""
 
     @staticmethod

@@ -82,6 +82,24 @@ _CROSSFADE_SAMPLES   = settings.streaming.crossfade_samples
 _FADE_OUT_SAMPLES    = settings.streaming.fade_out_samples
 _audio_out_dir: Path | None = None
 _wav_cache_dir: Path | None = None
+_wav_cache_base: Path = Path.home() / "FlowTTS"
+
+# Explicit per-voice cache directory map. Keys match voice_id sent by clients.
+_VOICE_CACHE_MAP: dict[str, str] = {
+    "tara":   "cached_data_tara",
+    "simran": "cached_data_simran",
+    "vikram": "cached_data_vikram",
+    "daya":   "cached_data_daya",
+}
+
+
+def _cache_dir_for_voice(voice_id: str | None) -> Path | None:
+    """Return per-voice cache dir if known, else fall back to global _wav_cache_dir."""
+    if voice_id and voice_id in _VOICE_CACHE_MAP:
+        d = _wav_cache_base / _VOICE_CACHE_MAP[voice_id]
+        if d.exists():
+            return d
+    return _wav_cache_dir
 _open_ports: set[int] = set()  # tracks all bound WS ports
 
 # Rolling RTF tracking (thread-safe via GIL for simple int/float ops)
@@ -139,6 +157,7 @@ async def _handle_streaming_request(
     text_id: str,
     port: int,
     ts_text_recv: str,
+    voice_id: str | None = None,
 ) -> None:
     """Stream audio chunks to the client as the LLM produces speech tokens.
 
@@ -164,12 +183,13 @@ async def _handle_streaming_request(
     total_wav_b   = 0
     decode_total  = 0.0
     wav_total     = 0.0
-    first_chunk_sent = False
+    llm_ttft_s    = None   # time to first LLM token
+    decoder_ttft_s = None  # time to first decoded chunk sent
 
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, decoder_ttft_s, overlap_tokens
         if not token_buf:
             return
 
@@ -201,10 +221,12 @@ async def _handle_streaming_request(
         total_wav_b  += len(decoded.wav_bytes)
 
         ts_chunk = _tsms()
-        if not first_chunk_sent:
-            ttft = round((time.perf_counter() - t0) * 1000)
-            print(f"[{ts_chunk}] :{port} {call_id}  first_chunk  ttft={ttft}ms  tokens={n_tok}", flush=True)
-            first_chunk_sent = True
+        if decoder_ttft_s is None:
+            decoder_ttft_s = time.perf_counter() - t0
+            print(f"[{ts_chunk}] :{port} {call_id}  first_chunk"
+                  f"  ttft={round(decoder_ttft_s*1000)}ms"
+                  f"  llm_ttft={round(llm_ttft_s*1000) if llm_ttft_s else '?'}ms"
+                  f"  tokens={n_tok}", flush=True)
 
         await ws.send(
             json.dumps({
@@ -222,11 +244,14 @@ async def _handle_streaming_request(
         chunk_index += 1
 
     try:
-        async for delta in synth.synthesize_stream(text):
+        async for delta in synth.synthesize_stream(text, voice_id=voice_id):
             if not delta:
                 # EOS signal — flush remainder
                 await _flush_chunk(is_final=True)
                 break
+
+            if llm_ttft_s is None:
+                llm_ttft_s = time.perf_counter() - t0
 
             buffer += delta
             # Extract all complete speech tokens from buffer; keep tail after last match.
@@ -251,32 +276,49 @@ async def _handle_streaming_request(
         rtf     = total_s / audio_s if audio_s > 0 else 0.0
 
         await ws.send(json.dumps({
-            "type":        "audio_done",
-            "call_id":     call_id,
-            "text_id":     text_id,
-            "text":        text,
-            "chunks":      chunk_index,
-            "total_tokens": total_tokens,
+            "type":            "audio_done",
+            "call_id":         call_id,
+            "text_id":         text_id,
+            "text":            text,
+            "chunks":          chunk_index,
+            "total_tokens":    total_tokens,
             "total_wav_bytes": total_wav_b,
-            "sample_rate": SAMPLE_RATE,
-            "llm_s":       llm_s,
-            "decode_s":    round(decode_total, 4),
-            "rtf":         round(rtf, 3),
-            "avg_rtf":     round(avg_rtf, 3),
-            "cache_hit":   False,
+            "sample_rate":     SAMPLE_RATE,
+            "llm_s":           llm_s,
+            "decode_s":        round(decode_total, 4),
+            "wav_enc_s":       round(wav_total, 4),
+            "llm_ttft_ms":     round(llm_ttft_s * 1000, 1) if llm_ttft_s is not None else None,
+            "decoder_ttft_ms": round(decoder_ttft_s * 1000, 1) if decoder_ttft_s is not None else None,
+            "rtf":             round(rtf, 3),
+            "avg_rtf":         round(avg_rtf, 3),
+            "cache_hit":       False,
         }))
+
+        record_call(
+            call_id=call_id,
+            text_id=text_id,
+            port=port,
+            text=text,
+            token_count=total_tokens,
+            llm_s=llm_s,
+            decode_s=round(decode_total, 4),
+            wav_bytes=total_wav_b,
+            ts=ts_done,
+            voice_id=voice_id,
+            cache_hit=False,
+        )
 
         print(
             f"[{ts_done}] :{port} {call_id}  stream_done"
             f"  chunks={chunk_index}"
             f"  tokens={total_tokens}"
-            f"  llm={llm_ms}ms"
+            f"  llm_ttft={round(llm_ttft_s*1000) if llm_ttft_s else '?'}ms"
+            f"  dec_ttft={round(decoder_ttft_s*1000) if decoder_ttft_s else '?'}ms"
             f"  decode={round(decode_total*1000)}ms"
             f"  wav_enc={round(wav_total*1000)}ms"
             f"  total={round(total_s*1000)}ms"
             f"  wav={total_wav_b}B"
-            f"  rtf={rtf:.3f}"
-            f"  avg_rtf={avg_rtf:.3f}",
+            f"  rtf={rtf:.3f}",
             flush=True,
         )
 
@@ -311,8 +353,10 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 continue
 
             text = (data.get("text") or "").strip()
-            call_id = data.get("call_id") or f"{peer[0]}:{peer[1]}"
-            text_id = data.get("text_id") or str(uuid.uuid4())
+            call_id  = data.get("call_id") or f"{peer[0]}:{peer[1]}"
+            text_id  = data.get("text_id") or str(uuid.uuid4())
+            voice_id = data.get("voice_id") or None
+            streaming = bool(data.get("streaming", True))
             if not text:
                 await ws.send(json.dumps({
                     "type": "error", "call_id": call_id, "text_id": text_id,
@@ -320,13 +364,15 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 continue
 
-            # Cache lookup: check for pre-generated WAV keyed by SHA256 of raw text
-            if _wav_cache_dir is not None:
+            # Cache lookup: per-voice cache dir first, then global fallback.
+            # Bypass LLM entirely — send cached WAV immediately.
+            _vc_dir = _cache_dir_for_voice(voice_id)
+            if _vc_dir is not None:
                 text_hash = hashlib.sha256(text.encode()).hexdigest()
-                cached_wav = _wav_cache_dir / f"{text_hash}.wav"
+                cached_wav = _vc_dir / f"{text_hash}.wav"
                 if cached_wav.exists():
                     wav_bytes = cached_wav.read_bytes()
-                    print(f"[{_ts()}] :{port} {call_id}  cache_hit  {text[:60]!r}", flush=True)
+                    print(f"[{_ts()}] :{port} call_id:{call_id}  cache_hit:True  voice:{voice_id or 'default'}  {text[:60]!r}", flush=True)
                     await ws.send(
                         json.dumps({
                             "type":        "audio_chunk",
@@ -353,9 +399,20 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                         "decode_s":        0.0,
                         "cache_hit":       True,
                     }))
+                    record_call(
+                        call_id=call_id,
+                        text_id=text_id,
+                        port=port,
+                        text=text,
+                        token_count=0,
+                        llm_s=0.0,
+                        decode_s=0.0,
+                        wav_bytes=len(wav_bytes),
+                        ts=_tsms(),
+                        voice_id=voice_id,
+                        cache_hit=True,
+                    )
                     continue
-
-            streaming = bool(data.get("streaming", True))
 
             ts_text_recv = _tsms()
             _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  streaming={streaming}  text={text[:60]!r}")
@@ -364,14 +421,14 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             synth = await _get_synthesizer()
 
             if streaming:
-                await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv)
+                await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id)
                 continue
 
             try:
                 t0 = time.perf_counter()
                 ts_llm_start = _tsms()
                 _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
-                audio_tokens = await asyncio.wait_for(synth.synthesize(text), timeout=30.0)
+                audio_tokens = await asyncio.wait_for(synth.synthesize(text, voice_id=voice_id), timeout=30.0)
                 llm_s = round(time.perf_counter() - t0, 4)
                 llm_ms = round(llm_s * 1000)
                 ts_tokens_ready = _tsms()
@@ -387,9 +444,11 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                         "text_id": text_id,
                         "port": port,
                         "text": text,
+                        "voice_id": voice_id,
                         "audio_tokens": audio_tokens,
                         "token_count": token_count,
                         "llm_ms": llm_ms,
+                        "cache_hit": False,
                     }, ensure_ascii=False) + "\n")
 
                 # Batch decode: all concurrent requests are coalesced by
@@ -414,6 +473,8 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     decode_s=decode_s,
                     wav_bytes=len(decoded.wav_bytes),
                     ts=ts_tokens_ready,
+                    voice_id=voice_id,
+                    cache_hit=False,
                 )
 
                 if _audio_out_dir is not None:
@@ -443,14 +504,27 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                         "type":        "audio_chunk",
                         "call_id":     call_id,
                         "text_id":     text_id,
-                        "chunk_index": chunk_index,
+                        "chunk_index": 0,
                         "sample_rate": SAMPLE_RATE,
                         "wav_bytes":   len(decoded.wav_bytes),
-                        "tokens":      n_tok,
-                        "is_final":    is_final,
+                        "tokens":      token_count,
+                        "is_final":    True,
                         "cache_hit":   False,
                     }).encode() + decoded.wav_bytes
                 )
+                await ws.send(json.dumps({
+                    "type":            "audio_done",
+                    "call_id":         call_id,
+                    "text_id":         text_id,
+                    "text":            text,
+                    "chunks":          1,
+                    "total_tokens":    token_count,
+                    "total_wav_bytes": len(decoded.wav_bytes),
+                    "sample_rate":     SAMPLE_RATE,
+                    "llm_s":           llm_s,
+                    "decode_s":        decode_s,
+                    "cache_hit":       False,
+                }))
                 ts_audio_sent = _tsms()
 
                 total_s = llm_s + decode_s + wav_s
@@ -555,24 +629,37 @@ _WARMUP_SENTENCES = [
 async def _warmup(synth: FlowTtsSynthesizer) -> None:
     if not _WARMUP_SENTENCES:
         return
-    # Build a batch of exactly 40 sentences by cycling through the list.
-    batch_size = 40
-    sentences = [_WARMUP_SENTENCES[i % len(_WARMUP_SENTENCES)] for i in range(batch_size)]
-    print(f"[{_ts()}] warmup: running {batch_size} sentences concurrently...", flush=True)
-    t0 = time.perf_counter()
+    from flowtts.core.config import VOICE_REF_AUDIO
 
-    async def _one(sentence: str) -> bool:
+    # Warm up each voice with batch_size concurrent requests, one voice at a time.
+    # None = default voice, then each named voice in order.
+    batch_size  = 40
+    all_voices: list[str | None] = [None] + list(VOICE_REF_AUDIO.keys())
+
+    async def _one(sentence: str, voice_id: str | None) -> bool:
         try:
-            await synth.synthesize(sentence)
+            await synth.synthesize(sentence, voice_id=voice_id)
             return True
         except Exception as e:
-            print(f"[{_ts()}] warmup sentence failed: {e}", flush=True)
+            print(f"[{_ts()}] warmup failed (voice={voice_id}): {e}", flush=True)
             return False
 
-    results = await asyncio.gather(*[_one(s) for s in sentences])
-    ok = sum(results)
+    t0 = time.perf_counter()
+    total_ok = 0
+    total_n  = 0
+    for voice_id in all_voices:
+        label     = voice_id or "default"
+        sentences = [_WARMUP_SENTENCES[i % len(_WARMUP_SENTENCES)] for i in range(batch_size)]
+        print(f"[{_ts()}] warmup [{label}]: {batch_size} requests...", flush=True)
+        tv      = time.perf_counter()
+        results = await asyncio.gather(*[_one(s, voice_id) for s in sentences])
+        ok      = sum(results)
+        total_ok += ok
+        total_n  += batch_size
+        print(f"[{_ts()}] warmup [{label}]: {ok}/{batch_size} ok  ({(time.perf_counter()-tv)*1000:.0f}ms)", flush=True)
+
     elapsed = (time.perf_counter() - t0) * 1000
-    print(f"[{_ts()}] warmup done  {ok}/{batch_size} ok  ({elapsed:.0f}ms total)", flush=True)
+    print(f"[{_ts()}] warmup done  {total_ok}/{total_n} ok  ({elapsed:.0f}ms total)", flush=True)
 
 
 async def _warmup_port(port: int, sentence: str) -> None:

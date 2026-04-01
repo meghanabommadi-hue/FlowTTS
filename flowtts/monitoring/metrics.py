@@ -220,6 +220,8 @@ def record_call(
     decode_s: float,
     wav_bytes: int,
     ts: str,
+    voice_id: str | None = None,
+    cache_hit: bool = False,
 ) -> None:
     """Append one JSON line to monitoring/calls.jsonl for every completed TTS call."""
     entry = {
@@ -228,11 +230,13 @@ def record_call(
         "text_id": text_id,
         "port": port,
         "text": text,
+        "voice_id": voice_id,
         "token_count": token_count,
         "llm_s": llm_s,
         "decode_s": decode_s,
         "total_s": round(llm_s + decode_s, 4),
         "wav_bytes": wav_bytes,
+        "cache_hit": cache_hit,
     }
     with _lock:
         _calls_log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
