@@ -16,4 +16,5 @@ uv pip install git+https://github.com/ysharma3501/FastBiCodec.git@612ba9e29d14b9
 echo "==> Downloading models"
 python3 "$SCRIPT_DIR/download_models.py"
 
+
 echo "==> Setup complete."

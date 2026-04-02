@@ -1,3 +1,18 @@
 __pycache__/
 *.py[cod]
 *.pyo
+
+# cached WAV dirs
+cached_data_*/
+
+# monitoring runtime files
+monitoring/requests/
+monitoring/prometheus-data/
+monitoring/calls.jsonl
+monitoring/llm_outputs.json
+monitoring/llm_outputs.jsonl
+monitoring/llm_outputs.txt
+monitoring/latest_llm_logs.json
+monitoring/recent.txt
+monitoring/stress_latest.json
+monitoring/silence_alerts.json

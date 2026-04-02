@@ -127,6 +127,45 @@ FLOWTTS_DECODER__USE_TRT=true cd /root/FlowTTS && bash run.sh --ports 1
 
 ---
 
+## Use a specific voice
+
+```bash
+# Use tara voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice tara
+
+# Use simran voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice simran
+
+# Use vikram voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vikram
+
+# Use daya voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice daya
+```
+
+- Available voices: `simran`, `tara`, `vikram`, `daya`
+- If WAV cache exists for that voice (`~/FlowTTS/cached_data_<voice>/`), matching sentences are served instantly without hitting the LLM
+
+---
+
+## Download WAV cache (for cache hits)
+
+```bash
+# Download tara cache → ~/FlowTTS/cached_data_tara
+python3 flowtts/setup/download_cache.py --voice tara
+
+# Download simran cache → ~/FlowTTS/cached_data_simran
+python3 flowtts/setup/download_cache.py --voice simran
+
+# Both at once
+python3 flowtts/setup/download_cache.py --voice tara --voice simran
+```
+
+- WAVs are sha256-named and served directly on cache hit (bypasses LLM entirely)
+- Cache dirs are auto-detected per voice by the server (`cached_data_<voice>/`)
+
+---
+
 ## Notes
 
 - Server ctrl API runs on `127.0.0.1:8764`
