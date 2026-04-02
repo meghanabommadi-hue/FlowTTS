@@ -165,8 +165,16 @@ def _build_cache_mix(n: int, cache_mix: str, voice: str) -> List[str]:
 
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
-    # short — Hindi numerals
+    # short — Hindi numerals'
+    "थैंक यू hold करने के लिए, अब पूरे steps फिर से clear बता دیتी हूँ:",
+    " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
+    " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
+    "नमस्ते मैं आपकी कैसे मदद कर सकती हूं?",
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
+    "नमस्ते, आपकी कैसे मदद कर सकती हूं?",
+    "Hello, मैं कर सकती हूं?",
+    "Hi, मैं कर सकती हूं?",
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
     "क्या आप अपना नाम बता सकते हैं?",
     "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें।",
     "कृपया थोड़ा इंतज़ार करें।",

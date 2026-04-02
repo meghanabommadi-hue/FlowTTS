@@ -115,6 +115,35 @@ PYEOF
     exit 0
 fi
 
+# ── Auto-download/resume WAV cache ───────────────────────────────────────────
+_ensure_cache() {
+    "$PYTHON" - <<'PYEOF'
+import sys
+from pathlib import Path
+from huggingface_hub import HfApi
+import importlib
+
+dl = importlib.import_module("flowtts.setup.download_cache")
+token = dl.resolve_token()
+api = HfApi(token=token)
+
+for voice, repo in dl.HF_REPOS.items():
+    cache_dir = Path.home() / f"FlowTTS/cached_data_{voice}"
+    existing = len(list(cache_dir.glob("*.wav"))) if cache_dir.exists() else 0
+    try:
+        total = sum(1 for f in api.list_repo_files(repo, repo_type="dataset") if f.endswith(".wav"))
+    except Exception as e:
+        print(f"[FlowTTS] Could not check '{voice}' repo: {e} — skipping.", flush=True)
+        continue
+    if existing >= total:
+        print(f"[FlowTTS] Cache '{voice}' complete ({existing}/{total}) — skipping.", flush=True)
+    else:
+        print(f"[FlowTTS] Cache '{voice}' incomplete ({existing}/{total}) — downloading...", flush=True)
+        dl.download(voice, token)
+PYEOF
+}
+_ensure_cache
+
 # ── Server mode — one process, one model, N ports ────────────────────────────
 echo "[FlowTTS] Starting server: ${N_PORTS} port(s) from ${BASE_PORT}..."
 
@@ -126,11 +155,51 @@ EXTRA_ARGS=()
 [[ -n "${CTRL_PORT}"  ]] && EXTRA_ARGS+=(--ctrl-port  "${CTRL_PORT}")
 
 RESTART_DELAY=5
+
+# ── Run stress test once server is ready ─────────────────────────────────────
+_run_stress_test() {
+    if [[ -z "${CTRL_PORT}" ]]; then
+        return
+    fi
+    local deadline=$(( $(date +%s) + 300 ))
+    echo "[FlowTTS] Waiting for server ready before stress test..."
+    while [[ $(date +%s) -lt ${deadline} ]]; do
+        if curl -sf "http://127.0.0.1:${CTRL_PORT}/ready" 2>/dev/null | grep -qi '"ready": *true'; then
+            break
+        fi
+        sleep 2
+    done
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+        echo "[FlowTTS] Timed out waiting — skipping stress test."
+        return
+    fi
+    echo "[FlowTTS] Running stress test (60 requests, 20 ports)..."
+    "$PYTHON" -m flowtts.test.test_pipeline \
+        --no-launch \
+        --ctrl-port "${CTRL_PORT}" \
+        --n-ports 20 \
+        --base-port "${BASE_PORT}" \
+        --requests 60 \
+        2>&1 | tee -a "${LOG_FILE}"
+    echo "[FlowTTS] Stress test complete."
+}
+
 while true; do
+    [[ -n "${CTRL_PORT}" ]] && fuser -k "${CTRL_PORT}/tcp" 2>/dev/null || true
+    fuser -k "${BASE_PORT}/tcp" 2>/dev/null || true
+
+    _run_stress_test &
+    STRESS_PID=$!
+
     "$PYTHON" -m flowtts.server --ports "${N_PORTS}" --base-port "${BASE_PORT}" \
         "${EXTRA_ARGS[@]}" \
         2>&1 | tee -a "${LOG_FILE}"
     EXIT_CODE=${PIPESTATUS[0]}
+
+    # Kill stress test if still running (e.g. server crashed mid-test)
+    kill "${STRESS_PID}" 2>/dev/null || true
+    wait "${STRESS_PID}" 2>/dev/null || true
+
     # Exit code 0 = clean shutdown (KeyboardInterrupt), don't restart
     if [[ ${EXIT_CODE} -eq 0 ]]; then
         echo "[FlowTTS] Clean exit. Stopping."

@@ -64,9 +64,13 @@ import websockets
 from websockets.exceptions import WebSocketException
 
 from flowtts.core.config import settings
-from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
-from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot, record_port_change
-from flowtts.processing.audio_processing import crossfade, fade_out  # noqa: F401 (kept for future use)
+from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RATE
+from flowtts.monitoring.metrics import (
+    record_call, record_ws_connection_open, record_ws_connection_close,
+    record_ws_error, record_ws_done, ws_log_snapshot, record_port_change,
+    register_gpu_info,
+)
+from flowtts.processing.audio_processing import crossfade, fade_in, fade_out
 
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
@@ -146,6 +150,16 @@ async def _get_synthesizer() -> FlowTtsSynthesizer:
         print(f"[{_ts()}] loading model...", flush=True)
         await _synthesizer.initialize()
         print(f"[{_ts()}] model ready", flush=True)
+        # Register GPU/engine metadata in Prometheus once model is loaded
+        ei = getattr(_synthesizer, "engine_info", {})
+        register_gpu_info(
+            model_gpu_id=settings.decoder.model_gpu_id,
+            decoder_gpu_id=settings.decoder.decoder_gpu_id,
+            tp_size=ei.get("tp_size", 1),
+            attention_backend=ei.get("attention_backend", "n/a"),
+            mem_weight_gb=ei.get("mem_weight_gb", "n/a"),
+            mem_kvcache_gb=ei.get("mem_kvcache_gb", "n/a"),
+        )
     return _synthesizer
 
 
@@ -213,12 +227,21 @@ async def _handle_streaming_request(
             discard = n_overlap * 320  # 1 token = 320 samples at 16kHz
             pcm = pcm[discard:]
 
-        decoded = await loop.run_in_executor(_wav_executor, tensor_to_wav, pcm)
+        # Smooth chunk boundaries: fade-in every chunk (including the first, to
+        # suppress codec cold-start click) and fade-out every non-final chunk.
+        if _CROSSFADE_SAMPLES > 0:
+            pcm = fade_in(pcm, _CROSSFADE_SAMPLES)
+        if not is_final and _FADE_OUT_SAMPLES > 0:
+            pcm = fade_out(pcm, _FADE_OUT_SAMPLES)
+
+        # Send raw int16 PCM — no WAV header — so client receives a continuous
+        # byte stream with no headers causing gaps or parse overhead.
+        audio_bytes = await loop.run_in_executor(_wav_executor, pcm_to_int16_bytes, pcm)
         wav_total += time.perf_counter() - tw
 
         n_tok = len(real_tokens)
         total_tokens += n_tok
-        total_wav_b  += len(decoded.wav_bytes)
+        total_wav_b  += len(audio_bytes)
 
         ts_chunk = _tsms()
         if decoder_ttft_s is None:
@@ -235,11 +258,12 @@ async def _handle_streaming_request(
                 "text_id":     text_id,
                 "chunk_index": chunk_index,
                 "sample_rate": SAMPLE_RATE,
-                "wav_bytes":   len(decoded.wav_bytes),
+                "encoding":    "pcm_int16",
+                "wav_bytes":   len(audio_bytes),
                 "tokens":      n_tok,
                 "is_final":    is_final,
                 "cache_hit":   False,
-            }).encode() + decoded.wav_bytes
+            }).encode() + audio_bytes
         )
         chunk_index += 1
 
@@ -325,7 +349,7 @@ async def _handle_streaming_request(
     except Exception as e:
         ts_err = _tsms()
         print(f"[{ts_err}] :{port} {call_id}  STREAM ERROR: {e}", flush=True)
-        record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
+        record_ws_error(call_id, port=port, text_id=text_id, error=str(e), voice_id=voice_id)
         try:
             await ws.send(json.dumps({
                 "type": "error", "call_id": call_id, "text_id": text_id, "error": str(e),
@@ -562,7 +586,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             except Exception as e:
                 ts_err = _tsms()
                 print(f"[{ts_err}] :{port} {call_id}  ERROR: {e}", flush=True)
-                record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
+                record_ws_error(call_id, port=port, text_id=text_id, error=str(e), voice_id=voice_id)
                 await ws.send(json.dumps({
                     "type": "error", "call_id": call_id, "text_id": text_id,
                     "error": str(e),
@@ -765,19 +789,19 @@ async def _run_control_api(ctrl_port: int) -> None:
     app.router.add_get("/ws/log",     _http_ws_log)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", ctrl_port)
+    site = web.TCPSite(runner, "0.0.0.0", ctrl_port)
     await site.start()
-    print(f"[{_ts()}] control API  http://127.0.0.1:{ctrl_port}", flush=True)
+    print(f"[{_ts()}] control API  http://0.0.0.0:{ctrl_port}  (metrics: http://<public-ip>:{ctrl_port}/metrics)", flush=True)
 
 
 async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None) -> None:
+    # Start HTTP control API first so the port is claimed before warmup begins
+    if ctrl_port:
+        await _run_control_api(ctrl_port)
+
     # Load model once before binding ports
     synth = await _get_synthesizer()
     await _warmup(synth)
-
-    # Start HTTP control API if requested
-    if ctrl_port:
-        await _run_control_api(ctrl_port)
 
     # Bind initial WS ports
     initial_ports = [base_port + i for i in range(n_ports)]

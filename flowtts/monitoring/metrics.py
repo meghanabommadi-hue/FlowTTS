@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Dict, Deque
 
 import structlog
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Info
 from prometheus_client import disable_created_metrics
 disable_created_metrics()
 
@@ -46,15 +46,29 @@ _calls_log_file = _CALLS_LOG.open("a", buffering=1)  # line-buffered, append acr
 
 logger = structlog.get_logger("metrics")
 
-# ── Prometheus counters (matching PikoTTS naming) ─────────────────────────────
-TTS_REQUESTS      = Counter('tts_requests_total',      'Total successful TTS requests')
-TTS_LLM_MS        = Counter('tts_llm_ms_total',        'Total sum of LLM inference time in ms')
-TTS_DECODE_MS     = Counter('tts_decode_ms_total',     'Total sum of decoder time in ms')
-TTS_E2E_MS        = Counter('tts_e2e_ms_total',        'Total sum of end-to-end time in ms')
-TTS_TOKENS        = Counter('tts_tokens_total',        'Total sum of generated speech tokens')
-ACTIVE_WEBSOCKETS = Gauge('tts_active_websockets',     'Currently active WebSocket connections')
+# ── Prometheus counters — labeled by gpu_id + voice for multi-GPU visibility ──
+_LABELS = ["gpu_id", "voice"]
 
-# WebSocket lifetime counters
+TTS_REQUESTS  = Counter('tts_requests_total',   'Total successful TTS requests',         _LABELS)
+TTS_LLM_MS    = Counter('tts_llm_ms_total',     'Total sum of LLM inference time in ms', _LABELS)
+TTS_DECODE_MS = Counter('tts_decode_ms_total',  'Total sum of decoder time in ms',       _LABELS)
+TTS_E2E_MS    = Counter('tts_e2e_ms_total',     'Total sum of end-to-end time in ms',    _LABELS)
+TTS_TOKENS    = Counter('tts_tokens_total',     'Total sum of generated speech tokens',  _LABELS)
+TTS_ERRORS    = Counter('tts_errors_total',     'Total failed TTS requests',             _LABELS)
+
+# Short-audio alarm: fired when generated audio is suspiciously brief relative to input text.
+# Labels: gpu_id, voice, reason  (reason = "truncated" | "short_text_ok" not fired for the latter)
+TTS_SHORT_AUDIO = Counter(
+    'tts_short_audio_total',
+    'TTS requests where generated audio duration is suspiciously short for the input text length',
+    ['gpu_id', 'voice'],
+)
+
+# Active connections labeled by gpu_id so multi-GPU deployments are visible
+ACTIVE_WEBSOCKETS = Gauge('tts_active_websockets', 'Currently active WebSocket connections',
+                          ['gpu_id'])
+
+# WebSocket lifetime counters (unlabeled — aggregate totals are enough here)
 WS_CONNECTIONS_OPENED = Counter('tts_ws_connections_opened_total', 'Total WebSocket connections opened')
 WS_CONNECTIONS_CLOSED = Counter('tts_ws_connections_closed_total', 'Total WebSocket connections closed')
 
@@ -62,12 +76,13 @@ WS_CONNECTIONS_CLOSED = Counter('tts_ws_connections_closed_total', 'Total WebSoc
 OPEN_PORTS = Gauge('tts_open_ports', 'Currently open WebSocket ports')
 MAX_PORTS  = Gauge('tts_max_ports',  'Maximum WebSocket ports ever open simultaneously')
 
-# Error counter
-TTS_ERRORS = Counter('tts_errors_total', 'Total failed TTS requests')
-
 # Clean disconnect counter (WebSocket close code 1000 = normal closure)
 WS_CLEAN_DISCONNECT = Counter('tts_ws_clean_disconnect_total',
                               'WebSocket disconnects via ERROR 1000 (OK) clean close')
+
+# Static engine/GPU info — set once at startup via register_gpu_info()
+# Exposes: gpu_id, tp_size, attention_backend, model_gpu_id, decoder_gpu_id
+TTS_ENGINE_INFO = Info('tts_engine', 'FlowTTS engine and GPU configuration')
 
 
 @dataclass
@@ -93,6 +108,9 @@ _decode_latency: TimingStat = TimingStat()
 _ws_connections_opened: int = 0
 _ws_connections_closed: int = 0
 
+# Active GPU id — set at startup by register_gpu_info(); used as default label value
+_gpu_id: str = "0"
+
 # Ring buffer of the last N WS events — viewable via GET /ws/log
 _WS_LOG_MAX = 20
 _ws_log: Deque[dict] = deque(maxlen=_WS_LOG_MAX)
@@ -109,6 +127,28 @@ def ws_log_snapshot() -> list:
     """Return a copy of the WS event ring buffer (oldest → newest)."""
     with _lock:
         return list(_ws_log)
+
+
+def register_gpu_info(
+    *,
+    model_gpu_id: int = 0,
+    decoder_gpu_id: int = 0,
+    tp_size: int = 1,
+    attention_backend: str = "n/a",
+    mem_weight_gb: str = "n/a",
+    mem_kvcache_gb: str = "n/a",
+) -> None:
+    """Set static engine/GPU info in Prometheus. Call once after model load."""
+    global _gpu_id
+    _gpu_id = str(model_gpu_id)
+    TTS_ENGINE_INFO.info({
+        "model_gpu_id":      str(model_gpu_id),
+        "decoder_gpu_id":    str(decoder_gpu_id),
+        "tp_size":           str(tp_size),
+        "attention_backend": attention_backend,
+        "mem_weight_gb":     str(mem_weight_gb),
+        "mem_kvcache_gb":    str(mem_kvcache_gb),
+    })
 
 
 def record_synthesis_latency(call_id: str, text_id: str, duration_seconds: float) -> None:
@@ -143,9 +183,9 @@ def record_ws_connection_open(call_id: str, *, port: int = 0) -> None:
     with _lock:
         _ws_connections_opened += 1
         active = _ws_connections_opened - _ws_connections_closed
-    ACTIVE_WEBSOCKETS.inc()
+    ACTIVE_WEBSOCKETS.labels(gpu_id=_gpu_id).inc()
     WS_CONNECTIONS_OPENED.inc()
-    _ws_log_append({"event": "open", "call_id": call_id, "port": port, "active_ws": active})
+    _ws_log_append({"event": "open", "call_id": call_id, "port": port, "active_ws": active, "gpu_id": _gpu_id})
     logger.info("ws_connection_open", call_id=call_id)
 
 
@@ -155,9 +195,9 @@ def record_ws_connection_close(call_id: str, *, port: int = 0) -> None:
     with _lock:
         _ws_connections_closed += 1
         active = _ws_connections_opened - _ws_connections_closed
-    ACTIVE_WEBSOCKETS.dec()
+    ACTIVE_WEBSOCKETS.labels(gpu_id=_gpu_id).dec()
     WS_CONNECTIONS_CLOSED.inc()
-    _ws_log_append({"event": "close", "call_id": call_id, "port": port, "active_ws": active})
+    _ws_log_append({"event": "close", "call_id": call_id, "port": port, "active_ws": active, "gpu_id": _gpu_id})
     logger.info("ws_connection_close", call_id=call_id)
 
 
@@ -194,18 +234,20 @@ def record_ws_done(
     })
 
 
-def record_ws_error(call_id: str, *, port: int = 0, text_id: str = "", error: str = "") -> None:
+def record_ws_error(call_id: str, *, port: int = 0, text_id: str = "", error: str = "",
+                    voice_id: str | None = None) -> None:
     """Record a WS request that ended in an error."""
     if "1000" in error and "(OK)" in error:
         WS_CLEAN_DISCONNECT.inc()
     else:
-        TTS_ERRORS.inc()
+        TTS_ERRORS.labels(gpu_id=_gpu_id, voice=voice_id or "").inc()
     _ws_log_append({
         "event": "error",
         "call_id": call_id,
         "text_id": text_id,
         "port": port,
         "error": error,
+        "gpu_id": _gpu_id,
     })
 
 
@@ -241,11 +283,32 @@ def record_call(
     with _lock:
         _calls_log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    TTS_REQUESTS.inc()
-    TTS_LLM_MS.inc(llm_s * 1000)
-    TTS_DECODE_MS.inc(decode_s * 1000)
-    TTS_E2E_MS.inc((llm_s + decode_s) * 1000)
-    TTS_TOKENS.inc(token_count)
+    _v = voice_id or ""
+    TTS_REQUESTS.labels(gpu_id=_gpu_id,  voice=_v).inc()
+    TTS_LLM_MS.labels(gpu_id=_gpu_id,    voice=_v).inc(llm_s * 1000)
+    TTS_DECODE_MS.labels(gpu_id=_gpu_id, voice=_v).inc(decode_s * 1000)
+    TTS_E2E_MS.labels(gpu_id=_gpu_id,    voice=_v).inc((llm_s + decode_s) * 1000)
+    TTS_TOKENS.labels(gpu_id=_gpu_id,    voice=_v).inc(token_count)
+
+    # ── Short-audio alarm ─────────────────────────────────────────────────────
+    # 1 token = 320 samples @ 16 kHz → 0.02 s/token
+    audio_s = token_count * 320 / 16000
+    # Expected minimum: ~15 chars/s for mixed Hindi/Telugu script (conservative).
+    # Only fire if the text is long enough that we'd expect >1.5 s of audio.
+    text_chars = len(text.strip())
+    expected_s = text_chars / 15.0
+    if expected_s > 1.5 and audio_s < 0.8:
+        TTS_SHORT_AUDIO.labels(gpu_id=_gpu_id, voice=_v).inc()
+        logger.warning(
+            "short_audio_alarm",
+            call_id=call_id,
+            text_id=text_id,
+            audio_s=round(audio_s, 3),
+            expected_s=round(expected_s, 3),
+            token_count=token_count,
+            text_chars=text_chars,
+            voice=_v,
+        )
 
 
 def record_port_change(open_ports: set) -> None:

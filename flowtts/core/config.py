@@ -62,8 +62,8 @@ class TtsModelSettings(BaseModel):
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.0               # greedy — fastest, deterministic
-    top_p: float = 0.7
+    temperature: float = 0.8               # greedy — fastest, deterministic
+    top_p: float = 0.5
     top_k: int = 50
     repetition_penalty: float = 1.6
     min_p: float = 0.05
@@ -90,7 +90,7 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings
     max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 1.0    # ms to wait collecting a batch (longer = better packing)
+    batch_timeout_ms: float = 50.0    # ms to wait collecting a batch (longer = better packing)
     gpu_chunk_size: int = 90         # max items per GPU forward pass
     onnx_workers: int = 1            # parallel ONNX worker threads
     use_trt: bool = False           # load pre-compiled TRT .ep engine for decoder
@@ -105,7 +105,7 @@ class StreamingSettings(BaseModel):
     # Number of speech tokens accumulated before decoding and sending a chunk.
     # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
     # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
-    chunk_tokens: int = 30
+    chunk_tokens: int = 20
 
     # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
     # 320 = 20ms. Set to 0 to disable crossfade.

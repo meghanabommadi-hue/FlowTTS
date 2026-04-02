@@ -161,6 +161,14 @@ class FlowTtsSynthesizer:
         except Exception:
             pass
 
+        # Store for external consumption (e.g. Prometheus registration in server.py)
+        self.engine_info = {
+            "tp_size":           getattr(sa, "tp_size", 1),
+            "attention_backend": resolved_attn,
+            "mem_weight_gb":     mem.get("weight", "n/a"),
+            "mem_kvcache_gb":    mem.get("kvcache", "n/a"),
+        }
+
         # ref_audio: inspect what we actually encoded
         ctx_token_count = context_tokens.count("<|context_token_")
         ref_speech_present = ref_speech_tokens is not None and bool(ref_speech_tokens)
@@ -196,11 +204,23 @@ class FlowTtsSynthesizer:
             token_str = token_str[: -len(silence)]
         return token_str
 
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Remove characters outside English (ASCII) and Hindi (Devanagari) scripts.
+
+        Keeps: ASCII printable (English letters, digits, punctuation, spaces)
+               and Devanagari block (U+0900–U+097F) used for Hindi.
+        Removes: Urdu/Arabic, Chinese, Japanese, Korean, emoji, and all other scripts.
+        """
+        import re
+        return re.sub(r'[^\x00-\x7F\u0900-\u097F]', '', text).strip()
+
     async def synthesize(self, text: str, voice_id: str | None = None) -> str:
         """Return full audio token string for the given text."""
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
+        text = self._normalize_text(text)
         ctx, ref = self._tokens_for_voice(voice_id)
         prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
@@ -229,6 +249,7 @@ class FlowTtsSynthesizer:
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
+        text = self._normalize_text(text)
         ctx, ref = self._tokens_for_voice(voice_id)
         prompt = self._tts_codec.format_prompt(text, ctx, ref)
 

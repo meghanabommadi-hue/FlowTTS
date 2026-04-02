@@ -10,8 +10,12 @@ Usage:
 """
 
 import argparse
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from huggingface_hub import snapshot_download
+
+from huggingface_hub import HfApi, hf_hub_download
 
 HF_REPOS = {
     "simran": "Shubhangi7/simran",
@@ -19,7 +23,6 @@ HF_REPOS = {
 }
 
 def resolve_token():
-    import os
     token = os.environ.get("HF_TOKEN", "").strip()
     if not token:
         for p in [Path.home() / ".cache/huggingface/token",
@@ -38,14 +41,64 @@ def download(voice: str, token: str | None):
     cache_dir = Path.home() / f"FlowTTS/cached_data_{voice}"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[{voice}] Downloading {repo} → {cache_dir} ...")
-    snapshot_download(
-        repo_id=repo,
-        repo_type="dataset",
-        local_dir=str(cache_dir),
-        token=token,
-        ignore_patterns=["*.txt", "*.json", ".gitattributes"],
-    )
+    # List all WAV files in the repo — single API call, retry on 429
+    print(f"[{voice}] Listing files in {repo} ...")
+    api = HfApi(token=token)
+    for attempt in range(1, 6):
+        try:
+            all_files = [
+                f for f in api.list_repo_files(repo, repo_type="dataset")
+                if f.endswith(".wav")
+            ]
+            break
+        except Exception as e:
+            if "429" in str(e) and attempt < 5:
+                wait = 60 * attempt
+                print(f"[{voice}] Rate limited listing files. Retrying in {wait}s... (attempt {attempt}/5)")
+                time.sleep(wait)
+            else:
+                raise
+    print(f"[{voice}] {len(all_files)} WAVs in repo")
+
+    # Only download files not already present
+    existing = {f.name for f in cache_dir.glob("*.wav")}
+    missing = [f for f in all_files if Path(f).name not in existing]
+    print(f"[{voice}] {len(existing)} already downloaded, {len(missing)} to go")
+
+    if not missing:
+        print(f"[{voice}] Already complete.")
+        return
+
+    def fetch(filename):
+        for attempt in range(1, 6):
+            try:
+                hf_hub_download(
+                    repo_id=repo,
+                    repo_type="dataset",
+                    filename=filename,
+                    local_dir=str(cache_dir),
+                    token=token,
+                )
+                return filename, None
+            except Exception as e:
+                if "429" in str(e) and attempt < 5:
+                    time.sleep(30 * attempt)
+                else:
+                    return filename, str(e)
+
+    done = 0
+    errors = 0
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        futures = {ex.submit(fetch, f): f for f in missing}
+        for fut in as_completed(futures):
+            filename, err = fut.result()
+            done += 1
+            if err:
+                errors += 1
+                print(f"[{voice}] ERROR {filename}: {err}")
+            elif done % 100 == 0 or done == len(missing):
+                print(f"[{voice}] {done}/{len(missing)} downloaded ({errors} errors)")
+
     wavs = list(cache_dir.glob("*.wav"))
     print(f"[{voice}] Done — {len(wavs)} WAVs in {cache_dir}")
 

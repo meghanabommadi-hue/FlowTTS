@@ -55,6 +55,23 @@ def fade_out(
     return out
 
 
+def fade_in(
+    audio: np.ndarray,
+    fade_samples: int,
+) -> np.ndarray:
+    """Apply a linear fade-in to the first *fade_samples* of *audio*.
+
+    Useful for suppressing codec boundary clicks at the start of streaming chunks.
+    If fade_samples >= len(audio) the entire array is faded.
+    """
+    if fade_samples <= 0 or len(audio) == 0:
+        return audio
+    fade_samples = min(fade_samples, len(audio))
+    out = audio.copy()
+    out[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=audio.dtype)
+    return out
+
+
 def crossfade(
     chunk_a: np.ndarray,
     chunk_b: np.ndarray,
