@@ -163,6 +163,15 @@ def _build_cache_mix(n: int, cache_mix: str, voice: str) -> List[str]:
           f"  (pool: {len(cached)} cached, {len(uncached)} uncached)", flush=True)
     return chosen
 
+# English sentences for testing American accent.
+_ENGLISH_AMERICAN: List[str] = [
+    "Hey there! I just wanted to check in and see how everything's going on your end.",
+    "We're all set for the meeting at three o'clock — I'll send over the agenda in just a bit.",
+    "I can't believe how fast the semester went by; finals are already right around the corner.",
+    "Could you go ahead and pull up that report from last quarter so we can walk through the numbers?",
+    "Honestly, the weather out here in California has been absolutely perfect this time of year.",
+]
+
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
     # short — Hindi numerals'
@@ -319,11 +328,13 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Pick text: fixed > bench texts > fallback
+            # Pick text: fixed > bench texts > english (non-hindi voices) > fallback
             if _FIXED_SENTENCE:
                 text = _FIXED_SENTENCE
             elif _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
+            elif _VOICE_ID in ("simran", "british_rose"):
+                text = _ENGLISH_AMERICAN[req_id % len(_ENGLISH_AMERICAN)]
             else:
                 text = _FALLBACK_TEXTS[req_id % len(_FALLBACK_TEXTS)]
             req = {

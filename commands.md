@@ -143,7 +143,18 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vik
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice daya
 ```
 
-- Available voices: `simran`, `tara`, `vikram`, `daya`
+```bash
+# Use british_rose voice (English sentences — auto-selected)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice british_rose
+
+# Run simran with English sentences (auto-selected)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice simran
+```
+
+- Available voices: `simran`, `tara`, `vikram`, `daya`, `british_rose`
+- `simran` and `british_rose` automatically use English test sentences (`_ENGLISH_AMERICAN`)
+- `tara`, `vikram`, `daya` use Hindi fallback sentences
+- Default voice (no `--voice`) is `british_rose` (set in `TtsModelSettings.ref_audio`)
 - If WAV cache exists for that voice (`~/FlowTTS/cached_data_<voice>/`), matching sentences are served instantly without hitting the LLM
 
 ---
