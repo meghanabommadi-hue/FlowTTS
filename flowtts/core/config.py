@@ -27,10 +27,11 @@ _SAMPLE_FILES_DIR = str(Path.home() / "FlowTTS/sample_files")
 
 # Per-voice reference audio paths. Keys match voice_id values sent by clients.
 VOICE_REF_AUDIO: dict[str, str] = {
-    "simran": f"{_SAMPLE_FILES_DIR}/simran.wav",
-    "tara":   f"{_SAMPLE_FILES_DIR}/tara.wav",
-    "vikram": f"{_SAMPLE_FILES_DIR}/vikram.wav",
-    "daya":   f"{_SAMPLE_FILES_DIR}/daya.wav",
+    "simran":       f"{_SAMPLE_FILES_DIR}/simran.wav",
+    "tara":         f"{_SAMPLE_FILES_DIR}/tara.wav",
+    "vikram":       f"{_SAMPLE_FILES_DIR}/vikram.wav",
+    "daya":         f"{_SAMPLE_FILES_DIR}/daya.wav",
+    "british_rose": f"{_SAMPLE_FILES_DIR}/british_rose.wav",
 }
 
 
@@ -44,7 +45,7 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
+        ref_audio: str = f"{_SAMPLE_FILES_DIR}/british_rose.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -102,18 +103,27 @@ class StreamingSettings(BaseModel):
     # Set to True to make streaming the default mode (no --streaming flag needed).
     enabled: bool = True
 
-    # Number of speech tokens accumulated before decoding and sending a chunk.
-    # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
-    # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
-    chunk_tokens: int = 20
+    # --- Chunk size ---
+    # Tokens per chunk for the first two chunks (low latency warm-up).
+    # At ~50 tokens/sec: 20 tokens ≈ 400ms of audio.
+    chunk_tokens_early: int = 25
 
-    # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
-    # 320 = 20ms. Set to 0 to disable crossfade.
-    crossfade_samples: int = 400
+    # Tokens per chunk from chunk 3 onward (larger = fewer boundaries = smoother).
+    chunk_tokens_late: int = 50
 
-    # Linear fade-out applied to the tail of each non-final chunk to suppress
-    # codec boundary noise (samples at 16 kHz). 480 = 30ms.
-    fade_out_samples: int = 160
+    # --- Codec overlap ---
+    # Tail tokens from the previous chunk prepended to the next decode for context.
+    # Their decoded audio is discarded. Higher = smoother codec boundary quality.
+    # 8 tokens = 160ms of context.
+    overlap_tokens: int = 8
+
+    # --- Server-side crossfade ---
+    # Samples held back from each chunk's tail and blended into the next chunk's head.
+    # 800 = 50ms at 16kHz. Set to 0 to disable crossfade entirely.
+    crossfade_samples: int = 320
+
+    # Unused — fade-out disabled to prevent gaps.
+    fade_out_samples: int = 0
 
 
 class WebSocketSettings(BaseModel):

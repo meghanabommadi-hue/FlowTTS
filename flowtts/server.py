@@ -50,7 +50,9 @@ import datetime
 import hashlib
 import base64
 import json
+import gc
 import re
+import sys
 import time
 
 import numpy as np
@@ -68,7 +70,7 @@ from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RA
 from flowtts.monitoring.metrics import (
     record_call, record_ws_connection_open, record_ws_connection_close,
     record_ws_error, record_ws_done, ws_log_snapshot, record_port_change,
-    register_gpu_info,
+    register_gpu_info, snapshot_metrics,
 )
 from flowtts.processing.audio_processing import crossfade, fade_in, fade_out
 
@@ -80,8 +82,26 @@ logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 _synthesizer: FlowTtsSynthesizer | None = None
 _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
+
+# OOM recovery state
+_oom_recovery_active: bool = False
+_restarting: bool = False
+_OOM_RECOVERY_WINDOW_S: float = 5.0
+
+# Concurrency limiter — queue requests beyond this threshold instead of running them immediately
+_MAX_ACTIVE_REQUESTS: int = 100
+_active_requests: int = 0
+_request_semaphore: asyncio.Semaphore | None = None  # initialised in run_server()
+
+# Stale connection reaping — close WS connections idle for longer than this
+_WS_IDLE_TIMEOUT_S = 300  # 10 minutes
+_ws_last_activity: dict[str, float] = {}   # conn_id → time.monotonic() of last request
+_ws_connections: dict[str, "websockets.ServerConnection"] = {}  # conn_id → live ws object
+_ws_cancel_events: dict[str, asyncio.Event] = {}  # conn_id → set when client sends cancel
 _RE_SPEECH = re.compile(r"<\|speech_token_\d+\|>", re.ASCII)
-_STREAM_CHUNK_TOKENS = settings.streaming.chunk_tokens
+_CHUNK_TOKENS_EARLY  = settings.streaming.chunk_tokens_early
+_CHUNK_TOKENS_LATE   = settings.streaming.chunk_tokens_late
+_OVERLAP_TOKENS      = settings.streaming.overlap_tokens
 _CROSSFADE_SAMPLES   = settings.streaming.crossfade_samples
 _FADE_OUT_SAMPLES    = settings.streaming.fade_out_samples
 _audio_out_dir: Path | None = None
@@ -163,6 +183,46 @@ async def _get_synthesizer() -> FlowTtsSynthesizer:
     return _synthesizer
 
 
+def _is_oom(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "out of memory" in msg and "cuda" in msg
+
+
+async def _handle_oom(exc: BaseException) -> None:
+    global _oom_recovery_active, _restarting
+    if _restarting:
+        return
+    ts = _tsms()
+    if not _oom_recovery_active:
+        # Stage 1: soft recovery — free GPU caches, block new requests briefly
+        print(f"[{ts}] OOM detected — clearing GPU cache", flush=True)
+        _oom_recovery_active = True
+        gc.collect()
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        async def _reset_oom() -> None:
+            await asyncio.sleep(_OOM_RECOVERY_WINDOW_S)
+            global _oom_recovery_active
+            if not _restarting:
+                _oom_recovery_active = False
+                print(f"[{_ts()}] OOM recovery window expired — resuming", flush=True)
+        asyncio.create_task(_reset_oom())
+    else:
+        # Stage 2: soft recovery was insufficient — trigger process restart
+        print(f"[{ts}] OOM during recovery window — scheduling restart", flush=True)
+        _restarting = True
+
+        async def _deferred_exit() -> None:
+            await asyncio.sleep(1.0)  # allow in-flight ws.send() to flush
+            print(f"[{_ts()}] Restarting process (OOM recovery failed)", flush=True)
+            sys.exit(1)
+        asyncio.create_task(_deferred_exit())
+
+
 async def _handle_streaming_request(
     ws: websockets.ServerConnection,
     synth: "FlowTtsSynthesizer",
@@ -172,6 +232,7 @@ async def _handle_streaming_request(
     port: int,
     ts_text_recv: str,
     voice_id: str | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> None:
     """Stream audio chunks to the client as the LLM produces speech tokens.
 
@@ -191,7 +252,9 @@ async def _handle_streaming_request(
     buffer        = ""          # accumulates raw LLM delta text (may contain non-token chars)
     token_buf     = []          # complete <|speech_token_N|> strings ready to decode
     overlap_tokens: list = []   # tail tokens from previous chunk prepended for codec context
-    _OVERLAP      = 4           # tokens prepended for conv context; their audio is discarded
+    _OVERLAP      = _OVERLAP_TOKENS      # from config: overlap_tokens
+    _XFADE        = _CROSSFADE_SAMPLES   # from config: crossfade_samples
+    prev_tail: np.ndarray | None = None  # faded tail held back from previous chunk
     chunk_index   = 0
     total_tokens  = 0
     total_wav_b   = 0
@@ -203,7 +266,7 @@ async def _handle_streaming_request(
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, decoder_ttft_s, overlap_tokens
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, decoder_ttft_s, overlap_tokens, prev_tail
         if not token_buf:
             return
 
@@ -227,12 +290,30 @@ async def _handle_streaming_request(
             discard = n_overlap * 320  # 1 token = 320 samples at 16kHz
             pcm = pcm[discard:]
 
-        # Smooth chunk boundaries: fade-in every chunk (including the first, to
-        # suppress codec cold-start click) and fade-out every non-final chunk.
-        if _CROSSFADE_SAMPLES > 0:
-            pcm = fade_in(pcm, _CROSSFADE_SAMPLES)
-        if not is_final and _FADE_OUT_SAMPLES > 0:
-            pcm = fade_out(pcm, _FADE_OUT_SAMPLES)
+        # Remove DC offset to prevent click pops at chunk boundaries.
+        pcm = pcm - pcm.mean()
+
+        # Server-side crossfade: blend the held-back tail of the previous chunk
+        # with the start of this chunk, then prepend the blended region.
+        xfade = min(_XFADE, len(pcm) // 4)
+        if prev_tail is not None and xfade > 0:
+            tail = prev_tail[-xfade:]  # trim to actual xfade length (prev chunk may have been larger)
+            ramp_in  = np.linspace(0.0, 1.0, xfade, dtype=np.float32)
+            ramp_out = 1.0 - ramp_in
+            blended  = tail * ramp_out + pcm[:xfade] * ramp_in
+            pcm = np.concatenate([blended, pcm[xfade:]])
+
+        # Hold back the tail of non-final chunks for blending with the next chunk.
+        if not is_final and xfade > 0 and len(pcm) > xfade * 2:
+            prev_tail = pcm[-xfade:].copy()
+            pcm = pcm[:-xfade]
+        else:
+            prev_tail = None
+            # Fade out the final chunk's tail so the audio ends smoothly.
+            if is_final and xfade > 0:
+                fade_len = min(xfade, len(pcm))
+                pcm = pcm.copy()
+                pcm[-fade_len:] *= np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
 
         # Send raw int16 PCM — no WAV header — so client receives a continuous
         # byte stream with no headers causing gaps or parse overhead.
@@ -269,6 +350,14 @@ async def _handle_streaming_request(
 
     try:
         async for delta in synth.synthesize_stream(text, voice_id=voice_id):
+            if cancel_event and cancel_event.is_set():
+                print(f"[{_ts()}] :{port} {call_id}  cancelled  text_id={text_id}", flush=True)
+                await ws.send(json.dumps({"type": "cancelled", "call_id": call_id, "text_id": text_id}))
+                await ws.send(json.dumps({"type": "audio_done", "call_id": call_id, "text_id": text_id,
+                                          "total_tokens": total_tokens,
+                                          "total_wav_bytes": total_wav_b, "sample_rate": SAMPLE_RATE}))
+                return
+
             if not delta:
                 # EOS signal — flush remainder
                 await _flush_chunk(is_final=True)
@@ -286,8 +375,10 @@ async def _handle_streaming_request(
             if last_end:
                 buffer = buffer[last_end:]
 
-            while len(token_buf) >= _STREAM_CHUNK_TOKENS:
+            chunk_threshold = _CHUNK_TOKENS_EARLY if chunk_index < 2 else _CHUNK_TOKENS_LATE
+            while len(token_buf) >= chunk_threshold:
                 await _flush_chunk(is_final=False)
+                chunk_threshold = _CHUNK_TOKENS_EARLY if chunk_index < 2 else _CHUNK_TOKENS_LATE
 
         llm_s   = round(time.perf_counter() - t0, 4)
         llm_ms  = round(llm_s * 1000)
@@ -350,6 +441,8 @@ async def _handle_streaming_request(
         ts_err = _tsms()
         print(f"[{ts_err}] :{port} {call_id}  STREAM ERROR: {e}", flush=True)
         record_ws_error(call_id, port=port, text_id=text_id, error=str(e), voice_id=voice_id)
+        if _is_oom(e):
+            await _handle_oom(e)
         try:
             await ws.send(json.dumps({
                 "type": "error", "call_id": call_id, "text_id": text_id, "error": str(e),
@@ -364,6 +457,9 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     conn_id = f"{peer[0]}:{peer[1]}"
     print(f"[{_ts()}] :{port} connected  peer={conn_id}", flush=True)
     record_ws_connection_open(conn_id, port=port)
+    _ws_last_activity[conn_id] = time.monotonic()
+    _ws_connections[conn_id] = ws
+    _ws_cancel_events[conn_id] = asyncio.Event()
 
     try:
         async for raw in ws:
@@ -374,6 +470,13 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 await ws.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
+                continue
+
+            if data.get("type") == "cancel":
+                cancel_ev = _ws_cancel_events.get(conn_id)
+                if cancel_ev:
+                    cancel_ev.set()
+                print(f"[{_ts()}] :{port} {conn_id}  cancel  text_id={data.get('text_id')}", flush=True)
                 continue
 
             text = (data.get("text") or "").strip()
@@ -438,14 +541,39 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     )
                     continue
 
+            _ws_last_activity[conn_id] = time.monotonic()
             ts_text_recv = _tsms()
             _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  streaming={streaming}  text={text[:60]!r}")
             print(f"[{ts_text_recv}] :{port} {call_id}  {'stream' if streaming else 'req'}  {text[:60]!r}", flush=True)
 
             synth = await _get_synthesizer()
 
+            # Reject new GPU work while OOM recovery or restart is in progress
+            if _restarting or _oom_recovery_active:
+                reason = "server restarting, try again shortly" if _restarting else "GPU memory recovery in progress, try again shortly"
+                await ws.send(json.dumps({"type": "error", "call_id": call_id, "text_id": text_id, "error": reason}))
+                if _restarting:
+                    await ws.close(1001, "server restarting")
+                continue
+
+            # Reset cancel event before starting a new request
+            cancel_ev = _ws_cancel_events.get(conn_id)
+            if cancel_ev:
+                cancel_ev.clear()
+
+            # Queue request if at concurrency limit — waits here until a slot is free
+            if _request_semaphore is not None:
+                queue_depth = _MAX_ACTIVE_REQUESTS - _request_semaphore._value
+                if queue_depth >= _MAX_ACTIVE_REQUESTS:
+                    print(f"[{_tsms()}] :{port} {call_id}  queued (active={queue_depth})", flush=True)
+                await _request_semaphore.acquire()
+
             if streaming:
-                await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id)
+                try:
+                    await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id, cancel_event=cancel_ev)
+                finally:
+                    if _request_semaphore is not None:
+                        _request_semaphore.release()
                 continue
 
             try:
@@ -587,16 +715,28 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 ts_err = _tsms()
                 print(f"[{ts_err}] :{port} {call_id}  ERROR: {e}", flush=True)
                 record_ws_error(call_id, port=port, text_id=text_id, error=str(e), voice_id=voice_id)
-                await ws.send(json.dumps({
-                    "type": "error", "call_id": call_id, "text_id": text_id,
-                    "error": str(e),
-                }))
+                if _is_oom(e):
+                    await _handle_oom(e)
+                try:
+                    await ws.send(json.dumps({
+                        "type": "error", "call_id": call_id, "text_id": text_id,
+                        "error": str(e),
+                    }))
+                except Exception as send_err:
+                    print(f"[{_ts()}] :{port} {call_id}  error send failed (client gone): {send_err}", flush=True)
 
-    except WebSocketException:
-        pass  # client disconnected — normal
+            finally:
+                if _request_semaphore is not None:
+                    _request_semaphore.release()
+
+    except WebSocketException as e:
+        print(f"[{_ts()}] :{port} {conn_id}  ws closed: {e}", flush=True)
     except Exception as e:
         print(f"[{_ts()}] :{port} connection error: {e}", flush=True)
     finally:
+        _ws_last_activity.pop(conn_id, None)
+        _ws_connections.pop(conn_id, None)
+        _ws_cancel_events.pop(conn_id, None)
         record_ws_connection_close(conn_id, port=port)
         print(f"[{_ts()}] :{port} disconnected  peer={conn_id}", flush=True)
 
@@ -765,12 +905,20 @@ async def _http_ready(req: web.Request) -> web.Response:
     """GET /ready  — 200 once the model is loaded."""
     if _synthesizer is None:
         return web.Response(status=503, text="loading")
-    return web.json_response({"ready": True, "ports": sorted(_open_ports)})
+    if _restarting:
+        return web.Response(status=503, text="restarting")
+    return web.json_response({"ready": True, "ports": sorted(_open_ports), "oom_recovery": _oom_recovery_active})
 
 
 async def _http_ws_log(req: web.Request) -> web.Response:
     """GET /ws/log  — last 20 WS events (open/done/error/close)."""
     return web.json_response(ws_log_snapshot())
+
+
+async def _http_ws_active(req: web.Request) -> web.Response:
+    """GET /ws/active  — currently active WebSocket connections."""
+    snap = snapshot_metrics()
+    return web.json_response(snap["ws"])
 
 
 async def _http_metrics(req: web.Request) -> web.Response:
@@ -787,6 +935,7 @@ async def _run_control_api(ctrl_port: int) -> None:
     app.router.add_get("/ready",      _http_ready)
     app.router.add_get("/metrics",    _http_metrics)
     app.router.add_get("/ws/log",     _http_ws_log)
+    app.router.add_get("/ws/active",  _http_ws_active)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", ctrl_port)
@@ -795,6 +944,9 @@ async def _run_control_api(ctrl_port: int) -> None:
 
 
 async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None) -> None:
+    global _request_semaphore
+    _request_semaphore = asyncio.Semaphore(_MAX_ACTIVE_REQUESTS)
+
     # Start HTTP control API first so the port is claimed before warmup begins
     if ctrl_port:
         await _run_control_api(ctrl_port)
@@ -816,7 +968,25 @@ async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None)
         print(f"  ws://0.0.0.0:{p}", flush=True)
     print(flush=True)
 
+    asyncio.create_task(_stale_connection_reaper())
+
     await asyncio.Future()  # run forever
+
+
+async def _stale_connection_reaper() -> None:
+    """Close WebSocket connections that have been idle for _WS_IDLE_TIMEOUT_S seconds."""
+    while True:
+        await asyncio.sleep(60)  # check every minute
+        now = time.monotonic()
+        stale = [
+            conn_id for conn_id, last in list(_ws_last_activity.items())
+            if now - last > _WS_IDLE_TIMEOUT_S
+        ]
+        for conn_id in stale:
+            ws = _ws_connections.get(conn_id)
+            if ws is not None:
+                print(f"[{_ts()}] stale connection closed  peer={conn_id}  idle={_WS_IDLE_TIMEOUT_S}s", flush=True)
+                await ws.close(1001, "idle timeout")
 
 
 def main() -> None:

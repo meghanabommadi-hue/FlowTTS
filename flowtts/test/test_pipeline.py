@@ -167,7 +167,9 @@ def _build_cache_mix(n: int, cache_mix: str, voice: str) -> List[str]:
 _HINDI_FALLBACK: List[str] = [
     # short — Hindi numerals'
     "थैंक यू hold करने के लिए, अब पूरे steps फिर से clear बता دیتी हूँ:",
-    " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
+    "😭☺️ I am vaani ✅👀",
+    "😭 हूँ: steps फिर से clear बता",
     " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
     "नमस्ते मैं आपकी कैसे मदद कर सकती हूं?",
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
@@ -690,10 +692,9 @@ async def run_test(
                     print(f"[server] reusing existing port(s): {already}", flush=True)
                 active_ports = needed
             else:
-                # No explicit ports — use all ports the server already has open
-                data = _ctrl_get(ctrl_port, "/ports")
-                active_ports = data.get("ports", [])
-                print(f"[server] using {len(active_ports)} existing port(s): {active_ports}", flush=True)
+                # No explicit ports — use only the base port
+                active_ports = [base_port]
+                print(f"[server] using single port: {active_ports}", flush=True)
         else:
             # No ctrl port — just use whatever is already live
             if ports is None:
@@ -994,7 +995,7 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
-    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya"],
+    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya", "british_rose"],
                         help="Voice ID to use for synthesis (default: server default)")
     parser.add_argument("--sentence", default="", metavar="TEXT",
                         help="Repeat this single sentence for all requests")

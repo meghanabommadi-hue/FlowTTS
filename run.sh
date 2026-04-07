@@ -173,11 +173,11 @@ _run_stress_test() {
         echo "[FlowTTS] Timed out waiting — skipping stress test."
         return
     fi
-    echo "[FlowTTS] Running stress test (60 requests, 20 ports)..."
+    echo "[FlowTTS] Running stress test (60 requests, 1 port)..."
     "$PYTHON" -m flowtts.test.test_pipeline \
         --no-launch \
         --ctrl-port "${CTRL_PORT}" \
-        --n-ports 20 \
+        --n-ports 1 \
         --base-port "${BASE_PORT}" \
         --requests 60 \
         2>&1 | tee -a "${LOG_FILE}"

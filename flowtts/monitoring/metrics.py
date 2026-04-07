@@ -26,7 +26,9 @@ Scaling note:
 
 from __future__ import annotations
 
+import datetime
 import json
+import re
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -34,7 +36,7 @@ from pathlib import Path
 from typing import Dict, Deque
 
 import structlog
-from prometheus_client import Counter, Gauge, Info
+from prometheus_client import Counter, Gauge, Info, REGISTRY
 from prometheus_client import disable_created_metrics
 disable_created_metrics()
 
@@ -55,6 +57,8 @@ TTS_DECODE_MS = Counter('tts_decode_ms_total',  'Total sum of decoder time in ms
 TTS_E2E_MS    = Counter('tts_e2e_ms_total',     'Total sum of end-to-end time in ms',    _LABELS)
 TTS_TOKENS    = Counter('tts_tokens_total',     'Total sum of generated speech tokens',  _LABELS)
 TTS_ERRORS    = Counter('tts_errors_total',     'Total failed TTS requests',             _LABELS)
+TTS_CACHE_HITS   = Counter('tts_cache_hits_total',   'Total TTS requests served from WAV cache', _LABELS)
+TTS_CACHE_MISSES = Counter('tts_cache_misses_total', 'Total TTS requests that bypassed cache',   _LABELS)
 
 # Short-audio alarm: fired when generated audio is suspiciously brief relative to input text.
 # Labels: gpu_id, voice, reason  (reason = "truncated" | "short_text_ok" not fired for the latter)
@@ -67,6 +71,10 @@ TTS_SHORT_AUDIO = Counter(
 # Active connections labeled by gpu_id so multi-GPU deployments are visible
 ACTIVE_WEBSOCKETS = Gauge('tts_active_websockets', 'Currently active WebSocket connections',
                           ['gpu_id'])
+
+# Per-call_id active connection gauge — 1 while open, removed on close
+WS_ACTIVE_CALL = Gauge('tts_ws_active_call', 'Active WebSocket connection by call_id',
+                       ['call_id', 'gpu_id'])
 
 # WebSocket lifetime counters (unlabeled — aggregate totals are enough here)
 WS_CONNECTIONS_OPENED = Counter('tts_ws_connections_opened_total', 'Total WebSocket connections opened')
@@ -83,6 +91,97 @@ WS_CLEAN_DISCONNECT = Counter('tts_ws_clean_disconnect_total',
 # Static engine/GPU info — set once at startup via register_gpu_info()
 # Exposes: gpu_id, tp_size, attention_backend, model_gpu_id, decoder_gpu_id
 TTS_ENGINE_INFO = Info('tts_engine', 'FlowTTS engine and GPU configuration')
+
+# TTFT Gauges — rolling averages parsed from llm.log stream_done lines
+# llm_ttft  = time from request received to first LLM token (pure model latency)
+# dec_ttft  = time from request received to first decoded audio chunk sent to client
+TTS_LLM_TTFT_AVG_MS = Gauge('tts_llm_ttft_avg_ms',
+                             'Rolling average LLM time-to-first-token (ms), from llm.log')
+TTS_DEC_TTFT_AVG_MS = Gauge('tts_dec_ttft_avg_ms',
+                             'Rolling average decoder time-to-first-chunk (ms), from llm.log')
+TTS_TOTAL_AVG_MS    = Gauge('tts_total_avg_ms',
+                             'Rolling average total E2E time (ms) including wav_enc, from llm.log')
+
+# Log path — same file server.py writes stream_done lines to
+_LLM_LOG = Path(__file__).parents[2] / "llm.log"
+
+# Rolling window for TTFT stats (last N stream_done lines parsed)
+_TTFT_WINDOW = 100
+_llm_ttft_buf:   deque = deque(maxlen=_TTFT_WINDOW)
+_dec_ttft_buf:   deque = deque(maxlen=_TTFT_WINDOW)
+_total_ms_buf:   deque = deque(maxlen=_TTFT_WINDOW)
+_log_file_pos:   int   = 0   # byte offset — only read new lines on each call
+
+# Regex matching: stream_done lines with llm_ttft/dec_ttft/total fields
+_RE_STREAM_DONE = re.compile(
+    r'stream_done.*?llm_ttft=(\d+)ms.*?dec_ttft=(\d+)ms.*?total=(\d+)ms'
+)
+
+
+def refresh_ttft_from_log() -> None:
+    """Tail llm.log for new stream_done lines and update TTFT gauges.
+
+    Reads only new bytes since last call (tail-follow style).  Safe to call
+    frequently — cheap when there are no new lines.
+    """
+    global _log_file_pos
+    if not _LLM_LOG.exists():
+        return
+    try:
+        with _LLM_LOG.open("r", errors="replace") as f:
+            f.seek(_log_file_pos)
+            new_data = f.read()
+            _log_file_pos = f.tell()
+    except OSError:
+        return
+
+    for line in new_data.splitlines():
+        m = _RE_STREAM_DONE.search(line)
+        if m:
+            _llm_ttft_buf.append(int(m.group(1)))
+            _dec_ttft_buf.append(int(m.group(2)))
+            _total_ms_buf.append(int(m.group(3)))
+
+    if _llm_ttft_buf:
+        TTS_LLM_TTFT_AVG_MS.set(sum(_llm_ttft_buf) / len(_llm_ttft_buf))
+    if _dec_ttft_buf:
+        TTS_DEC_TTFT_AVG_MS.set(sum(_dec_ttft_buf) / len(_dec_ttft_buf))
+    if _total_ms_buf:
+        TTS_TOTAL_AVG_MS.set(sum(_total_ms_buf) / len(_total_ms_buf))
+
+
+class _TtftLogCollector:
+    """Prometheus collector that tails llm.log on every scrape to keep TTFT gauges fresh."""
+    def describe(self):
+        return []   # gauges are already registered; no extra descriptors needed
+
+    def collect(self):
+        refresh_ttft_from_log()
+        return []   # actual metric values emitted by the registered Gauges above
+
+
+REGISTRY.register(_TtftLogCollector())
+
+
+def ttft_snapshot() -> dict:
+    """Return TTFT stats dict for use by the dashboard."""
+    def _s(buf: deque) -> dict | None:
+        if not buf:
+            return None
+        vals = sorted(buf)
+        n = len(vals)
+        return {
+            "min":  vals[0],
+            "avg":  round(sum(vals) / n),
+            "p95":  vals[int(n * 0.95)],
+            "max":  vals[-1],
+            "n":    n,
+        }
+    return {
+        "llm_ttft_ms": _s(_llm_ttft_buf),
+        "dec_ttft_ms": _s(_dec_ttft_buf),
+        "total_ms":    _s(_total_ms_buf),
+    }
 
 
 @dataclass
@@ -107,6 +206,9 @@ _synthesis_latency: Dict[str, TimingStat] = defaultdict(TimingStat)  # text_id �
 _decode_latency: TimingStat = TimingStat()
 _ws_connections_opened: int = 0
 _ws_connections_closed: int = 0
+_active_ws_ids: set = set()  # tracks open conn_ids; gauge derived from len()
+_cache_hits: int = 0
+_cache_misses: int = 0
 
 # Active GPU id — set at startup by register_gpu_info(); used as default label value
 _gpu_id: str = "0"
@@ -117,8 +219,7 @@ _ws_log: Deque[dict] = deque(maxlen=_WS_LOG_MAX)
 
 
 def _ws_log_append(event: dict) -> None:
-    import datetime as _dt
-    event.setdefault("ts", _dt.datetime.now().strftime("%H:%M:%S.%f")[:-3])
+    event.setdefault("ts", datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3])
     with _lock:
         _ws_log.append(event)
 
@@ -182,8 +283,10 @@ def record_ws_connection_open(call_id: str, *, port: int = 0) -> None:
     global _ws_connections_opened
     with _lock:
         _ws_connections_opened += 1
-        active = _ws_connections_opened - _ws_connections_closed
-    ACTIVE_WEBSOCKETS.labels(gpu_id=_gpu_id).inc()
+        _active_ws_ids.add(call_id)
+        active = len(_active_ws_ids)
+    ACTIVE_WEBSOCKETS.labels(gpu_id=_gpu_id).set(active)
+    WS_ACTIVE_CALL.labels(call_id=call_id, gpu_id=_gpu_id).set(1)
     WS_CONNECTIONS_OPENED.inc()
     _ws_log_append({"event": "open", "call_id": call_id, "port": port, "active_ws": active, "gpu_id": _gpu_id})
     logger.info("ws_connection_open", call_id=call_id)
@@ -193,11 +296,19 @@ def record_ws_connection_close(call_id: str, *, port: int = 0) -> None:
     """Increment count of WebSocket connections closed."""
     global _ws_connections_closed
     with _lock:
-        _ws_connections_closed += 1
-        active = _ws_connections_opened - _ws_connections_closed
-    ACTIVE_WEBSOCKETS.labels(gpu_id=_gpu_id).dec()
-    WS_CONNECTIONS_CLOSED.inc()
-    _ws_log_append({"event": "close", "call_id": call_id, "port": port, "active_ws": active, "gpu_id": _gpu_id})
+        already_closed = call_id not in _active_ws_ids
+        _active_ws_ids.discard(call_id)
+        active = len(_active_ws_ids)
+        if not already_closed:
+            _ws_connections_closed += 1
+    ACTIVE_WEBSOCKETS.labels(gpu_id=_gpu_id).set(active)
+    if already_closed:
+        logger.warning("ws_connection_close_already_closed", call_id=call_id, port=port)
+    else:
+        WS_CONNECTIONS_CLOSED.inc()
+        WS_ACTIVE_CALL.remove(call_id, _gpu_id)
+    _ws_log_append({"event": "close", "call_id": call_id, "port": port, "active_ws": active, "gpu_id": _gpu_id,
+                    "already_closed": already_closed})
     logger.info("ws_connection_close", call_id=call_id)
 
 
@@ -266,6 +377,7 @@ def record_call(
     cache_hit: bool = False,
 ) -> None:
     """Append one JSON line to monitoring/calls.jsonl for every completed TTS call."""
+    total_s = round(llm_s + decode_s, 4)
     entry = {
         "ts": ts,
         "call_id": call_id,
@@ -276,7 +388,7 @@ def record_call(
         "token_count": token_count,
         "llm_s": llm_s,
         "decode_s": decode_s,
-        "total_s": round(llm_s + decode_s, 4),
+        "total_s": total_s,
         "wav_bytes": wav_bytes,
         "cache_hit": cache_hit,
     }
@@ -287,10 +399,23 @@ def record_call(
     TTS_REQUESTS.labels(gpu_id=_gpu_id,  voice=_v).inc()
     TTS_LLM_MS.labels(gpu_id=_gpu_id,    voice=_v).inc(llm_s * 1000)
     TTS_DECODE_MS.labels(gpu_id=_gpu_id, voice=_v).inc(decode_s * 1000)
-    TTS_E2E_MS.labels(gpu_id=_gpu_id,    voice=_v).inc((llm_s + decode_s) * 1000)
+    TTS_E2E_MS.labels(gpu_id=_gpu_id,    voice=_v).inc(total_s * 1000)
     TTS_TOKENS.labels(gpu_id=_gpu_id,    voice=_v).inc(token_count)
+    global _cache_hits, _cache_misses
+    if cache_hit:
+        TTS_CACHE_HITS.labels(gpu_id=_gpu_id, voice=_v).inc()
+        with _lock:
+            _cache_hits += 1
+    else:
+        TTS_CACHE_MISSES.labels(gpu_id=_gpu_id, voice=_v).inc()
+        with _lock:
+            _cache_misses += 1
 
     # ── Short-audio alarm ─────────────────────────────────────────────────────
+    # Cache hits always have token_count=0 (audio served from file, not LLM).
+    # Skip the alarm for cache hits to avoid false positives.
+    if cache_hit:
+        return
     # 1 token = 320 samples @ 16 kHz → 0.02 s/token
     audio_s = token_count * 320 / 16000
     # Expected minimum: ~15 chars/s for mixed Hindi/Telugu script (conservative).
@@ -338,7 +463,21 @@ def snapshot_metrics() -> dict:
         ws = {
             "opened": _ws_connections_opened,
             "closed": _ws_connections_closed,
+            "active": len(_active_ws_ids),
+            "active_ids": list(_active_ws_ids),
+        }
+        total_calls = _cache_hits + _cache_misses
+        cache = {
+            "hits":      _cache_hits,
+            "misses":    _cache_misses,
+            "hit_rate":  round(_cache_hits / total_calls, 4) if total_calls else 0.0,
         }
 
-    return {"synthesis_latency": synthesis, "decode_latency": decode, "ws": ws}
+    return {
+        "ts": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3],
+        "synthesis_latency": synthesis,
+        "decode_latency": decode,
+        "ws": ws,
+        "cache": cache,
+    }
 

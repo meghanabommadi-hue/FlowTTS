@@ -107,6 +107,8 @@ class TTSCodec:
                     if not fut.done():
                         fut.set_result(res)
             except Exception as exc:
+                if "out of memory" in str(exc).lower():
+                    self.c_cache()  # gc.collect() + torch.cuda.empty_cache()
                 for fut in caller_futures:
                     if not fut.done():
                         fut.set_exception(exc)

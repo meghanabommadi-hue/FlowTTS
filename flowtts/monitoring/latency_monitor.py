@@ -15,7 +15,10 @@ def get_logs() -> str:
 
 def get_latency_histograms() -> tuple[dict[int, int], dict[int, int], dict[int, int]]:
     logs = get_logs()
-    re_done = re.compile(r"done\s+llm=(\d+)ms\s+decode=(\d+)ms\s+\S+\s+total=(\d+)ms")
+    # Non-streaming: done  llm=Xms  decode=Xms  wav_enc=Xms  total=Xms
+    re_done = re.compile(r"\bdone\s+llm=(\d+)ms\s+decode=(\d+)ms\s+\S+\s+total=(\d+)ms")
+    # Streaming: stream_done  chunks=N  tokens=N  llm_ttft=Xms  dec_ttft=Xms  decode=Xms  wav_enc=Xms  total=Xms
+    re_stream_done = re.compile(r"\bstream_done\b.*?\bdecode=(\d+)ms\b.*?\btotal=(\d+)ms\b")
     llm_hist: dict[int, int] = {}
     dec_hist: dict[int, int] = {}
     tot_hist: dict[int, int] = {}
@@ -24,6 +27,13 @@ def get_latency_histograms() -> tuple[dict[int, int], dict[int, int], dict[int, 
             (llm_hist, int(m.group(1))),
             (dec_hist, int(m.group(2))),
             (tot_hist, int(m.group(3))),
+        ):
+            bucket = (val // 100) * 100
+            hist[bucket] = hist.get(bucket, 0) + 1
+    for m in re_stream_done.finditer(logs):
+        for hist, val in (
+            (dec_hist, int(m.group(1))),
+            (tot_hist, int(m.group(2))),
         ):
             bucket = (val // 100) * 100
             hist[bucket] = hist.get(bucket, 0) + 1

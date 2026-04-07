@@ -15,9 +15,10 @@ DECODE_LATENCY = Histogram('flowtts_decode_latency_ms', 'Decoder latency in ms',
 E2E_LATENCY   = Histogram('flowtts_e2e_latency_ms',   'End-to-end latency in ms',      buckets=_BUCKETS)
 
 # Matches both log formats:
-#   done  llm=790ms  decode=1328ms  wav_enc=2ms  total=2121ms  tokens=368  wav=235564B
-#   done  llm=221ms  decode=480ms  wav_enc=1ms  total=702ms  tokens=83  wav=53164B
+#   Non-streaming: done  llm=790ms  decode=1328ms  wav_enc=2ms  total=2121ms  ...
+#   Streaming:     stream_done  chunks=N  tokens=N  llm_ttft=Xms  dec_ttft=Xms  decode=Xms  wav_enc=Xms  total=Xms  ...
 _re_done = re.compile(r"\bdone\s+llm=(\d+)ms\s+decode=(\d+)ms\s+\S+\s+total=(\d+)ms")
+_re_stream_done = re.compile(r"\bstream_done\b.*?\bdecode=(\d+)ms\b.*?\btotal=(\d+)ms\b")
 
 
 def parse_line(line: str) -> None:
@@ -26,3 +27,9 @@ def parse_line(line: str) -> None:
         LLM_LATENCY.observe(int(m.group(1)))
         DECODE_LATENCY.observe(int(m.group(2)))
         E2E_LATENCY.observe(int(m.group(3)))
+        return
+    m = _re_stream_done.search(line)
+    if m:
+        # Streaming path has no separate llm= field; decode covers decoder time only
+        DECODE_LATENCY.observe(int(m.group(1)))
+        E2E_LATENCY.observe(int(m.group(2)))

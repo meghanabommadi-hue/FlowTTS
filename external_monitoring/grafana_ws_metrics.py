@@ -45,8 +45,4 @@ def parse_line(line: str) -> None:
         WS_CONCURRENCY.labels(level=str(_active)).inc()
 
     elif _re_error_1000.search(line):
-        WS_CLOSED.inc()
         WS_CLEAN_DISCONNECT.inc()
-        _active = max(0, _active - 1)
-        WS_ACTIVE.set(_active)
-        WS_CONCURRENCY.labels(level=str(_active)).inc()

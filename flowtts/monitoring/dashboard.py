@@ -20,6 +20,8 @@ from datetime import datetime
 
 import gradio as gr
 
+from flowtts.monitoring.metrics import ttft_snapshot, refresh_ttft_from_log
+
 _CALLS_LOG = Path(__file__).parents[2] / "monitoring" / "calls.jsonl"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -65,22 +67,51 @@ def refresh():
 
     total = len(calls)
     cache_hits = sum(1 for c in calls if c.get("cache_hit"))
-    avg_llm   = sum(c["llm_s"]   for c in calls) / total
-    avg_dec   = sum(c["decode_s"] for c in calls) / total
-    avg_e2e   = sum(c["total_s"]  for c in calls) / total
-    p95_e2e   = sorted(c["total_s"] for c in calls)[int(total * 0.95)]
-    avg_tok   = sum(c["token_count"] for c in calls) / total
+    llm_calls  = [c for c in calls if not c.get("cache_hit")]
+    avg_tok      = sum(c["token_count"] for c in calls) / total
     total_wav_mb = sum(c["wav_bytes"] for c in calls) / 1e6
+
+    def _stats_ms(vals: list) -> str:
+        """Format a list of values already in ms."""
+        if not vals:
+            return "n/a"
+        sv = sorted(vals)
+        p95 = sv[int(len(sv) * 0.95)]
+        return (f"min={min(vals):.0f}ms  "
+                f"avg={sum(vals)/len(vals):.0f}ms  "
+                f"p95={p95:.0f}ms  "
+                f"max={max(vals):.0f}ms")
+
+    def _stats_s(vals: list) -> str:
+        """Format a list of values in seconds → display as ms."""
+        return _stats_ms([v * 1000 for v in vals])
+
+    llm_vals   = [c["llm_s"]    for c in llm_calls if c.get("llm_s")    is not None]
+    dec_vals   = [c["decode_s"] for c in llm_calls if c.get("decode_s") is not None]
+    e2e_vals   = [c["total_s"]  for c in llm_calls if c.get("total_s")  is not None]
+    e2e_all    = [c["total_s"]  for c in calls      if c.get("total_s")  is not None]
+
+    # TTFT from llm.log tail (last 100 stream_done lines)
+    refresh_ttft_from_log()
+    ttft = ttft_snapshot()
+
+    def _fmt_ttft(d: dict | None) -> str:
+        if not d:
+            return "n/a"
+        return (f"min={d['min']}ms  avg={d['avg']}ms  "
+                f"p95={d['p95']}ms  max={d['max']}ms  (n={d['n']})")
 
     summary_md = f"""
 | Metric | Value |
 |--------|-------|
 | Requests (last 500) | **{total}** |
 | Cache hits | **{cache_hits}** ({100*cache_hits/total:.1f}%) |
-| Avg LLM latency | **{avg_llm*1000:.0f} ms** |
-| Avg decode latency | **{avg_dec*1000:.0f} ms** |
-| Avg end-to-end | **{avg_e2e*1000:.0f} ms** |
-| p95 end-to-end | **{p95_e2e*1000:.0f} ms** |
+| **LLM TTFT** (1st token) | `{_fmt_ttft(ttft['llm_ttft_ms'])}` |
+| **Decoder TTFT** (1st audio chunk) | `{_fmt_ttft(ttft['dec_ttft_ms'])}` |
+| **E2E total** (incl. wav enc) | `{_fmt_ttft(ttft['total_ms'])}` |
+| LLM full generation (non-cache) | `{_stats_s(llm_vals)}` |
+| Decode full (non-cache) | `{_stats_s(dec_vals)}` |
+| LLM+decode (non-cache) | `{_stats_s(e2e_vals)}` |
 | Avg tokens / req | **{avg_tok:.1f}** |
 | Total audio generated | **{total_wav_mb:.2f} MB** |
 """
@@ -114,24 +145,26 @@ def refresh():
         for i, c in enumerate(window)
     ]
 
-    # Per-voice breakdown
+    # Per-voice breakdown (LLM/E2E stats exclude cache hits)
     voice_stats: dict[str, dict] = {}
     for c in calls:
         v = c.get("voice_id") or "unknown"
         if v not in voice_stats:
-            voice_stats[v] = {"count": 0, "llm_sum": 0.0, "e2e_sum": 0.0, "tok_sum": 0}
+            voice_stats[v] = {"count": 0, "llm_count": 0, "llm_sum": 0.0, "e2e_sum": 0.0, "tok_sum": 0}
         s = voice_stats[v]
         s["count"] += 1
-        s["llm_sum"] += c["llm_s"]
-        s["e2e_sum"] += c["total_s"]
         s["tok_sum"] += c["token_count"]
+        if not c.get("cache_hit"):
+            s["llm_count"] += 1
+            s["llm_sum"] += c["llm_s"]
+            s["e2e_sum"] += c["total_s"]
 
     voice_table = [
         [
             v,
             s["count"],
-            f"{s['llm_sum']/s['count']*1000:.0f} ms",
-            f"{s['e2e_sum']/s['count']*1000:.0f} ms",
+            f"{s['llm_sum']/s['llm_count']*1000:.0f} ms" if s["llm_count"] else "—",
+            f"{s['e2e_sum']/s['llm_count']*1000:.0f} ms" if s["llm_count"] else "—",
             f"{s['tok_sum']/s['count']:.1f}",
         ]
         for v, s in sorted(voice_stats.items(), key=lambda x: -x[1]["count"])
