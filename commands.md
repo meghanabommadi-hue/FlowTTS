@@ -16,7 +16,6 @@ python3 -m flowtts.test.open_ports --n 40
 
 ```bash
 # Full pipeline (LLM + decoder, returns WAV)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75
 
 # Streaming — audio chunks sent as they are generated (shows time-to-first-chunk)
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
@@ -141,6 +140,21 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vik
 
 # Use daya voice
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice daya
+
+# Use vanita voice  (sample_files/vanita.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vanita
+
+# Use sunita voice  (sample_files/sunita.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice sunita
+
+# Use rani voice  (sample_files/rani.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice rani
+
+# Use sana voice  (sample_files/sana.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice sana
+
+# Use anita voice  (sample_files/anita.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice anita
 ```
 
 ```bash
@@ -151,7 +165,7 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice brit
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice simran
 ```
 
-- Available voices: `simran`, `tara`, `vikram`, `daya`, `british_rose`
+- Available voices: `simran`, `tara`, `vikram`, `daya`, `british_rose`, `rani`, `sana`, `anita`, `vanita`, `sunita`
 - `simran` and `british_rose` automatically use English test sentences (`_ENGLISH_AMERICAN`)
 - `tara`, `vikram`, `daya` use Hindi fallback sentences
 - Default voice (no `--voice`) is `british_rose` (set in `TtsModelSettings.ref_audio`)

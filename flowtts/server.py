@@ -114,6 +114,8 @@ _VOICE_CACHE_MAP: dict[str, str] = {
     "simran": "cached_data_simran",
     "vikram": "cached_data_vikram",
     "daya":   "cached_data_daya",
+    "vanita": "cached_data_vanita",
+    "sunita": "cached_data_sunita",
 }
 
 
@@ -253,8 +255,7 @@ async def _handle_streaming_request(
     token_buf     = []          # complete <|speech_token_N|> strings ready to decode
     overlap_tokens: list = []   # tail tokens from previous chunk prepended for codec context
     _OVERLAP      = _OVERLAP_TOKENS      # from config: overlap_tokens
-    _XFADE        = _CROSSFADE_SAMPLES   # from config: crossfade_samples
-    prev_tail: np.ndarray | None = None  # faded tail held back from previous chunk
+    _XFADE        = _CROSSFADE_SAMPLES   # from config: crossfade_samples (used for fade-in/out length)
     chunk_index   = 0
     total_tokens  = 0
     total_wav_b   = 0
@@ -266,7 +267,7 @@ async def _handle_streaming_request(
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, decoder_ttft_s, overlap_tokens, prev_tail
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, decoder_ttft_s, overlap_tokens
         if not token_buf:
             return
 
@@ -290,30 +291,29 @@ async def _handle_streaming_request(
             discard = n_overlap * 320  # 1 token = 320 samples at 16kHz
             pcm = pcm[discard:]
 
-        # Remove DC offset to prevent click pops at chunk boundaries.
+        # Remove DC offset across the whole chunk to prevent waveform baseline
+        # shifts that cause clicks at boundaries.
         pcm = pcm - pcm.mean()
 
-        # Server-side crossfade: blend the held-back tail of the previous chunk
-        # with the start of this chunk, then prepend the blended region.
+        # Server-side crossfade: blend the tail of the previous chunk's output
+        # with the head of this chunk IN PLACE — no audio is repeated or held back.
+        # prev_tail is the last xfade samples already sent to the client; we overlap
+        # them with the first xfade samples of this chunk and send the blend as a
+        # correction prefix, effectively smoothing the join without echoing content.
+        #
+        # Simpler and echo-free approach: just apply a short fade-in to the head of
+        # every non-first chunk. This removes the codec boundary transient without
+        # any double-play of audio.
         xfade = min(_XFADE, len(pcm) // 4)
-        if prev_tail is not None and xfade > 0:
-            tail = prev_tail[-xfade:]  # trim to actual xfade length (prev chunk may have been larger)
-            ramp_in  = np.linspace(0.0, 1.0, xfade, dtype=np.float32)
-            ramp_out = 1.0 - ramp_in
-            blended  = tail * ramp_out + pcm[:xfade] * ramp_in
-            pcm = np.concatenate([blended, pcm[xfade:]])
+        if chunk_index > 0 and xfade > 0:
+            fade_len = min(xfade, len(pcm))
+            pcm = pcm.copy()
+            pcm[:fade_len] *= np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
 
-        # Hold back the tail of non-final chunks for blending with the next chunk.
-        if not is_final and xfade > 0 and len(pcm) > xfade * 2:
-            prev_tail = pcm[-xfade:].copy()
-            pcm = pcm[:-xfade]
-        else:
-            prev_tail = None
-            # Fade out the final chunk's tail so the audio ends smoothly.
-            if is_final and xfade > 0:
-                fade_len = min(xfade, len(pcm))
-                pcm = pcm.copy()
-                pcm[-fade_len:] *= np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
+        # Fade out the final chunk's tail so the audio ends cleanly.
+        if is_final and xfade > 0 and len(pcm) > xfade:
+            pcm = pcm.copy()
+            pcm[-xfade:] *= np.linspace(1.0, 0.0, xfade, dtype=np.float32)
 
         # Send raw int16 PCM — no WAV header — so client receives a continuous
         # byte stream with no headers causing gaps or parse overhead.

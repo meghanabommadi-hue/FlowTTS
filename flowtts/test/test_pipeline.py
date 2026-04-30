@@ -178,7 +178,7 @@ _HINDI_FALLBACK: List[str] = [
     "थैंक यू hold करने के लिए, अब पूरे steps फिर से clear बता دیتी हूँ:",
     "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
     "😭☺️ I am vaani ✅👀",
-    "😭 हूँ: steps फिर से clear बता",
+    "😭 steps फिर से clear बता",
     " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
     "नमस्ते मैं आपकी कैसे मदद कर सकती हूं?",
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
@@ -187,29 +187,29 @@ _HINDI_FALLBACK: List[str] = [
     "Hi, मैं कर सकती हूं?",
     "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
     "क्या आप अपना नाम बता सकते हैं?",
-    "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें।",
+    "आपका खाता नंबर नौ आठ सात छह पांच चार तीन दो एक शून्य है, कृपया confirm करें।",
     "कृपया थोड़ा इंतज़ार करें।",
     "आपकी समस्या हल हो गई है।",
-    "आपका बकाया ₹२,५०० है, कृपया आज ही जमा करें।",
+    "आपका बकाया दो हज़ार पांच सौ रुपये है, कृपया आज ही जमा करें।",
     "हम जल्द ही आपसे संपर्क करेंगे।",
-    "आपका भुगतान ₹१०,०००  सफलतापूर्वक हो गया है।",
+    "आपका भुगतान दस हज़ार रुपये सफलतापूर्वक हो गया है।",
     # short — English numerals in Hindi sentences
     "आपका account number 9876543210 है, कृपया confirm करें।",
     "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें।",
     "आपकी EMI Rs. 3750 हर महीने देय है।",
     # medium — Hindi numerals
     "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
-    "आपके loan की किस्त ₹३,७५० अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
-    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount ₹५,०००  है, कृपया जल्द से जल्द इसे जमा करें।",
-    "आपकी EMI की due date ३० अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
-    "आपके account नंबर ४५६७८९०१२३ पर ₹१५,००० का loan approve हुआ है, क्या आप details verify करेंगे?",
+    "आपके loan की किस्त तीन हज़ार सात सौ पचास रुपये अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount पांच हज़ार रुपये है, कृपया जल्द से जल्द इसे जमा करें।",
+    "आपकी EMI की due date तीस अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
+    "आपके account नंबर चार पांच छह सात आठ नौ शून्य एक दो तीन पर पंद्रह हज़ार रुपये का loan approve हुआ है, क्या आप details verify करेंगे?",
     # medium — English numerals in Hindi sentences
     "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
     "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
     # long — Hindi numerals
-    "आपकी loan application approve हो गई है और ₹५०,०००  सीधे आपके bank account ७८९०१२३४५६ में transfer कर दिए जाएंगे, जिसमें २ से ३ कार्य दिवस लग सकते हैं।",
-    "हमारी company की policy के अनुसार अगर payment ३० दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर ₹८,२५०  का भुगतान करें।",
-    "आप हमारे mobile app के माध्यम से अपनी ₹४,५०० की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है।",
+    "आपकी loan application approve हो गई है और पचास हज़ार रुपये सीधे आपके bank account सात आठ नौ शून्य एक दो तीन चार पांच छह में transfer कर दिए जाएंगे, जिसमें दो से तीन कार्य दिवस लग सकते हैं।",
+    "हमारी company की policy के अनुसार अगर payment तीस दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर आठ हज़ार दो सौ पचास रुपये का भुगतान करें।",
+    "आप हमारे mobile app के माध्यम से अपनी चार हज़ार पांच सौ रुपये की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है।",
     # long — English numerals in Hindi sentences
     "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
     "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
@@ -1006,7 +1006,7 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
-    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya", "british_rose"],
+    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya", "british_rose", "rani", "sana", "anita", "vanita", "sunita"],
                         help="Voice ID to use for synthesis (default: server default)")
     parser.add_argument("--sentence", default="", metavar="TEXT",
                         help="Repeat this single sentence for all requests")

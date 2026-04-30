@@ -32,6 +32,11 @@ VOICE_REF_AUDIO: dict[str, str] = {
     "vikram":       f"{_SAMPLE_FILES_DIR}/vikram.wav",
     "daya":         f"{_SAMPLE_FILES_DIR}/daya.wav",
     "british_rose": f"{_SAMPLE_FILES_DIR}/british_rose.wav",
+    "rani": f"{_SAMPLE_FILES_DIR}/rani.wav",
+    "sana":  f"{_SAMPLE_FILES_DIR}/sana.wav",
+    "anita":  f"{_SAMPLE_FILES_DIR}/anita.wav",
+    "vanita": f"{_SAMPLE_FILES_DIR}/vanita.wav",
+    "sunita": f"{_SAMPLE_FILES_DIR}/sunita.wav",
 }
 
 
@@ -45,13 +50,13 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        ref_audio: str = f"{_SAMPLE_FILES_DIR}/british_rose.wav"
+        ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.85      # more KV cache for concurrent requests
+    mem_fraction_static: float = 0.55      # more KV cache for concurrent requests
     attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
     chunked_prefill_size: int = -1         # small prefill chunks → decode starts sooner
     # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
@@ -114,13 +119,13 @@ class StreamingSettings(BaseModel):
     # --- Codec overlap ---
     # Tail tokens from the previous chunk prepended to the next decode for context.
     # Their decoded audio is discarded. Higher = smoother codec boundary quality.
-    # 8 tokens = 160ms of context.
-    overlap_tokens: int = 8
+    # 12 tokens = 240ms of context.
+    overlap_tokens: int = 12
 
     # --- Server-side crossfade ---
     # Samples held back from each chunk's tail and blended into the next chunk's head.
-    # 800 = 50ms at 16kHz. Set to 0 to disable crossfade entirely.
-    crossfade_samples: int = 320
+    # 1280 = 80ms at 16kHz. Set to 0 to disable crossfade entirely.
+    crossfade_samples: int = 1280
 
     # Unused — fade-out disabled to prevent gaps.
     fade_out_samples: int = 0
