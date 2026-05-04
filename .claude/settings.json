@@ -67,7 +67,9 @@
       "Skill(schedule)",
       "Skill(schedule:*)",
       "Bash(crontab -l)",
-      "Bash(crontab -)"
+      "Bash(crontab -)",
+      "Bash(grep -r \"^import\\\\|^from\" /Users/meghana.bommadi/Documents/repos/TTS/monitor/*.py)",
+      "Bash(bash shell/update_nodes.sh data/ips.txt)"
     ],
     "additionalDirectories": [
       "/Users/meghana.bommadi/Documents/repos/TTS/mongoScrape",
