@@ -86,10 +86,10 @@ class DecoderSettings(BaseModel):
     to_wav: bool = True
 
     # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
-    max_batch: int = 256             # H200 handles larger batches without OOM
-    batch_timeout_ms: float = 0.5   # ms to wait collecting a batch (longer = better packing)
-    gpu_chunk_size: int = 160        # H200 has 2x HBM bandwidth vs A100 — double the chunk
-    onnx_workers: int = 2            # two ONNX threads to keep GPU fed between batches
+    max_batch: int = 256
+    batch_timeout_ms: float = 0.5
+    gpu_chunk_size: int = 160
+    onnx_workers: int = 2
     use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 

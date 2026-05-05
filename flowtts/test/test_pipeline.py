@@ -218,8 +218,10 @@ class RequestResult(NamedTuple):
     token_chars: int        # 0 for decoded/worker mode
     llm_s: Optional[float]
     decode_s: Optional[float]
-    ttff_s: Optional[float] = None   # time-to-first-chunk (streaming only)
-    rtf: Optional[float] = None      # real-time factor for this request
+    ttff_s: Optional[float] = None          # time-to-first-chunk (streaming only, client-measured)
+    rtf: Optional[float] = None             # real-time factor for this request
+    llm_ttft_ms: Optional[int] = None       # ms to first LLM speech token (server-measured)
+    decoder_ttft_ms: Optional[int] = None   # ms to first decode_async completion (server-measured)
 
 
 
@@ -417,12 +419,14 @@ async def _recv_streaming(
                     chunk_path.write_bytes(wav_chunk)
 
             elif mtype == "audio_done":
-                latency   = round(time.time() - t0, 3)
-                llm_s     = msg.get("llm_s")
-                decode_s  = msg.get("decode_s")
-                rtf       = msg.get("rtf")
-                chunks    = msg.get("chunks", len(chunk_wavs))
-                total_wav_b = sum(len(w) for w in chunk_wavs)
+                latency         = round(time.time() - t0, 3)
+                llm_s           = msg.get("llm_s")
+                decode_s        = msg.get("decode_s")
+                rtf             = msg.get("rtf")
+                llm_ttft_ms     = msg.get("llm_ttft_ms")
+                decoder_ttft_ms = msg.get("decoder_ttft_ms")
+                chunks          = msg.get("chunks", len(chunk_wavs))
+                total_wav_b     = sum(len(w) for w in chunk_wavs)
 
                 if chunk_wavs:
                     wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
@@ -431,12 +435,14 @@ async def _recv_streaming(
                 _log(req_id, port,
                      f"OK  stream_done  chunks={chunks}  tokens={total_tokens}"
                      f"  {total_wav_b}B → {wav_path.name if wav_path else '-'}"
-                     f"  ttff={first_chunk_latency}s  total={latency}s"
+                     f"  ttff={first_chunk_latency}s  llm_ttft={llm_ttft_ms}ms"
+                     f"  decoder_ttft={decoder_ttft_ms}ms  total={latency}s"
                      f"  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
 
                 return RequestResult(req_id, port, True, latency, wav_path,
                                      None, total_wav_b, total_tokens * 20, llm_s, decode_s,
-                                     ttff_s=first_chunk_latency, rtf=rtf)
+                                     ttff_s=first_chunk_latency, rtf=rtf,
+                                     llm_ttft_ms=llm_ttft_ms, decoder_ttft_ms=decoder_ttft_ms)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -447,9 +453,14 @@ async def _recv_streaming(
 # ---------------------------------------------------------------------------
 # Server management (managed launch mode)
 # ---------------------------------------------------------------------------
-_VENV_PYTHON = str(Path.home() / "FlowTTS/llm/bin/python3")
 _FLOWTTS_DIR = Path.home() / "FlowTTS"
 _DEFAULT_CTRL_PORT = 8764
+
+# Prefer the project venv's Python for the server subprocess so it gets
+# onnxruntime-gpu, torch+CUDA, and all other heavy deps — even when the test
+# is invoked via the system Python.
+_VENV_PYTHON = _FLOWTTS_DIR / ".venv" / "bin" / "python3"
+_SERVER_PYTHON = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 
 def _ctrl_url(ctrl_port: int, path: str) -> str:
@@ -470,7 +481,7 @@ def _ctrl_post(ctrl_port: int, path: str, timeout: float = 2.0):
 def _launch_server(ctrl_port: int, save_audio: Optional[str] = None) -> subprocess.Popen:
     """Start flowtts.server with --ports 0 (no WS ports) + control API."""
     cmd = [
-        _VENV_PYTHON, "-m", "flowtts.server",
+        _SERVER_PYTHON, "-m", "flowtts.server",
         "--ports", "0",
         "--ctrl-port", str(ctrl_port),
     ]
@@ -548,24 +559,35 @@ async def run_test(
 
     server_proc: Optional[subprocess.Popen] = None
     active_ports: List[int] = [base_port]
+    _already_running = False
 
     if launch:
-        # ── Managed: start server, open ports on demand ──────────────────────
-        server_proc = _launch_server(ctrl_port, save_audio)
+        # ── Managed: reuse existing server if already ready, else launch ──────
         try:
-            await _wait_server_ready(ctrl_port)
-        except TimeoutError as e:
-            server_proc.kill()
-            print(f"[server] FATAL: {e}", flush=True)
-            sys.exit(1)
+            data = _ctrl_get(ctrl_port, "/ready", timeout=1.0)
+            _already_running = bool(data.get("ready"))
+        except Exception:
+            pass
 
-        # Open exactly `concurrency` WS ports starting at base_port
+        if _already_running:
+            print(f"[server] reusing running server on ctrl=:{ctrl_port} (ref_audio stays loaded)", flush=True)
+        else:
+            server_proc = _launch_server(ctrl_port, save_audio)
+            try:
+                await _wait_server_ready(ctrl_port)
+            except TimeoutError as e:
+                server_proc.kill()
+                print(f"[server] FATAL: {e}", flush=True)
+                sys.exit(1)
+
+        # Open exactly `concurrency` WS ports starting at base_port (skip already-open ones)
         ws_ports: List[int] = []
         for i in range(concurrency):
             p = base_port + i
-            await _open_port(ctrl_port, p)
+            if not _port_open(p):
+                await _open_port(ctrl_port, p)
             ws_ports.append(p)
-        print(f"[server] opened {len(ws_ports)} port(s): {ws_ports}", flush=True)
+        print(f"[server] using {len(ws_ports)} port(s): {ws_ports}", flush=True)
         active_ports = ws_ports
 
     else:
@@ -644,6 +666,8 @@ async def run_test(
         except subprocess.TimeoutExpired:
             server_proc.kill()
         print("[server] stopped", flush=True)
+    elif launch and _already_running:
+        print("[server] left running (was already up before test)", flush=True)
 
     return results
 
@@ -687,21 +711,35 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         )
 
     if passed:
-        lats  = [r.latency_s for r in passed]
-        llms  = [r.llm_s     for r in passed if r.llm_s    is not None]
-        decs  = [r.decode_s  for r in passed if r.decode_s is not None]
-        ttffs = [r.ttff_s    for r in passed if r.ttff_s   is not None]
-        rtfs  = [r.rtf       for r in passed if r.rtf      is not None]
+        lats            = [r.latency_s      for r in passed]
+        llms            = [r.llm_s          for r in passed if r.llm_s          is not None]
+        decs            = [r.decode_s       for r in passed if r.decode_s       is not None]
+        ttffs           = [r.ttff_s         for r in passed if r.ttff_s         is not None]
+        rtfs            = [r.rtf            for r in passed if r.rtf            is not None]
+        llm_ttfts       = [r.llm_ttft_ms    for r in passed if r.llm_ttft_ms    is not None]
+        decoder_ttfts   = [r.decoder_ttft_ms for r in passed if r.decoder_ttft_ms is not None]
 
         def _fmt(vals: list, unit: str = "s") -> str:
             if not vals:
                 return "n/a"
             return f"min={min(vals):.3f}{unit}  avg={sum(vals)/len(vals):.3f}{unit}  max={max(vals):.3f}{unit}"
 
+        def _fmt_ms(vals: list) -> str:
+            if not vals:
+                return "n/a"
+            return f"min={min(vals)}ms  avg={sum(vals)//len(vals)}ms  max={max(vals)}ms"
+
         lines.append(f"\n{'─'*60}")
         lines.append(f"  total latency : {_fmt(lats)}")
         if ttffs:
-            lines.append(f"  time-to-first : {_fmt(ttffs)}  (first audio chunk)")
+            lines.append(f"  time-to-first : {_fmt(ttffs)}  (first audio chunk, client-measured)")
+        if llm_ttfts:
+            lines.append(f"  llm ttft      : {_fmt_ms(llm_ttfts)}  (first speech token from LLM)")
+        if decoder_ttfts:
+            lines.append(f"  decoder ttft  : {_fmt_ms(decoder_ttfts)}  (first decode_async done)")
+        if llm_ttfts and decoder_ttfts and len(llm_ttfts) == len(decoder_ttfts):
+            decode_lag = [d - l for d, l in zip(decoder_ttfts, llm_ttfts)]
+            lines.append(f"  decode lag    : {_fmt_ms(decode_lag)}  (decoder_ttft - llm_ttft)")
         lines.append(f"  llm           : {_fmt(llms)}")
         lines.append(f"  decoder       : {_fmt(decs)}")
         if llms and decs and len(llms) == len(decs):
@@ -881,6 +919,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # If neither --launch nor --no-launch was given, auto-detect from other flags.
     if args.launch is None:
-        _external_hints = {"--ctrl-port", "--n-ports", "--ports", "--no-launch"}
+        _external_hints = {"--n-ports", "--ports", "--no-launch"}
         args.launch = not bool(_external_hints.intersection(sys.argv))
     asyncio.run(main(args))

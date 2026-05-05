@@ -4,9 +4,12 @@
 ```bash
 cd FlowTTS/
 source llmc/bin/activate
+source .venv/bin/activate
+
 ```
 ```bash
-cd /root/FlowTTS && bash run.sh --ctrl-port 8764
+cd /root/FlowTTS
+bash run.sh --ctrl-port 8764
 ```
 
 ## Open N ports

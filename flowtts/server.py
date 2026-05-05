@@ -162,11 +162,13 @@ async def _handle_streaming_request(
     decode_total  = 0.0
     wav_total     = 0.0
     first_chunk_sent = False
+    llm_ttft_ms:     int | None = None   # ms from t0 to first speech token from LLM
+    decoder_ttft_ms: int | None = None   # ms from t0 to first decode_async completion
 
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens, decoder_ttft_ms
         if not token_buf:
             return
 
@@ -180,7 +182,10 @@ async def _handle_streaming_request(
 
         td = time.perf_counter()
         wav_tensor = await codec.decode_async(chunk_tokens, ctx)
-        decode_total += time.perf_counter() - td
+        decode_elapsed = time.perf_counter() - td
+        decode_total += decode_elapsed
+        if decoder_ttft_ms is None:
+            decoder_ttft_ms = round((time.perf_counter() - t0) * 1000)
 
         tw = time.perf_counter()
 
@@ -200,7 +205,14 @@ async def _handle_streaming_request(
         ts_chunk = _tsms()
         if not first_chunk_sent:
             ttft = round((time.perf_counter() - t0) * 1000)
-            print(f"[{ts_chunk}] :{port} {call_id}  first_chunk  ttft={ttft}ms  tokens={n_tok}", flush=True)
+            print(
+                f"[{ts_chunk}] :{port} {call_id}  first_chunk"
+                f"  llm_ttft={llm_ttft_ms}ms"
+                f"  decoder_ttft={decoder_ttft_ms}ms"
+                f"  e2e_ttft={ttft}ms"
+                f"  tokens={n_tok}",
+                flush=True,
+            )
             first_chunk_sent = True
 
         await ws.send(json.dumps({
@@ -227,6 +239,8 @@ async def _handle_streaming_request(
             # Extract all complete speech tokens from buffer; keep tail after last match.
             last_end = 0
             for m in _RE_SPEECH.finditer(buffer):
+                if llm_ttft_ms is None:
+                    llm_ttft_ms = round((time.perf_counter() - t0) * 1000)
                 token_buf.append(m.group())
                 last_end = m.end()
             if last_end:
@@ -256,6 +270,8 @@ async def _handle_streaming_request(
             "sample_rate": SAMPLE_RATE,
             "llm_s":       llm_s,
             "decode_s":    round(decode_total, 4),
+            "llm_ttft_ms":     llm_ttft_ms,
+            "decoder_ttft_ms": decoder_ttft_ms,
             "rtf":         round(rtf, 3),
             "avg_rtf":     round(avg_rtf, 3),
         }))
@@ -264,6 +280,8 @@ async def _handle_streaming_request(
             f"[{ts_done}] :{port} {call_id}  stream_done"
             f"  chunks={chunk_index}"
             f"  tokens={total_tokens}"
+            f"  llm_ttft={llm_ttft_ms}ms"
+            f"  decoder_ttft={decoder_ttft_ms}ms"
             f"  llm={llm_ms}ms"
             f"  decode={round(decode_total*1000)}ms"
             f"  wav_enc={round(wav_total*1000)}ms"
