@@ -47,7 +47,7 @@ class TtsModelSettings(BaseModel):
     # AudioTokenizer FP16 weights, and batch tensors (~10-12 GiB needed).
     # At 0.85 only 3.9 GiB remained → OOM at req 122. All other values restored from
     # the proven A100 baseline that achieved 0.9s TTFT at 200 requests.
-    mem_fraction_static: float = 0.83
+    mem_fraction_static: float = 0.70
     attention_backend: str = "triton"
     chunked_prefill_size: int = 8192
     max_running_requests: int = 200
@@ -87,10 +87,10 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
     max_batch: int = 256
-    batch_timeout_ms: float = 0.5
-    gpu_chunk_size: int = 160
-    onnx_workers: int = 2
-    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
+    batch_timeout_ms: float = 0.7
+    gpu_chunk_size: int = 180
+    onnx_workers: int = 1
+    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
 
 
 class StreamingSettings(BaseModel):
