@@ -574,8 +574,8 @@ Text length buckets (--length):
     )
     parser.add_argument("--host",        default="localhost",
                         help="Gateway host (default: localhost)")
-    parser.add_argument("--base-port",   type=int, default=8765,
-                        help="Base port to scan from (default: 8765)")
+    parser.add_argument("--base-port",   type=int, default=8080,
+                        help="Base port to scan from (default: 8080)")
     parser.add_argument("--n-ports",     type=int, default=10,
                         help="How many consecutive ports to scan (default: 10)")
     parser.add_argument("--requests",    type=int, default=3,

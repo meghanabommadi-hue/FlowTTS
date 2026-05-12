@@ -8,7 +8,7 @@ Role in pipeline:
   event loop. This is the recommended way to run FlowTTS in production.
 
   Client
-    │  WebSocket (text) on port 8765…8765+N
+    │  WebSocket (text) on port 8080…8080+N
     ▼
   server.py  (one process, one GPU load)
     │  synthesis_service.synthesize(text)  [sglang in-process]
@@ -33,12 +33,12 @@ Warmup:
   caches before real traffic arrives.
 
 Usage (preferred):
-    ./run.sh --ports 100              # 100 ports: 8765…8864
+    ./run.sh --ports 100              # 100 ports: 8080…8864
     ./run.sh --ports 3 --port 9000   # ports 9000, 9001, 9002
 
 Direct:
     python -m flowtts.server --ports 3
-    python -m flowtts.server --ports 100 --base-port 8765
+    python -m flowtts.server --ports 100 --base-port 8080
 """
 
 from __future__ import annotations
@@ -64,6 +64,7 @@ from aiohttp import web
 
 import websockets
 from websockets.exceptions import WebSocketException
+from websockets.http11 import Response as WsResponse, Headers as WsHeaders
 
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RATE
@@ -89,7 +90,7 @@ _restarting: bool = False
 _OOM_RECOVERY_WINDOW_S: float = 5.0
 
 # Concurrency limiter — queue requests beyond this threshold instead of running them immediately
-_MAX_ACTIVE_REQUESTS: int = 100
+_MAX_ACTIVE_REQUESTS: int = 200
 _active_requests: int = 0
 _request_semaphore: asyncio.Semaphore | None = None  # initialised in run_server()
 
@@ -261,13 +262,14 @@ async def _handle_streaming_request(
     total_wav_b   = 0
     decode_total  = 0.0
     wav_total     = 0.0
-    llm_ttft_s    = None   # time to first LLM token
-    decoder_ttft_s = None  # time to first decoded chunk sent
+    first_chunk_sent = False
+    llm_ttft_ms:     int | None = None   # ms from t0 to first speech token from LLM
+    decoder_ttft_ms: int | None = None   # ms from t0 to first decode_async completion
 
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, decoder_ttft_s, overlap_tokens
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens, decoder_ttft_ms
         if not token_buf:
             return
 
@@ -281,7 +283,10 @@ async def _handle_streaming_request(
 
         td = time.perf_counter()
         wav_tensor = await codec.decode_async(chunk_tokens, ctx)
-        decode_total += time.perf_counter() - td
+        decode_elapsed = time.perf_counter() - td
+        decode_total += decode_elapsed
+        if decoder_ttft_ms is None:
+            decoder_ttft_ms = round((time.perf_counter() - t0) * 1000)
 
         tw = time.perf_counter()
 
@@ -325,12 +330,17 @@ async def _handle_streaming_request(
         total_wav_b  += len(audio_bytes)
 
         ts_chunk = _tsms()
-        if decoder_ttft_s is None:
-            decoder_ttft_s = time.perf_counter() - t0
-            print(f"[{ts_chunk}] :{port} {call_id}  first_chunk"
-                  f"  ttft={round(decoder_ttft_s*1000)}ms"
-                  f"  llm_ttft={round(llm_ttft_s*1000) if llm_ttft_s else '?'}ms"
-                  f"  tokens={n_tok}", flush=True)
+        if not first_chunk_sent:
+            ttft = round((time.perf_counter() - t0) * 1000)
+            print(
+                f"[{ts_chunk}] :{port} {call_id}  first_chunk"
+                f"  llm_ttft={llm_ttft_ms}ms"
+                f"  decoder_ttft={decoder_ttft_ms}ms"
+                f"  e2e_ttft={ttft}ms"
+                f"  tokens={n_tok}",
+                flush=True,
+            )
+            first_chunk_sent = True
 
         await ws.send(
             json.dumps({
@@ -363,13 +373,12 @@ async def _handle_streaming_request(
                 await _flush_chunk(is_final=True)
                 break
 
-            if llm_ttft_s is None:
-                llm_ttft_s = time.perf_counter() - t0
-
             buffer += delta
             # Extract all complete speech tokens from buffer; keep tail after last match.
             last_end = 0
             for m in _RE_SPEECH.finditer(buffer):
+                if llm_ttft_ms is None:
+                    llm_ttft_ms = round((time.perf_counter() - t0) * 1000)
                 token_buf.append(m.group())
                 last_end = m.end()
             if last_end:
@@ -398,15 +407,13 @@ async def _handle_streaming_request(
             "chunks":          chunk_index,
             "total_tokens":    total_tokens,
             "total_wav_bytes": total_wav_b,
-            "sample_rate":     SAMPLE_RATE,
-            "llm_s":           llm_s,
-            "decode_s":        round(decode_total, 4),
-            "wav_enc_s":       round(wav_total, 4),
-            "llm_ttft_ms":     round(llm_ttft_s * 1000, 1) if llm_ttft_s is not None else None,
-            "decoder_ttft_ms": round(decoder_ttft_s * 1000, 1) if decoder_ttft_s is not None else None,
-            "rtf":             round(rtf, 3),
-            "avg_rtf":         round(avg_rtf, 3),
-            "cache_hit":       False,
+            "sample_rate": SAMPLE_RATE,
+            "llm_s":       llm_s,
+            "decode_s":    round(decode_total, 4),
+            "llm_ttft_ms":     llm_ttft_ms,
+            "decoder_ttft_ms": decoder_ttft_ms,
+            "rtf":         round(rtf, 3),
+            "avg_rtf":     round(avg_rtf, 3),
         }))
 
         record_call(
@@ -427,8 +434,9 @@ async def _handle_streaming_request(
             f"[{ts_done}] :{port} {call_id}  stream_done"
             f"  chunks={chunk_index}"
             f"  tokens={total_tokens}"
-            f"  llm_ttft={round(llm_ttft_s*1000) if llm_ttft_s else '?'}ms"
-            f"  dec_ttft={round(decoder_ttft_s*1000) if decoder_ttft_s else '?'}ms"
+            f"  llm_ttft={llm_ttft_ms}ms"
+            f"  decoder_ttft={decoder_ttft_ms}ms"
+            f"  llm={llm_ms}ms"
             f"  decode={round(decode_total*1000)}ms"
             f"  wav_enc={round(wav_total*1000)}ms"
             f"  total={round(total_s*1000)}ms"
@@ -868,10 +876,18 @@ async def _bind_ws_port(port: int) -> bool:
         return False
     async def handler(ws: websockets.ServerConnection, p: int = port) -> None:
         await handle_connection(ws, p)
+
+    async def process_request(connection, request):
+        if request.path == "/health":
+            body = json.dumps({"status": "ok", "ready": _synthesizer is not None}).encode()
+            headers = WsHeaders([("Content-Type", "application/json"), ("Content-Length", str(len(body)))])
+            return WsResponse(200, "OK", headers, body)
+
     await websockets.serve(
         handler, "0.0.0.0", port,
         ping_interval=30, ping_timeout=30,
         max_size=100 * 1024 * 1024,
+        process_request=process_request,
     )
     _open_ports.add(port)
     record_port_change(_open_ports)
@@ -928,11 +944,17 @@ async def _http_metrics(req: web.Request) -> web.Response:
     return web.Response(body=generate_latest(), content_type=ct)
 
 
+async def _http_health(req: web.Request) -> web.Response:
+    """GET /health  — simple liveness check."""
+    return web.json_response({"status": "ok", "ready": _synthesizer is not None})
+
+
 async def _run_control_api(ctrl_port: int) -> None:
     app = web.Application()
     app.router.add_post("/ports/add", _http_add_port)
     app.router.add_get("/ports",      _http_list_ports)
     app.router.add_get("/ready",      _http_ready)
+    app.router.add_get("/health",     _http_health)
     app.router.add_get("/metrics",    _http_metrics)
     app.router.add_get("/ws/log",     _http_ws_log)
     app.router.add_get("/ws/active",  _http_ws_active)

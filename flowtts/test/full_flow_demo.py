@@ -27,7 +27,7 @@ from typing import Iterable, List
 import websockets
 
 
-WS_URL = "ws://localhost:8765/ws"
+WS_URL = "ws://localhost:8080/ws"
 
 
 async def streaming_demo(text_chunks: Iterable[str]) -> None:

@@ -2,15 +2,23 @@
 # FlowTTS launcher — single process, one model load, N WebSocket ports.
 #
 # Usage:
-#   ./run.sh                        # 1 port at 8765
-#   ./run.sh --ports 3              # ports 8765, 8766, 8767
-#   ./run.sh --ports 3 --port 9000  # ports 9000, 9001, 9002
-#   ./run.sh --test                 # quick smoke test against running server
-#   ./run.sh --test --ports 3 --port 8765
+#   ./run.sh                                          # 1 port at 8080, defaults
+#   ./run.sh --ports 3                                # ports 8080, 8081, 8082
+#   ./run.sh --ports 3 --port 9000                    # ports 9000, 9001, 9002
+#   ./run.sh --max-batch 128 --batch-timeout-ms 0.2   # decoder tuning
+#   ./run.sh --gpu-chunk-size 256 --onnx-workers 4
+#   ./run.sh --test                                   # quick smoke test against running server
+#   ./run.sh --test --ports 3 --port 8080
+#
+# Decoder flags (passed as FLOWTTS_DECODER__ env vars to pydantic-settings):
+#   --max-batch N          max tokens per decode batch       (default: 256)
+#   --batch-timeout-ms N   ms to wait before batch dispatch  (default: 0.5)
+#   --gpu-chunk-size N     tokens per GPU iteration          (default: 160)
+#   --onnx-workers N       ONNX threads feeding GPU          (default: 2)
 
 set -uo pipefail
 
-VENV="${VIRTUAL_ENV:-${HOME}/FlowTTS/llm}"
+VENV="${VIRTUAL_ENV:-${HOME}/FlowTTS/.venv}"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -23,12 +31,17 @@ export PATH="${VENV}/bin:${PATH}"
 export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/torch/lib:${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${VENV}/lib/python3.12/site-packages/nvidia/cu13/lib:${VENV}/lib/python3.12/site-packages/tensorrt_libs:${LD_LIBRARY_PATH:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
-BASE_PORT=8765
+BASE_PORT=8080
 N_PORTS=1
 TEST=0
 TEST_HOST="localhost"
 SAVE_AUDIO=""
 CTRL_PORT=""
+# Decoder overrides — empty means "use config.py default"
+DECODER_MAX_BATCH=""
+DECODER_BATCH_TIMEOUT_MS=""
+DECODER_GPU_CHUNK_SIZE=""
+DECODER_ONNX_WORKERS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,9 +57,19 @@ while [[ $# -gt 0 ]]; do
             SAVE_AUDIO="$2"; shift 2 ;;
         --ctrl-port)
             CTRL_PORT="$2"; shift 2 ;;
+        --max-batch)
+            DECODER_MAX_BATCH="$2"; shift 2 ;;
+        --batch-timeout-ms)
+            DECODER_BATCH_TIMEOUT_MS="$2"; shift 2 ;;
+        --gpu-chunk-size)
+            DECODER_GPU_CHUNK_SIZE="$2"; shift 2 ;;
+        --onnx-workers)
+            DECODER_ONNX_WORKERS="$2"; shift 2 ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR] [--test [--host H]]"
+            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR]"
+            echo "          [--max-batch N] [--batch-timeout-ms N] [--gpu-chunk-size N] [--onnx-workers N]"
+            echo "          [--test [--host H]]"
             exit 1 ;;
     esac
 done
@@ -153,6 +176,12 @@ LOG_FILE="${SCRIPT_DIR}/llm.log"
 EXTRA_ARGS=()
 [[ -n "${SAVE_AUDIO}" ]] && EXTRA_ARGS+=(--save-audio "${SAVE_AUDIO}")
 [[ -n "${CTRL_PORT}"  ]] && EXTRA_ARGS+=(--ctrl-port  "${CTRL_PORT}")
+
+# Pass decoder overrides via pydantic-settings env vars (FLOWTTS_DECODER__<FIELD>)
+[[ -n "${DECODER_MAX_BATCH}"         ]] && export FLOWTTS_DECODER__MAX_BATCH="${DECODER_MAX_BATCH}"
+[[ -n "${DECODER_BATCH_TIMEOUT_MS}"  ]] && export FLOWTTS_DECODER__BATCH_TIMEOUT_MS="${DECODER_BATCH_TIMEOUT_MS}"
+[[ -n "${DECODER_GPU_CHUNK_SIZE}"    ]] && export FLOWTTS_DECODER__GPU_CHUNK_SIZE="${DECODER_GPU_CHUNK_SIZE}"
+[[ -n "${DECODER_ONNX_WORKERS}"      ]] && export FLOWTTS_DECODER__ONNX_WORKERS="${DECODER_ONNX_WORKERS}"
 
 RESTART_DELAY=5
 

@@ -50,16 +50,17 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
+        # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
+        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.55      # more KV cache for concurrent requests
+    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
     attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = -1         # small prefill chunks → decode starts sooner
-    # max_running_requests: int = 110         # allow all ports to run concurrently in sglang scheduler
+    chunked_prefill_size: int = 16384
+    max_running_requests: int = 200         # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
     disable_radix_cache: bool = False
@@ -68,7 +69,7 @@ class TtsModelSettings(BaseModel):
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.8               # greedy — fastest, deterministic
+    temperature: float = 0.1               # greedy — fastest, deterministic
     top_p: float = 0.5
     top_k: int = 50
     repetition_penalty: float = 1.6
@@ -94,12 +95,12 @@ class DecoderSettings(BaseModel):
     # Saves ~1-5ms per request. Use when client handles raw float32 PCM.
     to_wav: bool = True
 
-    # TTSCodec batch queue settings
-    max_batch: int = 128             # batch queue max size
-    batch_timeout_ms: float = 50.0    # ms to wait collecting a batch (longer = better packing)
-    gpu_chunk_size: int = 90         # max items per GPU forward pass
-    onnx_workers: int = 1            # parallel ONNX worker threads
-    use_trt: bool = False           # load pre-compiled TRT .ep engine for decoder
+    # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
+    max_batch: int = 256
+    batch_timeout_ms: float = 0.7
+    gpu_chunk_size: int = 150
+    onnx_workers: int = 1
+    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
 
 
 class StreamingSettings(BaseModel):
@@ -111,7 +112,7 @@ class StreamingSettings(BaseModel):
     # --- Chunk size ---
     # Tokens per chunk for the first two chunks (low latency warm-up).
     # At ~50 tokens/sec: 20 tokens ≈ 400ms of audio.
-    chunk_tokens_early: int = 25
+    chunk_tokens_early: int = 15
 
     # Tokens per chunk from chunk 3 onward (larger = fewer boundaries = smoother).
     chunk_tokens_late: int = 50
@@ -135,7 +136,7 @@ class WebSocketSettings(BaseModel):
     """Gateway WebSocket server settings."""
 
     host: str = "0.0.0.0"
-    port: int = 8765
+    port: int = 8080
 
 
 class Settings(BaseSettings):

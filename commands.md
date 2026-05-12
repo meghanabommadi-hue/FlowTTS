@@ -1,9 +1,15 @@
 # FlowTTS Commands
 
 ## Launch server
-
 ```bash
-cd /root/FlowTTS && bash run.sh --ctrl-port 8764
+cd FlowTTS/
+source llmc/bin/activate
+source .venv/bin/activate
+
+```
+```bash
+cd /root/FlowTTS
+bash run.sh --ctrl-port 8764
 ```
 
 ## Open N ports
@@ -194,7 +200,7 @@ python3 flowtts/setup/download_cache.py --voice tara --voice simran
 ## Notes
 
 - Server ctrl API runs on `127.0.0.1:8764`
-- WS ports start at `8765` by default
+- WS ports start at `8080` by default
 - All requests run fully parallel (sglang batches LLM, decoder batches via TTSCodec queue)
 - WAV output saved to `/root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/`
 - `--skip-decoder` skips ONNX/GPU decode — returns tokens only, no audio_base64
