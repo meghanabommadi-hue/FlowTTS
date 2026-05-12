@@ -8,7 +8,7 @@ Role in pipeline:
   event loop. This is the recommended way to run FlowTTS in production.
 
   Client
-    │  WebSocket (text) on port 8765…8765+N
+    │  WebSocket (text) on port 8080…8080+N
     ▼
   server.py  (one process, one GPU load)
     │  synthesis_service.synthesize(text)  [sglang in-process]
@@ -33,12 +33,12 @@ Warmup:
   caches before real traffic arrives.
 
 Usage (preferred):
-    ./run.sh --ports 100              # 100 ports: 8765…8864
+    ./run.sh --ports 100              # 100 ports: 8080…8864
     ./run.sh --ports 3 --port 9000   # ports 9000, 9001, 9002
 
 Direct:
     python -m flowtts.server --ports 3
-    python -m flowtts.server --ports 100 --base-port 8765
+    python -m flowtts.server --ports 100 --base-port 8080
 """
 
 from __future__ import annotations
@@ -60,6 +60,7 @@ from aiohttp import web
 
 import websockets
 from websockets.exceptions import WebSocketException
+from websockets.http11 import Response as WsResponse, Headers as WsHeaders
 
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
@@ -580,10 +581,18 @@ async def _bind_ws_port(port: int) -> bool:
         return False
     async def handler(ws: websockets.ServerConnection, p: int = port) -> None:
         await handle_connection(ws, p)
+
+    async def process_request(connection, request):
+        if request.path == "/health":
+            body = json.dumps({"status": "ok", "ready": _synthesizer is not None}).encode()
+            headers = WsHeaders([("Content-Type", "application/json"), ("Content-Length", str(len(body)))])
+            return WsResponse(200, "OK", headers, body)
+
     await websockets.serve(
         handler, "0.0.0.0", port,
         ping_interval=30, ping_timeout=30,
         max_size=100 * 1024 * 1024,
+        process_request=process_request,
     )
     _open_ports.add(port)
     record_port_change(_open_ports)
@@ -632,18 +641,24 @@ async def _http_metrics(req: web.Request) -> web.Response:
     return web.Response(body=generate_latest(), content_type=ct)
 
 
+async def _http_health(req: web.Request) -> web.Response:
+    """GET /health  — simple liveness check."""
+    return web.json_response({"status": "ok", "ready": _synthesizer is not None})
+
+
 async def _run_control_api(ctrl_port: int) -> None:
     app = web.Application()
     app.router.add_post("/ports/add", _http_add_port)
     app.router.add_get("/ports",      _http_list_ports)
     app.router.add_get("/ready",      _http_ready)
+    app.router.add_get("/health",     _http_health)
     app.router.add_get("/metrics",    _http_metrics)
     app.router.add_get("/ws/log",     _http_ws_log)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", ctrl_port)
+    site = web.TCPSite(runner, "0.0.0.0", ctrl_port)
     await site.start()
-    print(f"[{_ts()}] control API  http://127.0.0.1:{ctrl_port}", flush=True)
+    print(f"[{_ts()}] control API  http://0.0.0.0:{ctrl_port}", flush=True)
 
 
 async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None) -> None:

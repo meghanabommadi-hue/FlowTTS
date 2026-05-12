@@ -2,13 +2,13 @@
 # FlowTTS launcher — single process, one model load, N WebSocket ports.
 #
 # Usage:
-#   ./run.sh                                          # 1 port at 8765, defaults
-#   ./run.sh --ports 3                                # ports 8765, 8766, 8767
+#   ./run.sh                                          # 1 port at 8080, defaults
+#   ./run.sh --ports 3                                # ports 8080, 8081, 8082
 #   ./run.sh --ports 3 --port 9000                    # ports 9000, 9001, 9002
 #   ./run.sh --max-batch 128 --batch-timeout-ms 0.2   # decoder tuning
 #   ./run.sh --gpu-chunk-size 256 --onnx-workers 4
 #   ./run.sh --test                                   # quick smoke test against running server
-#   ./run.sh --test --ports 3 --port 8765
+#   ./run.sh --test --ports 3 --port 8080
 #
 # Decoder flags (passed as FLOWTTS_DECODER__ env vars to pydantic-settings):
 #   --max-batch N          max tokens per decode batch       (default: 256)
@@ -18,7 +18,7 @@
 
 set -uo pipefail
 
-VENV="${VIRTUAL_ENV:-${HOME}/FlowTTS/llm}"
+VENV="${VIRTUAL_ENV:-${HOME}/FlowTTS/.venv}"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -31,7 +31,7 @@ export PATH="${VENV}/bin:${PATH}"
 export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/torch/lib:${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${VENV}/lib/python3.12/site-packages/nvidia/cu13/lib:${VENV}/lib/python3.12/site-packages/tensorrt_libs:${LD_LIBRARY_PATH:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
-BASE_PORT=8765
+BASE_PORT=8080
 N_PORTS=1
 TEST=0
 TEST_HOST="localhost"

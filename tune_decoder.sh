@@ -28,7 +28,7 @@ ROUNDS=5
 TTFF_TARGET=1.0
 MAX_REQUESTS=200
 CTRL_PORT=8764
-WS_PORT=8765
+WS_PORT=8080
 SERVER_PID=""
 
 # ── Decoder override args (empty = use config.py default) ────────────────────

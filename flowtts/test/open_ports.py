@@ -16,7 +16,7 @@ import urllib.request
 
 
 _DEFAULT_CTRL_PORT = 443
-_DEFAULT_BASE_PORT = 8765
+_DEFAULT_BASE_PORT = 8080
 
 
 def _ctrl_get(ctrl_port: int, path: str) -> dict:

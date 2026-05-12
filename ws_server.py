@@ -5,10 +5,10 @@ One sglang engine, many concurrent clients across N ports. Decodes tokens
 to WAV and streams base64 audio back. Clients can request disconnection.
 
 Usage:
-    # Single port (default 8765)
+    # Single port (default 8080)
     python ws_server.py
 
-    # Spin up 3 ports starting at 8765  →  8765, 8766, 8767
+    # Spin up 3 ports starting at 8080  →  8080, 8081, 8082
     python ws_server.py --ports 3
 
     # Explicit base port
@@ -38,7 +38,7 @@ from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WS_HOST   = "0.0.0.0"
-WS_PORT   = 8765
+WS_PORT   = 8080
 
 MODEL_DIR = "/root/CleanTTSData/inference/models/MeghanaKap-MiraTTSTelugu"
 REF_AUDIO = "/root/CleanTTSData/data/cropped_20260206output.wav"

@@ -37,7 +37,8 @@ class TtsModelSettings(BaseModel):
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -49,7 +50,7 @@ class TtsModelSettings(BaseModel):
     # the proven A100 baseline that achieved 0.9s TTFT at 200 requests.
     mem_fraction_static: float = 0.70
     attention_backend: str = "triton"
-    chunked_prefill_size: int = 8192
+    chunked_prefill_size: int = 16384
     max_running_requests: int = 200
     schedule_policy: str = "lpm"
     cuda_graph_max_bs: int = 160
@@ -88,7 +89,7 @@ class DecoderSettings(BaseModel):
     # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
     max_batch: int = 256
     batch_timeout_ms: float = 0.7
-    gpu_chunk_size: int = 180
+    gpu_chunk_size: int = 150
     onnx_workers: int = 1
     use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
 
@@ -102,7 +103,7 @@ class StreamingSettings(BaseModel):
     # Number of speech tokens accumulated before decoding and sending a chunk.
     # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
     # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
-    chunk_tokens: int = 15
+    chunk_tokens: int = 25
 
     # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
     # 320 = 20ms. Set to 0 to disable crossfade.
@@ -117,7 +118,7 @@ class WebSocketSettings(BaseModel):
     """Gateway WebSocket server settings."""
 
     host: str = "0.0.0.0"
-    port: int = 8765
+    port: int = 8080
 
 
 class Settings(BaseSettings):

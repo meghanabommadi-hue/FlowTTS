@@ -30,7 +30,7 @@ from flowtts.decoder.ncodec.model_utils import Decoder, remove_weight_norm_recur
 
 DECODERS_PATH = Path.home() / ".cache/huggingface/hub/models--YatharthS--MiraTTS/snapshots/ff750bd74e7b2a2d9313873d583df34a91ed7d8a/decoders"
 MODEL_PATH    = DECODERS_PATH / "detokenizer.safetensors"
-GPU_CHUNK     = 180
+GPU_CHUNK     = 150
 CACHE_PATH    = DECODERS_PATH / f"decoder_trt_b{GPU_CHUNK}.ep"
 
 print(f"Loading model from {MODEL_PATH} ...")

@@ -26,7 +26,7 @@ Usage:
     # Managed — launch server, allocate 9 ports on demand, run 40 requests
     python -m flowtts.test.test_pipeline --requests 40 --concurrency 9
 
-    # External — server already running on 8765-8773
+    # External — server already running on 8080-8773
     python -m flowtts.test.test_pipeline --no-launch --n-ports 9 --requests 40
 
     # command to kill all ports
@@ -540,7 +540,7 @@ async def run_test(
     launch: bool = True,
     ctrl_port: int = _DEFAULT_CTRL_PORT,
     concurrency: int = 9,
-    base_port: int = 8765,
+    base_port: int = 8080,
     save_audio: Optional[str] = None,
     skip_decoder: bool = False,
     streaming: bool = False,
@@ -797,7 +797,7 @@ def _is_flowtts_gateway(port: int, host: str = "localhost") -> bool:
         return False
 
 
-def _discover_ports(base: int = 8765, scan_range: int = 50) -> List[int]:
+def _discover_ports(base: int = 8080, scan_range: int = 50) -> List[int]:
     """Return all live FlowTTS gateway ports in [base, base+scan_range)."""
     live = [p for p in range(base, base + scan_range)
             if _port_open(p) and _is_flowtts_gateway(p)]
@@ -913,8 +913,8 @@ if __name__ == "__main__":
                     help="Explicit comma-separated port list (--no-launch)")
     pg.add_argument("--n-ports", type=int, default=None,
                     help="Number of sequential ports from --base-port (--no-launch)")
-    parser.add_argument("--base-port", "--port", dest="base_port", type=int, default=8765,
-                        help="Base WS port (default: 8765)")
+    parser.add_argument("--base-port", "--port", dest="base_port", type=int, default=8080,
+                        help="Base WS port (default: 8080)")
 
     args = parser.parse_args()
     # If neither --launch nor --no-launch was given, auto-detect from other flags.

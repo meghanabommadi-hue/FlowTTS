@@ -136,7 +136,7 @@ FLOWTTS_DECODER__USE_TRT=true cd /root/FlowTTS && bash run.sh --ports 1
 ## Notes
 
 - Server ctrl API runs on `127.0.0.1:8764`
-- WS ports start at `8765` by default
+- WS ports start at `8080` by default
 - All requests run fully parallel (sglang batches LLM, decoder batches via TTSCodec queue)
 - WAV output saved to `/root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/`
 - `--skip-decoder` skips ONNX/GPU decode — returns tokens only, no audio_base64

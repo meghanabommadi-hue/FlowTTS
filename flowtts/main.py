@@ -16,7 +16,7 @@ When to use this vs server.py:
   setup — no Redis, no worker, model loaded once in-process.
 
 Port discovery:
-  Set FLOWTTS_KNOWN_PORTS=8765,8766,… so /ports can report which gateway
+  Set FLOWTTS_KNOWN_PORTS=8080,8766,… so /ports can report which gateway
   ports are live without scanning the full range.
 """
 
@@ -38,7 +38,7 @@ from flowtts.monitoring.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
 
-# Ports that run.sh told us about (FLOWTTS_KNOWN_PORTS=8765,8766,8767)
+# Ports that run.sh told us about (FLOWTTS_KNOWN_PORTS=8080,8766,8767)
 _KNOWN_PORTS: List[int] = [
     int(p)
     for p in os.environ.get("FLOWTTS_KNOWN_PORTS", "").split(",")
@@ -110,7 +110,7 @@ def create_app() -> FastAPI:
     @app.get("/ports")
     async def ports() -> dict:
         """Return all known gateway ports and which ones are currently live."""
-        scan = _KNOWN_PORTS or list(range(8765, 8775))  # fallback: scan default range
+        scan = _KNOWN_PORTS or list(range(8080, 8090))  # fallback: scan default range
         live = [p for p in scan if _port_open(p)]
         return {
             "known": scan,
