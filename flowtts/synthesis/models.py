@@ -46,7 +46,7 @@ class FlowTtsSynthesizer:
 
     # Silence-token filtering constants
     _SILENCE_TOKEN  = "<|speech_token_2973|>"
-    _SILENCE_STREAK = 4   # consecutive silence tokens → early stop
+    _SILENCE_STREAK = 30  # consecutive silence tokens → early stop (30 × 20ms = 600ms)
 
     def __init__(self) -> None:
         self._engine = None
@@ -56,6 +56,7 @@ class FlowTtsSynthesizer:
         self._sampling_params: dict = {}
         # Per-voice encoded tokens: {voice_id: (context_tokens, ref_speech_tokens)}
         self._voice_tokens: dict[str, tuple[str, object]] = {}
+        self._lora_map: dict = {}
 
     async def initialize(self) -> None:
         """Load model. Mirrors main() in TTSIntegration/ws_server.py."""
@@ -66,7 +67,12 @@ class FlowTtsSynthesizer:
         dec = settings.decoder
         model_path = cfg.model_dir
 
-        if not Path(model_path).is_dir():
+        # Accept either a local directory path or a HuggingFace repo ID (owner/name).
+        # Local paths are validated; HF repo IDs are resolved by sglang at engine init.
+        if "/" in model_path and not Path(model_path).exists():
+            # Looks like a HF repo ID — sglang will download/use cache
+            logger.info("model_path_is_hf_repo", repo=model_path)
+        elif not Path(model_path).is_dir():
             raise FileNotFoundError(f"Model not found: {model_path}")
 
         logger.info("loading_codec_and_ref_audio", ref_audio=cfg.ref_audio)
@@ -105,7 +111,12 @@ class FlowTtsSynthesizer:
             voice_tokens[voice_id] = (v_ctx, v_ref)
             logger.info("voice_loaded", voice_id=voice_id, path=v_path)
 
-        logger.info("loading_sglang_engine", model=model_path)
+        lora_map = cfg.language_lora_map or {}
+        logger.info(
+            "loading_sglang_engine",
+            model=model_path,
+            lora_languages=list(lora_map.keys()),
+        )
         import sglang as sgl
 
         engine = sgl.Engine(
@@ -116,11 +127,10 @@ class FlowTtsSynthesizer:
             dtype=cfg.dtype,
             attention_backend=cfg.attention_backend,
             chunked_prefill_size=cfg.chunked_prefill_size,
-            # max_running_requests=cfg.max_running_requests,
-            schedule_policy=cfg.schedule_policy,
-            cuda_graph_max_bs=cfg.cuda_graph_max_bs,
             disable_radix_cache=cfg.disable_radix_cache,
-            num_continuous_decode_steps=cfg.num_continuous_decode_steps,
+            disable_cuda_graph=cfg.disable_cuda_graph,
+            lora_paths=lora_map,
+            max_loras_per_batch=len(lora_map),
         )
 
         sampling_params = {
@@ -140,6 +150,7 @@ class FlowTtsSynthesizer:
         self._voice_tokens = voice_tokens
         self._engine = engine
         self._sampling_params = sampling_params
+        self._lora_map = lora_map
         logger.info("synthesizer_ready")
 
         # Inspect live engine objects — not config.py values.
@@ -188,6 +199,9 @@ class FlowTtsSynthesizer:
         print(f"  ref_audio source     : {ref_source}", flush=True)
         print(f"  context_tokens       : {ctx_token_count} tokens encoded", flush=True)
         print(f"  ref_speech_tokens    : {'present' if ref_speech_present else 'absent'}", flush=True)
+        if lora_map:
+            print(f"  lora_languages       : {list(lora_map.keys())}", flush=True)
+            print(f"  default_language     : {cfg.default_language}", flush=True)
         print("=" * 60 + "\n", flush=True)
 
     def _tokens_for_voice(self, voice_id: str | None) -> tuple[str, object]:
@@ -208,26 +222,30 @@ class FlowTtsSynthesizer:
     def _normalize_text(text: str) -> str:
         """Remove characters outside English (ASCII) and Hindi (Devanagari) scripts.
 
-        Keeps: ASCII printable (English letters, digits, punctuation, spaces)
-               and Devanagari block (U+0900–U+097F) used for Hindi.
+        Keeps: ASCII printable (English letters, digits, punctuation, spaces),
+               Devanagari block (U+0900–U+097F) used for Hindi,
+               and Tamil block (U+0B80–U+0BFF).
         Removes: Urdu/Arabic, Chinese, Japanese, Korean, emoji, and all other scripts.
         """
         import re
-        return re.sub(r'[^\x00-\x7F\u0900-\u097F]', '', text).strip()
+        return re.sub(r'[^\x00-\x7Fऀ-ॿ஀-௿]', '', text).strip()
 
-    async def synthesize(self, text: str, voice_id: str | None = None) -> str:
+    async def synthesize(self, text: str, voice_id: str | None = None, language: str | None = None) -> str:
         """Return full audio token string for the given text."""
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
         text = self._normalize_text(text)
+        language = self._resolve_language(language)
         ctx, ref = self._tokens_for_voice(voice_id)
         prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
         t0 = time.monotonic()
-        logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt), voice_id=voice_id)
+        logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt), voice_id=voice_id, language=language)
 
-        result = await self._engine.async_generate(prompt, self._sampling_params)
+        result = await self._engine.async_generate(
+            prompt, self._sampling_params, lora_path=language
+        )
         full_text = self._strip_trailing_silence(result["text"])
 
         duration = time.monotonic() - t0
@@ -236,10 +254,11 @@ class FlowTtsSynthesizer:
             text_preview=text[:40],
             duration_seconds=round(duration, 4),
             token_len=len(full_text),
+            language=language,
         )
         return full_text
 
-    async def synthesize_stream(self, text: str, voice_id: str | None = None):
+    async def synthesize_stream(self, text: str, voice_id: str | None = None, language: str | None = None):
         """Async generator yielding incremental speech token strings as the LLM produces them.
 
         Each yielded value is a string fragment like "<|speech_token_42|><|speech_token_7|>..."
@@ -250,11 +269,14 @@ class FlowTtsSynthesizer:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
         text = self._normalize_text(text)
+        language = self._resolve_language(language)
         ctx, ref = self._tokens_for_voice(voice_id)
         prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
         stream_params = {**self._sampling_params}
-        generator = await self._engine.async_generate(prompt, stream_params, stream=True)
+        generator = await self._engine.async_generate(
+            prompt, stream_params, stream=True, lora_path=language
+        )
 
         prev_len       = 0
         silence_streak = 0
@@ -290,6 +312,15 @@ class FlowTtsSynthesizer:
 
         # EOS — discard trailing silence, don't flush pending_silence
         yield ""
+
+    def _resolve_language(self, language: str | None) -> str:
+        """Return a validated language tag, falling back to the configured default."""
+        lang = language or settings.tts_model.default_language
+        if self._lora_map and lang not in self._lora_map:
+            raise ValueError(
+                f"Unknown language '{lang}'. Supported: {list(self._lora_map.keys())}"
+            )
+        return lang
 
     @staticmethod
     def _default_context() -> str:

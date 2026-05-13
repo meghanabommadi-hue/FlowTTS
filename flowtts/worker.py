@@ -62,12 +62,13 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
         call_id = job["call_id"]
         text_id = job["text_id"]
         text = job["text"]
+        language = job.get("language") or settings.tts_model.default_language
 
         if not synthesis_service.is_initialized:
             await synthesis_service.initialize()
 
         t0 = time.time()
-        audio_tokens = await synthesis_service.synthesize(text)
+        audio_tokens = await synthesis_service.synthesize(text, language=language)
         synth_latency = time.time() - t0
 
         record_synthesis_latency(call_id, text_id, synth_latency)
@@ -185,12 +186,13 @@ class SynthesizerWorker:
             call_id = job["call_id"]
             text_id = job["text_id"]
             text = job["text"]
+            language = job.get("language") or settings.tts_model.default_language
             published_at = job["published_at"]
 
             queueing_latency = job_received_time - published_at
 
             start_synth = time.time()
-            audio_tokens = await synthesis_service.synthesize(text)
+            audio_tokens = await synthesis_service.synthesize(text, language=language)
             synth_latency_val = time.time() - start_synth
 
             record_synthesis_latency(call_id, text_id, synth_latency_val)

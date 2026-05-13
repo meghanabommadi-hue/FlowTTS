@@ -235,6 +235,7 @@ async def _handle_streaming_request(
     port: int,
     ts_text_recv: str,
     voice_id: str | None = None,
+    language: str | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> None:
     """Stream audio chunks to the client as the LLM produces speech tokens.
@@ -359,7 +360,7 @@ async def _handle_streaming_request(
         chunk_index += 1
 
     try:
-        async for delta in synth.synthesize_stream(text, voice_id=voice_id):
+        async for delta in synth.synthesize_stream(text, voice_id=voice_id, language=language):
             if cancel_event and cancel_event.is_set():
                 print(f"[{_ts()}] :{port} {call_id}  cancelled  text_id={text_id}", flush=True)
                 await ws.send(json.dumps({"type": "cancelled", "call_id": call_id, "text_id": text_id}))
@@ -499,6 +500,8 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 continue
 
+            language: str | None = data.get("language") or None
+
             # Cache lookup: per-voice cache dir first, then global fallback.
             # Bypass LLM entirely — send cached WAV immediately.
             _vc_dir = _cache_dir_for_voice(voice_id)
@@ -578,7 +581,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
 
             if streaming:
                 try:
-                    await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id, cancel_event=cancel_ev)
+                    await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id, language=language, cancel_event=cancel_ev)
                 finally:
                     if _request_semaphore is not None:
                         _request_semaphore.release()
@@ -588,7 +591,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 t0 = time.perf_counter()
                 ts_llm_start = _tsms()
                 _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
-                audio_tokens = await asyncio.wait_for(synth.synthesize(text, voice_id=voice_id), timeout=30.0)
+                audio_tokens = await asyncio.wait_for(synth.synthesize(text, voice_id=voice_id, language=language), timeout=30.0)
                 llm_s = round(time.perf_counter() - t0, 4)
                 llm_ms = round(llm_s * 1000)
                 ts_tokens_ready = _tsms()
@@ -810,7 +813,7 @@ async def _warmup(synth: FlowTtsSynthesizer) -> None:
 
     async def _one(sentence: str, voice_id: str | None) -> bool:
         try:
-            await synth.synthesize(sentence, voice_id=voice_id)
+            await synth.synthesize(sentence, voice_id=voice_id, language=settings.tts_model.default_language)
             return True
         except Exception as e:
             print(f"[{_ts()}] warmup failed (voice={voice_id}): {e}", flush=True)

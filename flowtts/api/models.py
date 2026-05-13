@@ -38,6 +38,7 @@ class SynthesizeRequest(BaseModel):
     call_id: str = Field(..., description="Logical call/session id")
     text_id: str = Field(..., description="Identifier for this text request")
     text: str = Field(..., description="Text to synthesize")
+    language: str = Field(default="hi", description="Language tag for LoRA routing (e.g. 'hi', 'ta')")
 
 
 class AudioMessage(BaseModel):

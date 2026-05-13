@@ -19,11 +19,12 @@ No env-var → sensible defaults used (greedy decoding, 48 kHz, Redis localhost)
 
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import BaseModel
-from typing import ClassVar, Literal
+from pydantic import BaseModel, Field
+from typing import Dict, Literal
 
 _MODELS_DIR      = str(Path.home() / "models")
 _SAMPLE_FILES_DIR = str(Path.home() / "FlowTTS/sample_files")
+_LORA_DIR = "/root/mira_lora_setup/lora_switching"
 
 # Per-voice reference audio paths. Keys match voice_id values sent by clients.
 VOICE_REF_AUDIO: dict[str, str] = {
@@ -42,38 +43,37 @@ VOICE_REF_AUDIO: dict[str, str] = {
 
 class TtsModelSettings(BaseModel):
     """TTS model configuration."""
-    checkpoint_lg: ClassVar[str] = "hindi"
-    if checkpoint_lg == "telugu":
-        model_dir: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu"
-        warmup_sentence: str = "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది."
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/tel_male_audio.wav"
-    else:
-        model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
-        warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
-        
-    
+
+    # Base model — LoRA adapters are loaded on top for each language.
+    # Accepts a local directory path or a HuggingFace repo ID.
+    model_dir: str = "Shubhangi7/mira-english-1-epoch"
+    warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
+    ref_audio: str = "/root/mira_lora_setup/vaani_24k.wav"
+
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
-    # sglang engine parameters
-    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
-    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = 16384
-    max_running_requests: int = 200         # allow all ports to run concurrently in sglang scheduler
-    schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
-    cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
-    disable_radix_cache: bool = False
-    num_continuous_decode_steps: int = 4    # batch N decode steps before re-scheduling → less scheduler overhead
+    # sglang engine parameters — flashinfer + disabled cuda graph required for LoRA
+    mem_fraction_static: float = 0.70
+    attention_backend: str = "flashinfer"
+    chunked_prefill_size: int = -1
+    disable_radix_cache: bool = True
+    disable_cuda_graph: bool = True         # required for LoRA
 
     # Generation / sampling parameters
-    # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.1               # greedy — fastest, deterministic
-    top_p: float = 0.5
+    max_tokens: int = 1024
+    temperature: float = 0.8
+    top_p: float = 0.95
     top_k: int = 50
-    repetition_penalty: float = 1.6
+    repetition_penalty: float = 1.3
     min_p: float = 0.05
+
+    # LoRA language switching — maps language tag → local adapter path.
+    # All adapters are registered at engine init time; switching is zero-cost at inference.
+    language_lora_map: Dict[str, str] = Field(default_factory=lambda: {
+        "hi": "/root/mira_lora_setup/lora_switching/hi-checkpoint-50000-lora-only",
+        "ta": "/root/mira_lora_setup/lora_switching/ta-checkpoint-50000-lora-only",
+    })
+    default_language: str = "hi"
 
 
 class DecoderSettings(BaseModel):
@@ -151,7 +151,7 @@ class Settings(BaseSettings):
 
     # Directory of pre-generated WAV files named by SHA256 of raw transcript.
     # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
-    wav_cache_dir: str | None = str(Path.home() / "FlowTTS/cached_data_simran")
+    wav_cache_dir: str | None = str(Path.home() / "FlowTTS/cached_data_simran") 
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):

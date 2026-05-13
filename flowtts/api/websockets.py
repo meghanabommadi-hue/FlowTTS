@@ -165,6 +165,7 @@ class ConnectionManager:
             "call_id": req.call_id,
             "text_id": req.text_id,
             "text": req.text,
+            "language": req.language,
             "published_at": time.time(),
         }
 

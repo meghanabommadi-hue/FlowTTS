@@ -268,14 +268,7 @@ _TELUGU_FALLBACK: List[str] = [
     "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
 
-# Pick fallback list based on configured checkpoint.
-try:
-    from flowtts.core.config import settings as _cfg
-    _checkpoint = _cfg.tts_model.checkpoint_lg
-except Exception:
-    _checkpoint = "hindi"
-
-_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
+_FALLBACK_TEXTS: List[str] = _HINDI_FALLBACK + _HINDI_MIXED_STRESS
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +372,7 @@ async def _run_one(
             token_chars = len(msg.get("audio_tokens", ""))
             llm_s = msg.get("llm_s")
             decode_s = msg.get("decode_s")
+            rtf = msg.get("rtf")
             wav_bytes_len = len(wav_data)
 
             if not skip_decoder:
@@ -388,10 +382,10 @@ async def _run_one(
                                          "empty WAV bytes", 0, token_chars, llm_s, decode_s)
                 wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
                 wav_path.write_bytes(wav_data)
-            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}")
+            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
-                                 None, wav_bytes_len, token_chars, llm_s, decode_s)
+                                 None, wav_bytes_len, token_chars, llm_s, decode_s, rtf=rtf)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -789,19 +783,23 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     lines.append(f"SUMMARY  mode={mode}  total={len(results)}  passed={len(passed)}  failed={len(failed)}")
     lines.append(f"{'='*70}")
 
+
     cache_hits = [r for r in passed if r.cache_hit]
     llm_hits   = [r for r in passed if not r.cache_hit]
 
     has_ttff     = any(r.ttff_s          is not None for r in results)
     has_llm_ttft = any(r.llm_ttft_ms     is not None for r in results)
     has_dec_ttft = any(r.decoder_ttft_ms is not None for r in results)
+    has_rtf      = any(r.rtf             is not None for r in results)
 
     header = (
         f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  "
         + (f"{'ttff(s)':>7}  " if has_ttff else "")
         + (f"{'llm_ttft':>8}  " if has_llm_ttft else "")
         + (f"{'dec_ttft':>8}  " if has_dec_ttft else "")
-        + f"{'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
+        + f"{'llm_s':>6}  {'dec_s':>6}  "
+        + (f"{'rtf':>5}  " if has_rtf else "")
+        + f"{'bytes':>8}  {'tokens':>7}  detail"
     )
     lines.append(header)
     lines.append("-" * len(header))
@@ -811,13 +809,15 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         ttff_col     = (f"{r.ttff_s:>7.3f}  "              if r.ttff_s          is not None else f"{'─':>7}  ")  if has_ttff     else ""
         llm_ttft_col = (f"{r.llm_ttft_ms/1000:>8.3f}  "    if r.llm_ttft_ms    is not None else f"{'─':>8}  ")  if has_llm_ttft else ""
         dec_ttft_col = (f"{r.decoder_ttft_ms/1000:>8.3f}  " if r.decoder_ttft_ms is not None else f"{'─':>8}  ") if has_dec_ttft else ""
+        rtf_col      = (f"{r.rtf:>5.3f}  " if r.rtf is not None else f"{'─':>5}  ") if has_rtf else ""
         lines.append(
             f"{r.req_id:>4}  {r.port:>5}  {'✓' if r.passed else '✗':>4}  "
             f"{r.latency_s:>7.3f}  "
             + ttff_col + llm_ttft_col + dec_ttft_col
             + f"{r.llm_s if r.llm_s is not None else '-':>6}  "
             f"{r.decode_s if r.decode_s is not None else '-':>6}  "
-            f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
+            + rtf_col
+            + f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
         )
 
     if passed:
@@ -835,6 +835,11 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
             sv = sorted(vals)
             p95 = sv[int(len(sv) * 0.95)]
             return f"min={min(vals):.3f}{unit}  avg={sum(vals)/len(vals):.3f}{unit}  p95={p95:.3f}{unit}  max={max(vals):.3f}{unit}"
+
+        def _fmt_ms(vals: list) -> str:
+            if not vals:
+                return "n/a"
+            return f"min={min(vals)}ms  avg={sum(vals)//len(vals)}ms  max={max(vals)}ms"
 
         def _fmt_ms(vals: list) -> str:
             if not vals:

@@ -56,14 +56,20 @@ class SynthesisService:
             logger.error("synthesis_service_initialization_failed", error=str(e))
             raise
 
-    async def synthesize(self, text: str) -> str:
-        """Generate audio token sequence for the given text."""
+    async def synthesize(self, text: str, language: str | None = None) -> str:
+        """Generate audio token sequence for the given text.
+
+        Args:
+            text:     Input text to synthesize.
+            language: Language tag for LoRA routing (e.g. "hi", "ta").
+                      Defaults to settings.tts_model.default_language.
+        """
         if not self._initialized:
             raise RuntimeError(
                 "SynthesisService not initialized. "
                 "Call initialize() first during application startup."
             )
-        return await self.synthesizer.synthesize(text)
+        return await self.synthesizer.synthesize(text, language=language)
 
     @property
     def is_initialized(self) -> bool:

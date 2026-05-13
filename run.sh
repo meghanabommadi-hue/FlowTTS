@@ -165,7 +165,7 @@ for voice, repo in dl.HF_REPOS.items():
         dl.download(voice, token)
 PYEOF
 }
-_ensure_cache
+# _ensure_cache
 
 # ── Server mode — one process, one model, N ports ────────────────────────────
 echo "[FlowTTS] Starting server: ${N_PORTS} port(s) from ${BASE_PORT}..."
