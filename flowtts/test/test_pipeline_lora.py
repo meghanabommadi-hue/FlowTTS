@@ -207,11 +207,20 @@ en: List[str] = [
     "The customer said, I received the wrong product, how do I exchange it?"
 ]
 
+te: List[str] = []
+
+kn: List[str] = []
+
+ml: List[str] = []
+
 # Map tag → list  (mirrors config's language_lora_map keys)
 LANGUAGE_TEXTS: Dict[str, List[str]] = {
     "hi": hi,
     "ta": ta,
     "en": en,
+    "te": te,
+    "kn": kn,
+    "ml": ml
 }
 
 
