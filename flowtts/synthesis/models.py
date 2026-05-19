@@ -57,6 +57,9 @@ class FlowTtsSynthesizer:
         # Per-voice encoded tokens: {voice_id: (context_tokens, ref_speech_tokens)}
         self._voice_tokens: dict[str, tuple[str, object]] = {}
         self._lora_map: dict = {}
+        # LoRA swap tracking: counts how many times the active adapter changed
+        self._lora_swap_count: int = 0
+        self._last_lora_path: object = object()  # sentinel — never equals None or a string
 
     async def initialize(self) -> None:
         """Load model. Mirrors main() in TTSIntegration/ws_server.py."""
@@ -129,6 +132,7 @@ class FlowTtsSynthesizer:
             chunked_prefill_size=cfg.chunked_prefill_size,
             disable_radix_cache=cfg.disable_radix_cache,
             disable_cuda_graph=cfg.disable_cuda_graph,
+            disable_overlap_schedule=True,
             lora_paths=lora_map,
             max_loras_per_batch=len(lora_map),
         )
@@ -223,12 +227,15 @@ class FlowTtsSynthesizer:
         """Remove characters outside English (ASCII) and Hindi (Devanagari) scripts.
 
         Keeps: ASCII printable (English letters, digits, punctuation, spaces),
-               Devanagari block (U+0900–U+097F) used for Hindi,
-               and Tamil block (U+0B80–U+0BFF).
+               Devanagari (U+0900–U+097F) for Hindi,
+               Tamil (U+0B80–U+0BFF),
+               Telugu (U+0C00–U+0C7F),
+               Kannada (U+0C80–U+0CFF),
+               Malayalam (U+0D00–U+0D7F).
         Removes: Urdu/Arabic, Chinese, Japanese, Korean, emoji, and all other scripts.
         """
         import re
-        return re.sub(r'[^\x00-\x7Fऀ-ॿ஀-௿]', '', text).strip()
+        return re.sub(r'[^\x00-\x7Fऀ-ॿ஀-௿ఀ-౿ಀ-೿ഀ-ൿ]', '', text).strip()
 
     async def synthesize(self, text: str, voice_id: str | None = None, language: str | None = None) -> str:
         """Return full audio token string for the given text."""
@@ -240,11 +247,16 @@ class FlowTtsSynthesizer:
         ctx, ref = self._tokens_for_voice(voice_id)
         prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
+        lora_path = None if language == "en" else language
+        if lora_path != self._last_lora_path:
+            self._lora_swap_count += 1
+            self._last_lora_path = lora_path
+
         t0 = time.monotonic()
         logger.info("llm_call_start", text_preview=text[:40], prompt_len=len(prompt), voice_id=voice_id, language=language)
 
         result = await self._engine.async_generate(
-            prompt, self._sampling_params, lora_path=language
+            prompt, self._sampling_params, lora_path=lora_path
         )
         full_text = self._strip_trailing_silence(result["text"])
 
@@ -273,9 +285,14 @@ class FlowTtsSynthesizer:
         ctx, ref = self._tokens_for_voice(voice_id)
         prompt = self._tts_codec.format_prompt(text, ctx, ref)
 
+        lora_path = None if language == "en" else language
+        if lora_path != self._last_lora_path:
+            self._lora_swap_count += 1
+            self._last_lora_path = lora_path
+
         stream_params = {**self._sampling_params}
         generator = await self._engine.async_generate(
-            prompt, stream_params, stream=True, lora_path=language
+            prompt, stream_params, stream=True, lora_path=lora_path
         )
 
         prev_len       = 0
@@ -314,11 +331,16 @@ class FlowTtsSynthesizer:
         yield ""
 
     def _resolve_language(self, language: str | None) -> str:
-        """Return a validated language tag, falling back to the configured default."""
+        """Return a validated language tag, falling back to the configured default.
+
+        "en" is always valid and uses the base model with no LoRA adapter.
+        """
         lang = language or settings.tts_model.default_language
+        if lang == "en":
+            return "en"
         if self._lora_map and lang not in self._lora_map:
             raise ValueError(
-                f"Unknown language '{lang}'. Supported: {list(self._lora_map.keys())}"
+                f"Unknown language '{lang}'. Supported: en (base model), {list(self._lora_map.keys())}"
             )
         return lang
 

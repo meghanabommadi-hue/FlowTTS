@@ -240,32 +240,32 @@ async def _handle_streaming_request(
 ) -> None:
     """Stream audio chunks to the client as the LLM produces speech tokens.
 
-    Accumulates speech tokens in a rolling buffer.  Every _STREAM_CHUNK_TOKENS
-    tokens the buffer is decoded to PCM and sent as two frames:
-      - JSON  { type:"audio_chunk", chunk_index, call_id, text_id, is_final }
-      - bytes  raw WAV for that chunk
-    A final { type:"audio_done", ... } JSON frame is sent after all chunks.
+    Accumulates speech tokens in a rolling buffer.  Every _CHUNK_TOKENS_EARLY
+    tokens (first 2 chunks) or _CHUNK_TOKENS_LATE (subsequent) the buffer is
+    decoded to PCM and sent as one audio_chunk frame.  Overlap tokens are
+    prepended to each chunk for codec context; their audio is discarded after
+    decoding.  A fade-in is applied to non-first chunks to smooth boundaries.
     """
     codec = synth._tts_codec
-    ctx   = synth._context_tokens
+    ctx   = synth._tokens_for_voice(voice_id)[0]
 
     t0            = time.perf_counter()
     ts_llm_start  = _tsms()
     _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
 
-    buffer        = ""          # accumulates raw LLM delta text (may contain non-token chars)
-    token_buf     = []          # complete <|speech_token_N|> strings ready to decode
-    overlap_tokens: list = []   # tail tokens from previous chunk prepended for codec context
-    _OVERLAP      = _OVERLAP_TOKENS      # from config: overlap_tokens
-    _XFADE        = _CROSSFADE_SAMPLES   # from config: crossfade_samples (used for fade-in/out length)
+    buffer        = ""
+    token_buf:    list[str] = []
+    overlap_tokens: list[str] = []
+    _OVERLAP      = _OVERLAP_TOKENS
+    _XFADE        = _CROSSFADE_SAMPLES
     chunk_index   = 0
     total_tokens  = 0
     total_wav_b   = 0
     decode_total  = 0.0
     wav_total     = 0.0
     first_chunk_sent = False
-    llm_ttft_ms:     int | None = None   # ms from t0 to first speech token from LLM
-    decoder_ttft_ms: int | None = None   # ms from t0 to first decode_async completion
+    llm_ttft_ms:     int | None = None
+    decoder_ttft_ms: int | None = None
 
     loop = asyncio.get_event_loop()
 
@@ -279,8 +279,7 @@ async def _handle_streaming_request(
         decode_tokens = overlap_tokens + real_tokens
         chunk_tokens  = "".join(decode_tokens)
         n_overlap     = len(overlap_tokens)
-        # Keep last _OVERLAP tokens of this chunk as overlap for the next chunk
-        overlap_tokens = real_tokens[-_OVERLAP:]
+        overlap_tokens[:] = real_tokens[-_OVERLAP:]
 
         td = time.perf_counter()
         wav_tensor = await codec.decode_async(chunk_tokens, ctx)
@@ -290,39 +289,23 @@ async def _handle_streaming_request(
             decoder_ttft_ms = round((time.perf_counter() - t0) * 1000)
 
         tw = time.perf_counter()
-
         pcm = np.asarray(wav_tensor, dtype=np.float32).squeeze()
-        # Discard the audio corresponding to overlap tokens prepended for context
         if n_overlap > 0:
-            discard = n_overlap * 320  # 1 token = 320 samples at 16kHz
+            discard = n_overlap * 320
             pcm = pcm[discard:]
 
-        # Remove DC offset across the whole chunk to prevent waveform baseline
-        # shifts that cause clicks at boundaries.
         pcm = pcm - pcm.mean()
 
-        # Server-side crossfade: blend the tail of the previous chunk's output
-        # with the head of this chunk IN PLACE — no audio is repeated or held back.
-        # prev_tail is the last xfade samples already sent to the client; we overlap
-        # them with the first xfade samples of this chunk and send the blend as a
-        # correction prefix, effectively smoothing the join without echoing content.
-        #
-        # Simpler and echo-free approach: just apply a short fade-in to the head of
-        # every non-first chunk. This removes the codec boundary transient without
-        # any double-play of audio.
         xfade = min(_XFADE, len(pcm) // 4)
         if chunk_index > 0 and xfade > 0:
             fade_len = min(xfade, len(pcm))
             pcm = pcm.copy()
             pcm[:fade_len] *= np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
 
-        # Fade out the final chunk's tail so the audio ends cleanly.
         if is_final and xfade > 0 and len(pcm) > xfade:
             pcm = pcm.copy()
             pcm[-xfade:] *= np.linspace(1.0, 0.0, xfade, dtype=np.float32)
 
-        # Send raw int16 PCM — no WAV header — so client receives a continuous
-        # byte stream with no headers causing gaps or parse overhead.
         audio_bytes = await loop.run_in_executor(_wav_executor, pcm_to_int16_bytes, pcm)
         wav_total += time.perf_counter() - tw
 
@@ -370,12 +353,10 @@ async def _handle_streaming_request(
                 return
 
             if not delta:
-                # EOS signal — flush remainder
                 await _flush_chunk(is_final=True)
                 break
 
             buffer += delta
-            # Extract all complete speech tokens from buffer; keep tail after last match.
             last_end = 0
             for m in _RE_SPEECH.finditer(buffer):
                 if llm_ttft_ms is None:
@@ -408,13 +389,13 @@ async def _handle_streaming_request(
             "chunks":          chunk_index,
             "total_tokens":    total_tokens,
             "total_wav_bytes": total_wav_b,
-            "sample_rate": SAMPLE_RATE,
-            "llm_s":       llm_s,
-            "decode_s":    round(decode_total, 4),
+            "sample_rate":     SAMPLE_RATE,
+            "llm_s":           llm_s,
+            "decode_s":        round(decode_total, 4),
             "llm_ttft_ms":     llm_ttft_ms,
             "decoder_ttft_ms": decoder_ttft_ms,
-            "rtf":         round(rtf, 3),
-            "avg_rtf":     round(avg_rtf, 3),
+            "rtf":             round(rtf, 3),
+            "avg_rtf":         round(avg_rtf, 3),
         }))
 
         record_call(
@@ -435,14 +416,10 @@ async def _handle_streaming_request(
             f"[{ts_done}] :{port} {call_id}  stream_done"
             f"  chunks={chunk_index}"
             f"  tokens={total_tokens}"
-            f"  llm_ttft={llm_ttft_ms}ms"
-            f"  decoder_ttft={decoder_ttft_ms}ms"
-            f"  llm={llm_ms}ms"
-            f"  decode={round(decode_total*1000)}ms"
-            f"  wav_enc={round(wav_total*1000)}ms"
-            f"  total={round(total_s*1000)}ms"
-            f"  wav={total_wav_b}B"
-            f"  rtf={rtf:.3f}",
+            f"  llm_ttft={llm_ttft_ms}ms  decoder_ttft={decoder_ttft_ms}ms"
+            f"  llm={llm_ms}ms  decode={round(decode_total*1000)}ms"
+            f"  wav_enc={round(wav_total*1000)}ms  total={round(total_s*1000)}ms"
+            f"  wav={total_wav_b}B  rtf={rtf:.3f}",
             flush=True,
         )
 
@@ -617,7 +594,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 # Batch decode: all concurrent requests are coalesced by
                 # TTSCodec's internal batch queue into one GPU forward pass.
                 codec = synth._tts_codec
-                ctx = synth._context_tokens
+                ctx = synth._tokens_for_voice(voice_id)[0]
                 td = time.perf_counter()
                 wav_tensor = await asyncio.wait_for(codec.decode_async(audio_tokens, ctx), timeout=30.0)
                 decode_s = round(time.perf_counter() - td, 4)
@@ -926,7 +903,12 @@ async def _http_ready(req: web.Request) -> web.Response:
         return web.Response(status=503, text="loading")
     if _restarting:
         return web.Response(status=503, text="restarting")
-    return web.json_response({"ready": True, "ports": sorted(_open_ports), "oom_recovery": _oom_recovery_active})
+    return web.json_response({
+        "ready": True,
+        "ports": sorted(_open_ports),
+        "oom_recovery": _oom_recovery_active,
+        "lora_swap_count": _synthesizer._lora_swap_count,
+    })
 
 
 async def _http_ws_log(req: web.Request) -> web.Response:

@@ -53,7 +53,7 @@ class TtsModelSettings(BaseModel):
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters — flashinfer + disabled cuda graph required for LoRA
-    mem_fraction_static: float = 0.70
+    mem_fraction_static: float = 0.65
     attention_backend: str = "flashinfer"
     chunked_prefill_size: int = -1
     disable_radix_cache: bool = True
@@ -66,12 +66,14 @@ class TtsModelSettings(BaseModel):
     top_k: int = 50
     repetition_penalty: float = 1.3
     min_p: float = 0.05
+    ignore_eos: bool = False
+    skip_special_tokens: bool = False  # must preserve speech tokens
 
     # LoRA language switching — maps language tag → local adapter path.
     # All adapters are registered at engine init time; switching is zero-cost at inference.
     language_lora_map: Dict[str, str] = Field(default_factory=lambda: {
         "hi": "/root/mira_lora_setup/lora_switching/hi-checkpoint-50000-lora-only",
-        "ta": "/root/mira_lora_setup/lora_switching/ta-checkpoint-50000-lora-only",
+        "ta": "/root/mira_lora_setup/lora_switching/ta-checkpoint-424200-lora-only",
     })
     default_language: str = "hi"
 
@@ -100,7 +102,7 @@ class DecoderSettings(BaseModel):
     batch_timeout_ms: float = 0.7
     gpu_chunk_size: int = 150
     onnx_workers: int = 1
-    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
+    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
 
 
 class StreamingSettings(BaseModel):

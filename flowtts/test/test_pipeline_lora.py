@@ -27,6 +27,9 @@ Usage:
 
     # Both languages, explicit port list
     python -m flowtts.test.test_pipeline_lora --no-launch --ports 8765,8766,8767 --requests 30
+
+
+SGLANG VERSION = 0.5.9
 """
 
 from __future__ import annotations
@@ -83,12 +86,12 @@ hi: List[str] = [
     # "आपकी EMI Rs. 3750 हर महीने देय है।",
     # medium
     "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
-    "आपके loan की किस्त ₹३,७५० अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
-    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount ₹५,००० है, कृपया जल्द से जल्द इसे जमा करें।",
-    "आपकी EMI की due date ३० अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
-    "आपके account नंबर ४५६७८९०१२३ पर ₹१५,००० का loan approve हुआ है, क्या आप details verify करेंगे?",
-    "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
-    "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
+    "आपके loan की किस्त अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount है, कृपया से जल्द इसे जमा करें।",
+    "आपकी EMI की due date अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
+    "आपके account नंबर पर का loan approve हुआ है, क्या आप details verify करेंगे?",
+    "आपके loan की किस्त अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "आपके account number पर का loan approve हुआ है, क्या आप details verify करेंगे?",
     # long
     "आपकी loan application approve हो गई है और ₹५०,००० सीधे आपके bank account ७८९०१२३४५६ में transfer कर दिए जाएंगे, जिसमें २ से ३ कार्य दिवस लग सकते हैं।",
     "हमारी company की policy के अनुसार अगर payment ३० दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर ₹८,२५० का भुगतान करें।",
@@ -108,47 +111,107 @@ hi: List[str] = [
     "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं। आपके loan account number ending in three four five six पर total due amount is twenty two thousand five hundred rupees, कृपया आज ही payment करें।",
 ]
 
+# ta: List[str] = [
+#     # short
+#     # "நமஸ்தே, நான் உங்களுக்கு எப்படி உதவ முடியும்?",
+#     # "உங்கள் பெயரை சொல்ல முடியுமா?",
+#     # "தயவுசெய்து கொஞ்சம் காத்திருங்கள்.",
+#     # "உங்கள் சிக்கல் தீர்க்கப்பட்டது.",
+#     # "நாங்கள் விரைவில் உங்களை தொடர்பு கொள்வோம்.",
+#     # "உங்கள் கணக்கு எண் 9876543210, தயவுசெய்து உறுதிப்படுத்தவும்.",
+#     # "உங்கள் நிலுவை தொகை ₹2,500, இன்றே செலுத்தவும்.",
+#     # "உங்கள் கட்டணம் ₹10,000 வெற்றிகரமாக பெறப்பட்டது.",
+#     # # short — call center
+#     # "Aarav உங்கள் payment successfully receive ஆகிவிட்டது.",
+#     # "உங்கள் OTP four five six seven share செய்யவும்.",
+#     # "உங்கள் EMI Rs. 3750 ஒவ்வொரு மாதமும் செலுத்த வேண்டும்.",
+#     # medium
+#     "நமஸ்தே. நான் Kapture Finance சார்பாக பேசுகிறேன். இது recorded line. நான் customer name பேசுகிறேனா?",
+#     "உங்கள் கடன் தவணை இன்னும் வரவில்லை, எப்போது செலுத்துவீர்கள் என்று சொல்ல முடியுமா?",
+#     "எங்கள் பதிவுகளின்படி, உங்கள் நிலுவை தொகை, தயவுசெய்து விரைவில் செலுத்தவும்.",
+#     "உங்கள் EMI due date ஏப்ரல் கடந்துவிட்டது, late charge தவிர்க்க இன்றே payment செய்யவும்.",
+#     "உங்கள் account number இல் loan approve ஆகியுள்ளது, details verify செய்வீர்களா?",
+#     "உங்கள் கடன் தவணை இன்னும் வரவில்லை, எப்போது செலுத்துவீர்கள்?",
+#     "உங்கள் account இல் loan approve ஆகியுள்ளது, details verify செய்யவும்.",
+#     # long
+#     "உங்கள் loan application approve ஆகியுள்ளது, ₹50,000 நேரடியாக உங்கள் bank account 7890123456 இல் transfer செய்யப்படும், இதற்கு 2 முதல் 3 working days ஆகும்.",
+#     "எங்கள் company policy படி 30 நாட்களுக்குள் payment இல்லாவிட்டால் உங்கள் credit score பாதிக்கப்படும், எனவே ₹8,250 சரியான நேரத்தில் செலுத்தவும்.",
+#     "நீங்கள் எங்கள் mobile app மூலம் ₹4,500 EMI செலுத்தலாம், மேலும் NEFT, IMPS, அல்லது UPI மூலமும் செலுத்தலாம்.",
+#     "உங்கள் loan application approve ஆகியுள்ளது, Rs. 50000 நேரடியாக உங்கள் bank account 7890123456 இல் transfer செய்யப்படும், 2 to 3 working days ஆகும்.",
+#     "உங்கள் loan account number 1234567890, மாதாந்திர EMI Rs. 4500, ஒவ்வொரு மாதமும் 5ம் தேதி deduct ஆகும்.",
+#     "உங்கள் payment வெற்றிகரமாக பெறப்பட்டது, உங்கள் account தற்போது up to date ஆகியுள்ளது, மேலும் தகவல்களுக்கு எங்களை call செய்யவும்.",
+#     "உங்கள் அடுத்த தவணை due date 15ம் தேதி, தொகை Rs. 6200, late fee தவிர்க்க சரியான நேரத்தில் செலுத்தவும்.",
+#     "உங்கள் KYC verification pending ஆகியுள்ளது, தயவுசெய்து அருகிலுள்ள branch ல் அல்லது app மூலம் complete செய்யவும்.",
+#     # spoken-number style
+#     "இது உங்கள் loan number three six nine இல் முடியும் கடனைப் பற்றியது. உங்கள் EMI bounce ஆகியுள்ளது, மொத்த நிலுவை sixteen zero one two rupees.",
+#     "உங்கள் அடுத்த EMI due date five April, தொகை two thousand three hundred rupees, சரியான நேரத்தில் payment செய்யவும்.",
+#     "நான் Bajaj Finance சார்பாக பேசுகிறேன். உங்கள் account ending in three four five six இல் total due twenty two thousand five hundred rupees, இன்றே payment செய்யவும்.",
+# ]
+
 ta: List[str] = [
-    # short
-    # "நமஸ்தே, நான் உங்களுக்கு எப்படி உதவ முடியும்?",
-    # "உங்கள் பெயரை சொல்ல முடியுமா?",
-    # "தயவுசெய்து கொஞ்சம் காத்திருங்கள்.",
-    # "உங்கள் சிக்கல் தீர்க்கப்பட்டது.",
-    # "நாங்கள் விரைவில் உங்களை தொடர்பு கொள்வோம்.",
-    # "உங்கள் கணக்கு எண் 9876543210, தயவுசெய்து உறுதிப்படுத்தவும்.",
-    # "உங்கள் நிலுவை தொகை ₹2,500, இன்றே செலுத்தவும்.",
-    # "உங்கள் கட்டணம் ₹10,000 வெற்றிகரமாக பெறப்பட்டது.",
-    # # short — call center
-    # "Aarav உங்கள் payment successfully receive ஆகிவிட்டது.",
-    # "உங்கள் OTP four five six seven share செய்யவும்.",
-    # "உங்கள் EMI Rs. 3750 ஒவ்வொரு மாதமும் செலுத்த வேண்டும்.",
-    # medium
-    "நமஸ்தே. நான் Kapture Finance சார்பாக பேசுகிறேன். இது recorded line. நான் customer name பேசுகிறேனா?",
-    "உங்கள் கடன் தவணை ₹3,750 இன்னும் வரவில்லை, எப்போது செலுத்துவீர்கள் என்று சொல்ல முடியுமா?",
-    "எங்கள் பதிவுகளின்படி, உங்கள் நிலுவை தொகை ₹5,000, தயவுசெய்து விரைவில் செலுத்தவும்.",
-    "உங்கள் EMI due date ஏப்ரல் 30 கடந்துவிட்டது, late charge தவிர்க்க இன்றே payment செய்யவும்.",
-    "உங்கள் account number 4567890123 இல் ₹15,000 loan approve ஆகியுள்ளது, details verify செய்வீர்களா?",
-    "உங்கள் கடன் தவணை Rs. 3750 இன்னும் வரவில்லை, எப்போது செலுத்துவீர்கள்?",
-    "உங்கள் account 4567890123 இல் Rs. 15000 loan approve ஆகியுள்ளது, details verify செய்யவும்.",
-    # long
-    "உங்கள் loan application approve ஆகியுள்ளது, ₹50,000 நேரடியாக உங்கள் bank account 7890123456 இல் transfer செய்யப்படும், இதற்கு 2 முதல் 3 working days ஆகும்.",
-    "எங்கள் company policy படி 30 நாட்களுக்குள் payment இல்லாவிட்டால் உங்கள் credit score பாதிக்கப்படும், எனவே ₹8,250 சரியான நேரத்தில் செலுத்தவும்.",
-    "நீங்கள் எங்கள் mobile app மூலம் ₹4,500 EMI செலுத்தலாம், மேலும் NEFT, IMPS, அல்லது UPI மூலமும் செலுத்தலாம்.",
-    "உங்கள் loan application approve ஆகியுள்ளது, Rs. 50000 நேரடியாக உங்கள் bank account 7890123456 இல் transfer செய்யப்படும், 2 to 3 working days ஆகும்.",
-    "உங்கள் loan account number 1234567890, மாதாந்திர EMI Rs. 4500, ஒவ்வொரு மாதமும் 5ம் தேதி deduct ஆகும்.",
-    "உங்கள் payment வெற்றிகரமாக பெறப்பட்டது, உங்கள் account தற்போது up to date ஆகியுள்ளது, மேலும் தகவல்களுக்கு எங்களை call செய்யவும்.",
-    "உங்கள் அடுத்த தவணை due date 15ம் தேதி, தொகை Rs. 6200, late fee தவிர்க்க சரியான நேரத்தில் செலுத்தவும்.",
-    "உங்கள் KYC verification pending ஆகியுள்ளது, தயவுசெய்து அருகிலுள்ள branch ல் அல்லது app மூலம் complete செய்யவும்.",
-    # spoken-number style
-    "இது உங்கள் loan number three six nine இல் முடியும் கடனைப் பற்றியது. உங்கள் EMI bounce ஆகியுள்ளது, மொத்த நிலுவை sixteen zero one two rupees.",
-    "உங்கள் அடுத்த EMI due date five April, தொகை two thousand three hundred rupees, சரியான நேரத்தில் payment செய்யவும்.",
-    "நான் Bajaj Finance சார்பாக பேசுகிறேன். உங்கள் account ending in three four five six இல் total due twenty two thousand five hundred rupees, இன்றே payment செய்யவும்.",
+    # Short sentences (5-8 words)
+    "என்னோட order cancel பண்ணணும்.",
+    "Please wait பண்ணுங்க.",
+    "உங்க complaint register ஆச்சு.",
+    "Refund கிட்டுமா சார்?",
+    "App crash ஆகுது.",
+    "Password மாத்தணும்.",
+    "Order deliver ஆகலை.",
+    "Payment failed ஆச்சு.",
+    "Account block ஆச்சு சார்.",
+    "Issue fix ஆச்சா?",
+
+    # Medium sentences (9-15 words)
+    "என்னோட order இன்னும் deliver ஆகலை, please check பண்ணுங்க.",
+    "உங்க complaint register ஆச்சு, நாங்க soon resolve பண்றோம்.",
+    "Payment deduct ஆச்சு ஆனா order confirm ஆகலை.",
+    "Wrong product வந்துருக்கு, இதை எப்படி exchange பண்றது?",
+    "App-ல login ஆகலை, password reset பண்ண முடியுமா?",
+    "Refund request accept ஆச்சு, 3 days-ல amount வரும்.",
+    "உங்க issue-ஐ senior team-கிட்ட escalate பண்ணாச்சு.",
+    "Damaged product வந்துருக்கு, replacement கிட்டுமா?",
+    "Order status check பண்ண உங்க order number சொல்லுங்க.",
+    "24 hours-ல உங்க problem solve ஆகும், worry பண்ணாதீங்க.",
+    "எங்க service-ல உங்களை warmly welcome பண்றோம் சார்.",
+    "நேத்து order பண்ணேன், ஆனா confirmation mail வரலை.",
+    "Discount coupon apply ஆகலை, help பண்ண முடியுமா?",
+    "உங்க feedback-க்கு thanks, நாங்க improve பண்றோம்.",
+    "இந்த issue-க்கு நாங்க sincerely apologize பண்றோம்.",
+
+    # Long sentences (16+ words)
+    "என்னோட account-ல தவறான amount deduct ஆச்சு, இதை எப்படி fix பண்றது னு please explain பண்ணுங்க.",
+    "நான் கடந்த week order பண்ணேன், ஆனா இன்னும் deliver ஆகலை, tracking number-உம் work பண்றதில்லை.",
+    "உங்க problem-ஐ நாங்க fully understand பண்றோம், இதை priority basis-ல investigate பண்ணி தீர்வு சொல்றோம்.",
+    "Product quality-ல issue இருக்கு, photos எடுத்து support team-கிட்ட send பண்ணா replacement கிட்டும்.",
+    "என்னோட delivery address தப்பா enter ஆச்சு, order dispatch ஆகுறதுக்கு முன்னாடி change பண்ண முடியுமா?",
+    "App-ல payment பண்ணும் போது error வருது, different payment method try பண்ணாலும் same problem இருக்கு.",
+    "உங்க order-ஓட current status check பண்ண இந்த link-ல click பண்ணி order ID enter பண்ணுங்க.",
+    "நாங்க உங்களுக்கு best possible solution குடுக்க try பண்றோம், கொஞ்சம் patience வச்சிருங்க சார்.",
+    "இந்த மாதம் ரெண்டு தடவை wrong product வந்துருக்கு, இது repeat ஆகுறது acceptable இல்லை.",
+    "உங்க subscription plan automatically renew ஆச்சு, cancel பண்ண வேணும்னா settings-ல போய் manage subscription click பண்ணுங்க.",
+    "Customer satisfaction எங்களுக்கு most important, உங்க issue complete ஆ resolve ஆகுற வரைக்கும் நாங்க follow up பண்றோம்.",
+    "என்னோட பழைய order-ல return request raise பண்ணேன், ஆனா 10 days ஆச்சும் refund account-ல credit ஆகலை.",
+    "நீங்க mention பண்ண issue-ஐ நாங்க technical team-கிட்ட escalate பண்றோம், அவங்க 48 hours-ல உங்களுக்கு update குடுப்பாங்க.",
+    "Offer period-ல order பண்ணேன், ஆனா invoice-ல original price charge ஆச்சு, discount reflect ஆகலை.",
+    "உங்களோட valuable feedback-க்கு நன்றி, இந்த experience improve பண்ண நாங்க definitely necessary steps எடுப்போம்."
+
+]
+
+en: List[str] = [
+    "The customer said, My order hasn't been delivered yet, please check on it.",
+    "The agent said, Your complaint has been registered, it will be resolved within 24 hours.",
+    "Priya asked, Can I cancel my order, and will I get a refund?",
+    "The support team said, Your issue has been escalated, the team will contact you shortly.",
+    "Rahul said, The app keeps crashing repeatedly, I can't even log in.",
+    "The agent replied, Sorry for the inconvenience, we will fix your problem immediately.",
+    "The customer said, I received the wrong product, how do I exchange it?"
 ]
 
 # Map tag → list  (mirrors config's language_lora_map keys)
 LANGUAGE_TEXTS: Dict[str, List[str]] = {
     "hi": hi,
     "ta": ta,
+    "en": en,
 }
 
 
@@ -212,6 +275,7 @@ async def _run_one(
     out_dir: Path,
     streaming: bool = False,
     save_chunks: bool = False,
+    voice_id: Optional[str] = None,
 ) -> RequestResult:
     call_id = str(uuid.uuid4())
     text_id = str(uuid.uuid4())
@@ -229,6 +293,7 @@ async def _run_one(
                 "text": text,
                 "language": language,
                 **({"streaming": True} if streaming else {}),
+                **({"voice_id": voice_id} if voice_id else {}),
             }
             await ws.send(json.dumps(req))
             _log(req_id, port, language, f"sent {'streaming' if streaming else 'synthesize'}  text={text[:50]!r}")
@@ -304,8 +369,6 @@ def _wav_chunks_to_combined(chunk_wavs: list) -> bytes:
 
     if not chunk_wavs:
         return b""
-    if len(chunk_wavs) == 1:
-        return chunk_wavs[0]
 
     all_pcm = b""
     sr, ch = 16000, 1
@@ -534,6 +597,7 @@ async def run_test(
     streaming: bool = False,
     save_chunks: bool = False,
     ports: Optional[List[int]] = None,
+    voice_id: Optional[str] = None,
 ) -> List[RequestResult]:
 
     # Build the full interleaved (text, language) list
@@ -619,6 +683,7 @@ async def run_test(
             out_dir,
             streaming=streaming,
             save_chunks=save_chunks,
+            voice_id=voice_id,
         )
         for i in range(n_requests)
     ]
@@ -640,7 +705,16 @@ async def run_test(
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-def _print_summary(results: List[RequestResult], out_dir: Path) -> bool:
+def _get_lora_swap_count(ctrl_port: int) -> Optional[int]:
+    """Query the server for the current LoRA swap count; returns None on failure."""
+    try:
+        data = _ctrl_get(ctrl_port, "/ready", timeout=2.0)
+        return data.get("lora_swap_count")
+    except Exception:
+        return None
+
+
+def _print_summary(results: List[RequestResult], out_dir: Path, lora_swaps: Optional[int] = None) -> bool:
     passed = [r for r in results if r.passed]
     failed = [r for r in results if not r.passed]
     all_langs = sorted({r.language for r in results})
@@ -653,6 +727,8 @@ def _print_summary(results: List[RequestResult], out_dir: Path) -> bool:
     lines: List[str] = []
     lines.append(f"\n{'='*70}")
     lines.append(f"LORA SUMMARY  total={len(results)}  passed={len(passed)}  failed={len(failed)}")
+    if lora_swaps is not None:
+        lines.append(f"  lora_swaps   : {lora_swaps} (adapter changes observed by synthesizer)")
     lines.append(f"{'='*70}")
 
     header = (
@@ -800,18 +876,21 @@ async def main(args: argparse.Namespace) -> None:
             print(f"[ERROR] No text list for language(s): {unknown}", flush=True)
             print(f"        Available: {list(LANGUAGE_TEXTS.keys())}", flush=True)
             sys.exit(1)
-        not_in_config = [l for l in languages if l not in configured]
+        not_in_config = [l for l in languages if l not in configured and l != "en"]
         if not_in_config:
             print(f"[WARN] language(s) {not_in_config} not in config's language_lora_map — "
                   f"server will use default LoRA", flush=True)
     else:
-        # Default: all languages that have both a text list and a configured LoRA
-        languages = [l for l in configured if l in LANGUAGE_TEXTS]
+        # Default: "en" (base model) + all LoRA languages that have a text list
+        lora_langs = [l for l in configured if l in LANGUAGE_TEXTS]
+        languages = (["en"] if "en" in LANGUAGE_TEXTS else []) + lora_langs
         if not languages:
             languages = list(LANGUAGE_TEXTS.keys())
         print(f"[lora] no --languages given, testing all configured: {languages}", flush=True)
 
     streaming = args.streaming if args.streaming is not None else _settings.streaming.enabled
+
+    swaps_before = _get_lora_swap_count(args.ctrl_port)
 
     if args.launch:
         results = await run_test(
@@ -823,6 +902,7 @@ async def main(args: argparse.Namespace) -> None:
             save_audio=args.save_audio,
             streaming=streaming,
             save_chunks=args.save_chunks,
+            voice_id=args.voice,
         )
     else:
         if args.ctrl_port and args.ports is None and args.n_ports is None:
@@ -840,9 +920,13 @@ async def main(args: argparse.Namespace) -> None:
             streaming=streaming,
             save_chunks=args.save_chunks,
             ports=port_list,
+            voice_id=args.voice,
         )
 
-    ok = _print_summary(results, out_dir)
+    swaps_after = _get_lora_swap_count(args.ctrl_port)
+    lora_swaps = (swaps_after - swaps_before) if (swaps_before is not None and swaps_after is not None) else swaps_after
+
+    ok = _print_summary(results, out_dir, lora_swaps=lora_swaps)
     sys.exit(0 if ok else 1)
 
 
@@ -873,6 +957,8 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save individual chunk WAVs")
+    parser.add_argument("--voice", type=str, default=None, metavar="VOICE_ID",
+                        help="Voice ID to use for all requests, e.g. simran, tara, vikram, daya")
 
     pg = parser.add_mutually_exclusive_group()
     pg.add_argument("--ports", type=str, default=None,
