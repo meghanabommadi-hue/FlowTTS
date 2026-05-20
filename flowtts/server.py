@@ -117,6 +117,12 @@ _VOICE_CACHE_MAP: dict[str, str] = {
     "daya":   "cached_data_daya",
     "vanita": "cached_data_vanita",
     "sunita": "cached_data_sunita",
+    "anika": "cached_data_anika",
+    "anika2": "cached_data_anika2",
+    "zara": "cached_data_zara",
+    "saavi": "cached_data_saavi",
+    "monika": "cached_data_monika",
+    "gargi": "cached_data_gargi",
 }
 
 
@@ -879,8 +885,25 @@ async def _bind_ws_port(port: int) -> bool:
 
     async def process_request(connection, request):
         if request.path == "/health":
-            body = json.dumps({"status": "ok", "ready": _synthesizer is not None}).encode()
+            if _restarting:
+                body = json.dumps({"status": "error", "reason": "server restarting"}).encode()
+                status, phrase = 503, "Service Unavailable"
+            elif _oom_recovery_active:
+                body = json.dumps({"status": "error", "reason": "GPU OOM recovery in progress"}).encode()
+                status, phrase = 503, "Service Unavailable"
+            elif _synthesizer is None:
+                body = json.dumps({"status": "error", "reason": "model loading"}).encode()
+                status, phrase = 503, "Service Unavailable"
+            else:
+                body = json.dumps({"status": "ok", "ready": True}).encode()
+                status, phrase = 200, "OK"
             headers = WsHeaders([("Content-Type", "application/json"), ("Content-Length", str(len(body)))])
+            return WsResponse(status, phrase, headers, body)
+        if request.path == "/metrics":
+            from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+            body = generate_latest()
+            ct = CONTENT_TYPE_LATEST.split(";")[0].strip()
+            headers = WsHeaders([("Content-Type", ct), ("Content-Length", str(len(body)))])
             return WsResponse(200, "OK", headers, body)
 
     await websockets.serve(
@@ -945,8 +968,14 @@ async def _http_metrics(req: web.Request) -> web.Response:
 
 
 async def _http_health(req: web.Request) -> web.Response:
-    """GET /health  — simple liveness check."""
-    return web.json_response({"status": "ok", "ready": _synthesizer is not None})
+    """GET /health  — liveness check. Returns 200 when ready, 503 otherwise."""
+    if _restarting:
+        return web.json_response({"status": "error", "reason": "server restarting"}, status=503)
+    if _oom_recovery_active:
+        return web.json_response({"status": "error", "reason": "GPU OOM recovery in progress"}, status=503)
+    if _synthesizer is None:
+        return web.json_response({"status": "error", "reason": "model loading"}, status=503)
+    return web.json_response({"status": "ok", "ready": True})
 
 
 async def _run_control_api(ctrl_port: int) -> None:

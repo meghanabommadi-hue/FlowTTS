@@ -175,11 +175,13 @@ _ENGLISH_AMERICAN: List[str] = [
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
     # short — Hindi numerals'
-    "थैंक यू hold करने के लिए, अब पूरे steps फिर से clear बता دیتी हूँ:",
+    # "थैंक यू hold करने के लिए, अब पूरे steps फिर से clear बता دیتी हूँ:",
     "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
-    "😭☺️ I am vaani ✅👀",
-    "😭 steps फिर से clear बता",
-    " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
+    # "😭☺️ I am vaani ✅👀",
+    # "😭 steps फिर से clear बता",
+    # " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
+    "Hello",
+    "Hi",
     "नमस्ते मैं आपकी कैसे मदद कर सकती हूं?",
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
     "नमस्ते, आपकी कैसे मदद कर सकती हूं?",
@@ -1033,7 +1035,7 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
-    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya", "british_rose", "rani", "sana", "anita", "vanita", "sunita"],
+    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya", "british_rose", "rani", "sana", "anita", "vanita", "sunita", "anika", "anika2", "monika", "saavi", "zara", "gargi"],
                         help="Voice ID to use for synthesis (default: server default)")
     parser.add_argument("--sentence", default="", metavar="TEXT",
                         help="Repeat this single sentence for all requests")

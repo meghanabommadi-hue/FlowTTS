@@ -37,6 +37,12 @@ VOICE_REF_AUDIO: dict[str, str] = {
     "anita":  f"{_SAMPLE_FILES_DIR}/anita.wav",
     "vanita": f"{_SAMPLE_FILES_DIR}/vanita.wav",
     "sunita": f"{_SAMPLE_FILES_DIR}/sunita.wav",
+    "anika":  f"{_SAMPLE_FILES_DIR}/anika_vb.mp3",
+    "anika2": f"{_SAMPLE_FILES_DIR}/anika2_vb.mp3",
+    "monika": f"{_SAMPLE_FILES_DIR}/monika_vb.mp3",
+    "saavi": f"{_SAMPLE_FILES_DIR}/saavi_vb.mp3",
+    "zara": f"{_SAMPLE_FILES_DIR}/zara_vb.mp3",
+    "gargi": f"{_SAMPLE_FILES_DIR}/gargi_vb.mp3",
 }
 
 
