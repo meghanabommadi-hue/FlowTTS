@@ -215,6 +215,51 @@ class FlowTtsSynthesizer:
         import re
         return re.sub(r'[^\x00-\x7F\u0900-\u097F]', '', text).strip()
 
+    async def encode_voice_from_bytes(
+        self,
+        audio_bytes: bytes,
+        sample_rate: int = 16000,
+        encode_semantic: bool = False,
+    ) -> tuple[str, object]:
+        """Encode raw audio bytes into (context_tokens, ref_speech_tokens).
+
+        audio_bytes : raw PCM (int16 or float32) or a full WAV file in memory.
+        sample_rate : sample rate of the incoming audio (default 16000).
+        encode_semantic : if True also return ref_speech_tokens; usually False
+                          for a real-time cloning scenario where only the
+                          speaker context (timbre) is needed.
+
+        Returns (context_tokens_str, ref_speech_tokens_or_None).
+        """
+        if self._tts_codec is None:
+            raise RuntimeError("FlowTtsSynthesizer not initialized")
+
+        import io
+        import numpy as np
+        import librosa
+
+        # Accept both bare PCM and WAV-wrapped bytes by feeding through librosa
+        # via a BytesIO buffer — librosa handles both formats transparently.
+        buf = io.BytesIO(audio_bytes)
+        try:
+            audio, _ = librosa.load(buf, sr=16000, mono=True)
+        except Exception:
+            # Fallback: treat as raw int16 PCM at the given sample_rate
+            pcm = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            if sample_rate != 16000:
+                audio = librosa.resample(pcm, orig_sr=sample_rate, target_sr=16000)
+            else:
+                audio = pcm
+
+        enc = self._tts_codec.audio_encoder
+        result = enc.encode_from_array(audio, encode_semantic=encode_semantic)
+        if encode_semantic and isinstance(result, tuple):
+            speech_tokens, context_tokens = result
+            return context_tokens, speech_tokens
+        else:
+            context_tokens = result
+            return context_tokens, None
+
     async def synthesize(self, text: str, voice_id: str | None = None) -> str:
         """Return full audio token string for the given text."""
         if self._engine is None or self._tts_codec is None:

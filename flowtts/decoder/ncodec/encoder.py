@@ -119,7 +119,32 @@ class AudioEncoder:
 
         return wav[:ref_segment_length]
 
-    @torch.inference_mode()   
+    @torch.inference_mode()
+    def encode_from_array(self, audio: np.ndarray, encode_semantic: bool = True) -> tuple | str:
+        """Encode a pre-loaded float32 16 kHz audio array.
+
+        Same as encode() but skips librosa.load — caller already has the PCM.
+        audio must be float32, mono, 16 kHz.
+        """
+        audio = audio_volume_normalize(audio)
+
+        ref_clip = self.get_ref_clip(audio)
+        wav_ref = torch.from_numpy(ref_clip).unsqueeze(0).float()
+
+        mel = self.mel_transformer(wav_ref).squeeze(1)
+        new_arr = np.array(mel.transpose(1, 2).cpu())
+
+        global_tokens = self.s_encoder.run(["global_tokens"], {"mel_spectrogram": new_arr})
+        context_tokens = "".join([f"<|context_token_{i}|>" for i in global_tokens[0].squeeze()])
+        if encode_semantic:
+            feat = self.extract_wav2vec2_features(audio)
+            speech_tokens = self.q_encoder.run(["semantic_tokens"], {"features": feat.cpu().detach().numpy()})
+            speech_tokens = "".join([f"<|speech_token_{i}|>" for i in speech_tokens[0][0]])
+            return speech_tokens, context_tokens
+        else:
+            return context_tokens
+
+    @torch.inference_mode()
     def encode(self, audio, encode_semantic=True, duration=8):
 
         """encodes audio file into speech tokens and context tokens"""

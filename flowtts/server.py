@@ -65,7 +65,7 @@ from aiohttp import web
 import websockets
 from websockets.exceptions import WebSocketException
 
-from flowtts.core.config import settings
+from flowtts.core.config import settings, VOICE_REF_AUDIO as _VOICE_REF_AUDIO
 from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RATE
 from flowtts.monitoring.metrics import (
     record_call, record_ws_connection_open, record_ws_connection_close,
@@ -461,6 +461,10 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     _ws_connections[conn_id] = ws
     _ws_cancel_events[conn_id] = asyncio.Event()
 
+    # Tracks dynamic voice names registered during this connection.
+    # Maps voice_name → already-encoded (so we don't re-encode on repeat sends).
+    _dynamic_voices: set[str] = set()
+
     try:
         async for raw in ws:
             if isinstance(raw, bytes):
@@ -484,6 +488,40 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             text_id  = data.get("text_id") or str(uuid.uuid4())
             voice_id = data.get("voice_id") or None
             streaming = bool(data.get("streaming", True))
+
+            # If voice_id is not a known pre-registered voice, treat it as a new
+            # dynamic voice name — expect a binary audio frame to follow, encode it,
+            # and save it under that name for the rest of the session.
+            _known_voices = set(_VOICE_REF_AUDIO.keys()) | set(_VOICE_CACHE_MAP.keys())
+            if voice_id and voice_id not in _known_voices:
+                if voice_id not in _dynamic_voices:
+                    try:
+                        audio_frame = await ws.recv()
+                        if isinstance(audio_frame, str):
+                            audio_frame = audio_frame.encode()
+                        sample_rate = int(data.get("sample_rate", 16000))
+                        synth = await _get_synthesizer()
+                        ts_enc_start = _tsms()
+                        ctx_tokens, ref_tokens = await synth.encode_voice_from_bytes(
+                            audio_frame, sample_rate=sample_rate
+                        )
+                        synth._voice_tokens[voice_id] = (ctx_tokens, ref_tokens)
+                        _dynamic_voices.add(voice_id)
+                        ctx_count = ctx_tokens.count("<|context_token_")
+                        print(
+                            f"[{ts_enc_start}] :{port} {call_id}  dynamic_voice_encoded"
+                            f"  voice={voice_id}"
+                            f"  context_tokens={ctx_count}"
+                            f"  audio_bytes={len(audio_frame)}",
+                            flush=True,
+                        )
+                    except Exception as e:
+                        print(f"[{_tsms()}] :{port} {call_id}  dynamic_voice error: {e}", flush=True)
+                        await ws.send(json.dumps({
+                            "type": "error", "call_id": call_id, "text_id": text_id,
+                            "error": f"voice encoding failed: {e}",
+                        }))
+                        continue
             if not text:
                 await ws.send(json.dumps({
                     "type": "error", "call_id": call_id, "text_id": text_id,
@@ -737,6 +775,9 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
         _ws_last_activity.pop(conn_id, None)
         _ws_connections.pop(conn_id, None)
         _ws_cancel_events.pop(conn_id, None)
+        if _synthesizer is not None:
+            for _dv in _dynamic_voices:
+                _synthesizer._voice_tokens.pop(_dv, None)
         record_ws_connection_close(conn_id, port=port)
         print(f"[{_ts()}] :{port} disconnected  peer={conn_id}", flush=True)
 
