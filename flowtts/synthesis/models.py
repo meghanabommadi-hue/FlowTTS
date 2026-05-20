@@ -134,7 +134,7 @@ class FlowTtsSynthesizer:
             disable_cuda_graph=cfg.disable_cuda_graph,
             disable_overlap_schedule=True,
             lora_paths=lora_map,
-            max_loras_per_batch=len(lora_map),
+            max_loras_per_batch=len(lora_map) + 1,  # +1 for base-model slot (en, lora_path=None)
         )
 
         sampling_params = {

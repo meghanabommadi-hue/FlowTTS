@@ -168,7 +168,7 @@ ta: List[str] = [
     "Wrong product வந்துருக்கு, இதை எப்படி exchange பண்றது?",
     "App-ல login ஆகலை, password reset பண்ண முடியுமா?",
     "Refund request accept ஆச்சு, 3 days-ல amount வரும்.",
-    "உங்க issue-ஐ senior team-கிட்ட escalate பண்ணாச்சு.",
+    "உங்க issue ஐ senior team-கிட்ட escalate பண்ணாச்சு.",
     "Damaged product வந்துருக்கு, replacement கிட்டுமா?",
     "Order status check பண்ண உங்க order number சொல்லுங்க.",
     "24 hours-ல உங்க problem solve ஆகும், worry பண்ணாதீங்க.",

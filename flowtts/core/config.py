@@ -73,7 +73,7 @@ class TtsModelSettings(BaseModel):
     # All adapters are registered at engine init time; switching is zero-cost at inference.
     language_lora_map: Dict[str, str] = Field(default_factory=lambda: {
         "hi": "/root/mira_lora_setup/lora_switching/hi-checkpoint-50000-lora-only",
-        "ta": "/root/mira_lora_setup/lora_switching/ta-checkpoint-424200-lora-only",
+        "ta": "/root/mira_lora_setup/lora_switching/ta-checkpoint-200000-lora-only",
     })
     default_language: str = "hi"
 
