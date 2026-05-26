@@ -7,6 +7,7 @@ Role in pipeline:
 Key sections and their pipeline consumers:
   TtsModelSettings  → synthesis/models.py (sglang engine init, sampling params)
                        synthesis/engine.py (model_dir, ref_audio paths)
+  VoxCpmSettings    → synthesis/voxcpm_synthesizer.py (VoxCPM2 engine init)
   DecoderSettings   → api/websockets.py   (enabled flag, to_wav flag)
                        decoder/decoder.py  (sample_rate)
   RedisSettings     → api/websockets.py   (queue publish, pub/sub subscribe)
@@ -15,6 +16,10 @@ Key sections and their pipeline consumers:
 
 All values can be overridden via environment variables (FLOWTTS_ prefix).
 No env-var → sensible defaults used (greedy decoding, 48 kHz, Redis localhost).
+
+Model selection:
+  Set FLOWTTS_MODEL_TYPE=voxcpm  to use VoxCPM2 instead of Mira.
+  Set FLOWTTS_MODEL_TYPE=mira    (default) to use the MiraITS / sglang path.
 """
 
 from pathlib import Path
@@ -113,6 +118,49 @@ class StreamingSettings(BaseModel):
     fade_out_samples: int = 160
 
 
+class VoxCpmSettings(BaseModel):
+    """VoxCPM2 model configuration.
+
+    Used when Settings.model_type == "voxcpm".
+    All knobs map directly to AsyncVoxCPM2ServerPool / VoxCPM2ServerImpl.
+    """
+
+    # Path to the VoxCPM2 model checkpoint directory.
+    # Must contain config.json, tokenizer.json and *.safetensors weights.
+    model_dir: str = f"{_MODELS_DIR}/voxcpm2"
+
+    # Optional reference (prompt) audio used for voice cloning.
+    # Set to "" or a non-existent path to run in zero-shot mode.
+    ref_audio: str = f"{_MODELS_DIR}/voxcpm2/ref_audio.wav"
+
+    # Text transcript that matches the reference audio (required when
+    # ref_audio is set, as VoxCPM2 needs text+latent prefix together).
+    ref_audio_text: str = ""
+
+    # Warmup sentence — synthesized once at startup to prime CUDA graphs.
+    warmup_sentence: str = (
+        "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?"
+    )
+
+    # ------- VoxCPM2 engine knobs -------
+    inference_timesteps: int = 6       # diffusion ODE steps (fewer = faster, lower quality)
+    max_num_batched_tokens: int = 512  # prefill batch size (lower = better TTFA under load)
+    max_num_seqs: int = 64             # max sequences decoded in parallel
+    max_model_len: int = 4096          # max KV sequence length
+    gpu_memory_utilization: float = 0.80
+
+    # Disable CUDA graph compilation — can be faster for small models / low batch.
+    enforce_eager: bool = False
+
+    # Request coalescing window in ms (0 = off for best TTFA, >0 for throughput).
+    coalesce_ms: float = 0.0
+
+    # ------- generation params -------
+    temperature: float = 1.0
+    cfg_value: float = 2.0
+    max_generate_length: int = 2000
+
+
 class WebSocketSettings(BaseModel):
     """Gateway WebSocket server settings."""
 
@@ -125,8 +173,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="FLOWTTS_", env_nested_delimiter="__")
 
+    # ── Model selector ──────────────────────────────────────────────────────
+    # "mira"   → use MiraITS / sglang path  (synthesis/models.py)
+    # "voxcpm" → use VoxCPM2 path           (synthesis/voxcpm_synthesizer.py)
+    model_type: Literal["mira", "voxcpm"] = "mira"
+
     ws: WebSocketSettings = WebSocketSettings()
     tts_model: TtsModelSettings = TtsModelSettings()
+    voxcpm: VoxCpmSettings = VoxCpmSettings()
     decoder: DecoderSettings = DecoderSettings()
     streaming: StreamingSettings = StreamingSettings()
 

@@ -4,33 +4,36 @@ Pipeline position: SINGLE-PROCESS GATEWAY (primary production entry point via ru
 
 Role in pipeline:
   Self-contained TTS server — no Redis, no worker process, no uvicorn per port.
-  Loads sglang + ncodec once, then handles all WebSocket ports in one asyncio
-  event loop. This is the recommended way to run FlowTTS in production.
+  Loads the selected TTS model once, then handles all WebSocket ports in one
+  asyncio event loop.  This is the recommended way to run FlowTTS in production.
 
   Client
     │  WebSocket (text) on port 8765…8765+N
     ▼
   server.py  (one process, one GPU load)
-    │  synthesis_service.synthesize(text)  [sglang in-process]
-    │  → audio_tokens string
+    │  [model_type == "mira"]   FlowTtsSynthesizer.synthesize(text)  [sglang]
+    │  → audio_tokens string → TTSCodec.decode_async() → WAV @ 16 kHz
+    │
+    │  [model_type == "voxcpm"] VoxCpmSynthesizer.synthesize(text)   [VoxCPM2]
+    │  → WAV bytes @ 48 kHz  (decoding happens inside VoxCPM2 runner)
     ▼
-  Client  (audio_tokens JSON — no decode in this path)
+  Client  (JSON metadata + binary WAV)
+
+Model selection:
+  Export FLOWTTS_MODEL_TYPE=voxcpm before starting (or set in env / run.sh).
+  Default is "mira" for backward compatibility.
 
 Compared to main.py (Redis-backed):
   Simpler:   no Redis, no worker, no inter-process coordination.
   Faster:    no queue latency, inference starts immediately.
-  Less flexible: all ports share one sglang Engine, no horizontal scaling
-                 across machines without running multiple server.py instances.
+  Less flexible: all ports share one model load, no horizontal scaling.
 
 Port model:
   --ports N opens N consecutive ports starting at --base-port.
-  All ports share the same synthesis_service singleton (one model load).
-  Concurrent requests from different ports are handled by asyncio concurrency
-  — sglang's async_generate serialises GPU work internally.
+  All ports share the same synthesizer singleton (one model load).
 
 Warmup:
-  On startup, one warmup sentence is synthesized to prime the GPU and JIT
-  caches before real traffic arrives.
+  On startup, one warmup sentence is synthesized to prime the GPU.
 
 Usage (preferred):
     ./run.sh --ports 100              # 100 ports: 8765…8864
@@ -39,6 +42,9 @@ Usage (preferred):
 Direct:
     python -m flowtts.server --ports 3
     python -m flowtts.server --ports 100 --base-port 8765
+
+VoxCPM:
+    FLOWTTS_MODEL_TYPE=voxcpm python -m flowtts.server --ports 3
 """
 
 from __future__ import annotations
@@ -72,7 +78,13 @@ from flowtts.synthesis.models import FlowTtsSynthesizer
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
-_synthesizer: FlowTtsSynthesizer | None = None
+# ── model type — set once at module load ────────────────────────────────────
+_MODEL_TYPE: str = settings.model_type   # "mira" or "voxcpm"
+
+# Shared synthesizer slot — typed as Any so both Mira and VoxCPM fit.
+_synthesizer: FlowTtsSynthesizer | None = None     # Mira path
+_voxcpm_synthesizer = None                          # VoxCPM path (VoxCpmSynthesizer)
+
 _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
 _RE_SPEECH = re.compile(r"<\|speech_token_\d+\|>", re.ASCII)
 _STREAM_CHUNK_TOKENS = settings.streaming.chunk_tokens
@@ -119,13 +131,26 @@ def _log(line: str) -> None:
 
 
 async def _get_synthesizer() -> FlowTtsSynthesizer:
+    """Return the Mira/sglang synthesizer (model_type == 'mira')."""
     global _synthesizer
     if _synthesizer is None:
         _synthesizer = FlowTtsSynthesizer()
-        print(f"[{_ts()}] loading model...", flush=True)
+        print(f"[{_ts()}] loading Mira model...", flush=True)
         await _synthesizer.initialize()
-        print(f"[{_ts()}] model ready", flush=True)
+        print(f"[{_ts()}] Mira model ready", flush=True)
     return _synthesizer
+
+
+async def _get_voxcpm_synthesizer():
+    """Return the VoxCPM synthesizer (model_type == 'voxcpm')."""
+    global _voxcpm_synthesizer
+    if _voxcpm_synthesizer is None:
+        from flowtts.synthesis.voxcpm_synthesizer import VoxCpmSynthesizer  # noqa: PLC0415
+        _voxcpm_synthesizer = VoxCpmSynthesizer()
+        print(f"[{_ts()}] loading VoxCPM2 model...", flush=True)
+        await _voxcpm_synthesizer.initialize()
+        print(f"[{_ts()}] VoxCPM2 model ready", flush=True)
+    return _voxcpm_synthesizer
 
 
 async def _handle_streaming_request(
@@ -286,6 +311,172 @@ async def _handle_streaming_request(
             pass
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# VoxCPM2 request handlers
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _handle_streaming_request_voxcpm(
+    ws: websockets.ServerConnection,
+    synth,           # VoxCpmSynthesizer
+    text: str,
+    call_id: str,
+    text_id: str,
+    port: int,
+    ts_text_recv: str,
+) -> None:
+    """Stream VoxCPM2 audio chunks to the client.
+
+    VoxCPM2 yields float32 PCM frames directly (no discrete speech tokens).
+    Each chunk is a complete WAV file so the client can play it immediately.
+    Protocol mirrors the Mira streaming protocol:
+      JSON  { type:"audio_chunk", chunk_index, call_id, text_id, is_final, sample_rate }
+      bytes  WAV for that chunk
+    Final message: { type:"audio_done", ... }
+    """
+    t0 = time.perf_counter()
+    ts_llm_start = _tsms()
+    _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
+
+    chunk_index = 0
+    total_wav_b = 0
+    first_chunk_sent = False
+    sample_rate = synth.sample_rate
+
+    try:
+        async for wav_chunk, is_final, timing in synth.synthesize_stream(text):
+            ts_chunk = _tsms()
+
+            if not first_chunk_sent:
+                ttft = round((time.perf_counter() - t0) * 1000)
+                print(f"[{ts_chunk}] :{port} {call_id}  first_chunk  ttft={ttft}ms"
+                      f"  bytes={len(wav_chunk)}", flush=True)
+                first_chunk_sent = True
+
+            total_wav_b += len(wav_chunk)
+
+            await ws.send(json.dumps({
+                "type":        "audio_chunk",
+                "call_id":     call_id,
+                "text_id":     text_id,
+                "chunk_index": chunk_index,
+                "sample_rate": sample_rate,
+                "wav_bytes":   len(wav_chunk),
+                "tokens":      0,        # VoxCPM has no discrete tokens
+                "is_final":    is_final,
+            }))
+            await ws.send(wav_chunk)
+            chunk_index += 1
+
+        total_s = round(time.perf_counter() - t0, 4)
+        ts_done = _tsms()
+        _log(f"{ts_done}  OUT  port={port}  text_id={text_id}  call_id={call_id}"
+             f"  total_ms={round(total_s*1000)}")
+
+        first_llm_ms = timing.get("first_llm_ms") if timing else None
+        first_vae_ms = timing.get("first_vae_ms") if timing else None
+
+        await ws.send(json.dumps({
+            "type":            "audio_done",
+            "call_id":         call_id,
+            "text_id":         text_id,
+            "text":            text,
+            "chunks":          chunk_index,
+            "total_tokens":    0,
+            "total_wav_bytes": total_wav_b,
+            "sample_rate":     sample_rate,
+            "llm_s":           round(first_llm_ms / 1000, 4) if first_llm_ms else total_s,
+            "decode_s":        round(first_vae_ms / 1000, 4) if first_vae_ms else 0.0,
+            "rtf":             0.0,
+            "avg_rtf":         0.0,
+        }))
+
+        print(
+            f"[{ts_done}] :{port} {call_id}  voxcpm_stream_done"
+            f"  chunks={chunk_index}"
+            f"  total={round(total_s*1000)}ms"
+            f"  wav={total_wav_b}B"
+            f"  ttfa={first_llm_ms}ms"
+            f"  vae={first_vae_ms}ms",
+            flush=True,
+        )
+
+    except Exception as e:
+        ts_err = _tsms()
+        print(f"[{ts_err}] :{port} {call_id}  VOXCPM STREAM ERROR: {e}", flush=True)
+        record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
+        try:
+            await ws.send(json.dumps({
+                "type": "error", "call_id": call_id, "text_id": text_id, "error": str(e),
+            }))
+        except Exception:
+            pass
+
+
+async def _handle_request_voxcpm(
+    ws: websockets.ServerConnection,
+    synth,           # VoxCpmSynthesizer
+    text: str,
+    call_id: str,
+    text_id: str,
+    port: int,
+    ts_text_recv: str,
+) -> None:
+    """Non-streaming VoxCPM2 request — accumulate all PCM, send one WAV response.
+
+    Matches the Mira non-streaming protocol:
+      Frame 1: JSON { type:"audio", call_id, text_id, sample_rate, wav_bytes, ... }
+      Frame 2: bytes  full WAV
+    """
+    t0 = time.perf_counter()
+    ts_llm_start = _tsms()
+    _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
+
+    try:
+        wav_bytes, sample_rate = await asyncio.wait_for(
+            synth.synthesize(text), timeout=60.0
+        )
+        total_s = round(time.perf_counter() - t0, 4)
+        ts_done = _tsms()
+        _log(f"{ts_done}  OUT  port={port}  text_id={text_id}  call_id={call_id}"
+             f"  total_ms={round(total_s*1000)}")
+
+        if _audio_out_dir is not None:
+            wav_file = _audio_out_dir / f"{text_id}.wav"
+            wav_file.write_bytes(wav_bytes)
+            print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
+
+        await ws.send(json.dumps({
+            "type":       "audio",
+            "call_id":    call_id,
+            "text_id":    text_id,
+            "text":       text,
+            "audio_tokens": "",           # no discrete tokens for VoxCPM
+            "sample_rate": sample_rate,
+            "wav_bytes":  len(wav_bytes),
+            "is_final":   True,
+            "llm_s":      total_s,        # VoxCPM integrates generation + decode
+            "decode_s":   0.0,
+        }))
+        await ws.send(wav_bytes)
+
+        print(
+            f"[{ts_done}] :{port} {call_id}  voxcpm_done"
+            f"  total={round(total_s*1000)}ms"
+            f"  wav={len(wav_bytes)}B",
+            flush=True,
+        )
+
+    except Exception as e:
+        ts_err = _tsms()
+        print(f"[{ts_err}] :{port} {call_id}  VOXCPM ERROR: {e}", flush=True)
+        record_ws_error(call_id, port=port, text_id=text_id, error=str(e))
+        await ws.send(json.dumps({
+            "type": "error", "call_id": call_id, "text_id": text_id, "error": str(e),
+        }))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
 async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
     """Handle one persistent WebSocket connection (one call = one socket)."""
     peer = ws.remote_address
@@ -319,8 +510,22 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
 
             ts_text_recv = _tsms()
             _log(f"{ts_text_recv}  RECV port={port}  text_id={text_id}  call_id={call_id}  streaming={streaming}  text={text[:60]!r}")
-            print(f"[{ts_text_recv}] :{port} {call_id}  {'stream' if streaming else 'req'}  {text[:60]!r}", flush=True)
+            print(f"[{ts_text_recv}] :{port} {call_id}  {'stream' if streaming else 'req'}  model={_MODEL_TYPE}  {text[:60]!r}", flush=True)
 
+            # ── Dispatch to the appropriate model path ──────────────────────
+            if _MODEL_TYPE == "voxcpm":
+                synth_voxcpm = await _get_voxcpm_synthesizer()
+                if streaming:
+                    await _handle_streaming_request_voxcpm(
+                        ws, synth_voxcpm, text, call_id, text_id, port, ts_text_recv
+                    )
+                else:
+                    await _handle_request_voxcpm(
+                        ws, synth_voxcpm, text, call_id, text_id, port, ts_text_recv
+                    )
+                continue
+
+            # ── Mira / sglang path below ────────────────────────────────────
             synth = await _get_synthesizer()
 
             if streaming:
@@ -546,7 +751,12 @@ async def _warmup_all_ports(ports: list[int]) -> None:
 
     All warmup decode requests are coalesced by TTSCodec's internal batch queue
     into one GPU forward pass, so firing all ports simultaneously is safe.
+    For VoxCPM the warm-up is already done inside VoxCpmSynthesizer.initialize()
+    so this is a no-op for that model type.
     """
+    if _MODEL_TYPE == "voxcpm":
+        # VoxCPM warms up during model load — no separate port warm-up needed.
+        return
     sentence = settings.tts_model.warmup_sentence
     if not sentence or not ports:
         return
@@ -597,7 +807,11 @@ async def _http_list_ports(req: web.Request) -> web.Response:
 
 async def _http_ready(req: web.Request) -> web.Response:
     """GET /ready  — 200 once the model is loaded."""
-    if _synthesizer is None:
+    if _MODEL_TYPE == "voxcpm":
+        ready = _voxcpm_synthesizer is not None
+    else:
+        ready = _synthesizer is not None
+    if not ready:
         return web.Response(status=503, text="loading")
     return web.json_response({"ready": True, "ports": sorted(_open_ports)})
 
@@ -630,8 +844,13 @@ async def _run_control_api(ctrl_port: int) -> None:
 
 async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None) -> None:
     # Load model once before binding ports
-    synth = await _get_synthesizer()
-    await _warmup(synth)
+    print(f"[{_ts()}] model_type = {_MODEL_TYPE}", flush=True)
+    if _MODEL_TYPE == "voxcpm":
+        await _get_voxcpm_synthesizer()
+        # VoxCPM warm-up is handled inside initialize() — nothing more needed here
+    else:
+        synth = await _get_synthesizer()
+        await _warmup(synth)
 
     # Start HTTP control API if requested
     if ctrl_port:

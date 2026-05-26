@@ -194,14 +194,40 @@ _TELUGU_FALLBACK: List[str] = [
     "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
 
-# Pick fallback list based on configured checkpoint.
+# English sentences used when model_type == "voxcpm"
+_ENGLISH_FALLBACK: List[str] = [
+    # short
+    "Hello, how can I help you today?",
+    "Please hold on for a moment.",
+    "Your payment was received successfully.",
+    "Can you please confirm your account number?",
+    "We will contact you shortly.",
+    # medium
+    "Hello, I am calling from Bajaj Finance on a recorded line. Am I speaking with the account holder?",
+    "Your EMI of three thousand seven hundred fifty rupees is due on the fifteenth of this month.",
+    "According to our records, your outstanding balance is five thousand rupees. Please pay at your earliest convenience.",
+    "Your loan application has been approved and the amount will be transferred within two to three working days.",
+    # long
+    "We would like to inform you that your loan application has been approved and fifty thousand rupees will be deposited directly into your bank account ending in six seven eight nine within two to three working days.",
+    "As per our company policy, if the payment is not received within thirty days, it may negatively impact your credit score, so please ensure timely payment of eight thousand two hundred fifty rupees.",
+    "You can pay your EMI through our mobile application using NEFT, IMPS, or UPI, and our customer care team is always available to assist you with any issues.",
+]
+
+# Pick fallback list based on configured model type and checkpoint.
 try:
     from flowtts.core.config import settings as _cfg
-    _checkpoint = _cfg.tts_model.checkpoint_lg
+    _model_type   = _cfg.model_type
+    _checkpoint   = _cfg.tts_model.checkpoint_lg
 except Exception:
-    _checkpoint = "hindi"
+    _model_type   = "mira"
+    _checkpoint   = "hindi"
 
-_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
+if _model_type == "voxcpm":
+    _FALLBACK_TEXTS: List[str] = _ENGLISH_FALLBACK
+elif _checkpoint == "telugu":
+    _FALLBACK_TEXTS = _TELUGU_FALLBACK
+else:
+    _FALLBACK_TEXTS = _HINDI_FALLBACK + _HINDI_MIXED_STRESS
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +493,13 @@ def _ctrl_post(ctrl_port: int, path: str, timeout: float = 2.0):
         return json.loads(r.read())
 
 
-def _launch_server(ctrl_port: int, save_audio: Optional[str] = None) -> subprocess.Popen:
-    """Start flowtts.server with --ports 0 (no WS ports) + control API."""
+def _launch_server(ctrl_port: int, save_audio: Optional[str] = None,
+                   model_type: Optional[str] = None) -> subprocess.Popen:
+    """Start flowtts.server with --ports 0 (no WS ports) + control API.
+
+    model_type: "mira" or "voxcpm" — forwarded as FLOWTTS_MODEL_TYPE.
+                When None the env-var is left as-is (inherits from parent).
+    """
     cmd = [
         _VENV_PYTHON, "-m", "flowtts.server",
         "--ports", "0",
@@ -478,6 +509,8 @@ def _launch_server(ctrl_port: int, save_audio: Optional[str] = None) -> subproce
         cmd += ["--save-audio", save_audio]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(_FLOWTTS_DIR)
+    if model_type:
+        env["FLOWTTS_MODEL_TYPE"] = model_type
     proc = subprocess.Popen(
         cmd, cwd=str(_FLOWTTS_DIR), env=env,
         stdout=sys.stdout, stderr=sys.stderr,
@@ -534,6 +567,7 @@ async def run_test(
     skip_decoder: bool = False,
     streaming: bool = False,
     save_chunks: bool = False,
+    model_type: Optional[str] = None,   # "mira" | "voxcpm" | None (inherit)
     # external-server args
     ports: Optional[List[int]] = None,
 ) -> List[RequestResult]:
@@ -551,7 +585,7 @@ async def run_test(
 
     if launch:
         # ── Managed: start server, open ports on demand ──────────────────────
-        server_proc = _launch_server(ctrl_port, save_audio)
+        server_proc = _launch_server(ctrl_port, save_audio, model_type=model_type)
         try:
             await _wait_server_ready(ctrl_port)
         except TimeoutError as e:
@@ -803,6 +837,8 @@ async def main(args: argparse.Namespace) -> None:
         streaming = _settings.streaming.enabled
     save_chunks = getattr(args, "save_chunks", False)
 
+    model_type = getattr(args, "model_type", None) or None  # None = inherit from env
+
     if args.launch:
         results = await run_test(
             args.mode, args.requests, out_dir,
@@ -814,6 +850,7 @@ async def main(args: argparse.Namespace) -> None:
             skip_decoder=args.skip_decoder,
             streaming=streaming,
             save_chunks=save_chunks,
+            model_type=model_type,
         )
     else:
         # Prefer ctrl API for port discovery if available and no explicit port list given
@@ -832,6 +869,7 @@ async def main(args: argparse.Namespace) -> None:
             ports=port_list,
             streaming=streaming,
             save_chunks=save_chunks,
+            model_type=model_type,
         )
 
     ok = _print_summary(results, args.mode, out_dir)
@@ -868,6 +906,14 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
+    parser.add_argument(
+        "--model-type", dest="model_type", choices=["mira", "voxcpm"], default=None,
+        help=(
+            "TTS model to use: 'mira' (default, MiraITS/sglang) or 'voxcpm' (VoxCPM2). "
+            "Sets FLOWTTS_MODEL_TYPE in the launched server subprocess. "
+            "When omitted the value from the current environment is used."
+        ),
+    )
 
     # External-server port selection
     pg = parser.add_mutually_exclusive_group()
