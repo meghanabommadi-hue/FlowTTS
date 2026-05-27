@@ -142,16 +142,29 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         print(f"  ref_audio         : {ref_path if self._prompt_latents else 'none (zero-shot)'}", flush=True)
         print("=" * 60 + "\n", flush=True)
 
-        # Warm-up
+        # Warm-up — use zero-shot mode if ref_audio_text is missing
         sentence = cfg.warmup_sentence
         if sentence:
             logger.info("voxcpm_warmup", sentence=sentence[:40])
             t0 = time.monotonic()
             try:
+                # If we have ref audio but no text, temporarily suppress
+                # prompt_latents so the warmup can run in zero-shot mode.
+                saved_latents = self._prompt_latents
+                saved_text = self._prompt_text
+                if self._prompt_latents is not None and not self._prompt_text:
+                    logger.info("voxcpm_warmup_zero_shot",
+                                reason="ref_audio_text not set — warmup runs zero-shot")
+                    self._prompt_latents = None
+                    self._prompt_text = ""
                 await self.synthesize(sentence)
+                self._prompt_latents = saved_latents
+                self._prompt_text = saved_text
                 logger.info("voxcpm_warmup_done",
                             ms=round((time.monotonic() - t0) * 1000))
             except Exception as e:
+                self._prompt_latents = saved_latents
+                self._prompt_text = saved_text
                 logger.warning("voxcpm_warmup_failed", error=str(e))
 
     async def synthesize(self, text: str) -> SynthResult:
@@ -164,10 +177,15 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         first_llm_ms = None
         first_vae_ms = None
 
+        # VoxCPM2 requires prompt_text when prompt_latents is provided.
+        # Fall back to zero-shot if text transcript is not configured.
+        use_latents = self._prompt_latents if self._prompt_text else None
+        use_text = self._prompt_text
+
         async for chunk in self._server.generate(
             target_text=text,
-            prompt_latents=self._prompt_latents,
-            prompt_text=self._prompt_text,
+            prompt_latents=use_latents,
+            prompt_text=use_text,
             cfg_value=cfg.cfg_value,
             temperature=cfg.temperature,
             max_generate_length=cfg.max_generate_length,
@@ -201,10 +219,15 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         first_llm_ms = None
         first_vae_ms = None
 
+        # VoxCPM2 requires prompt_text when prompt_latents is provided.
+        # Fall back to zero-shot if text transcript is not configured.
+        use_latents = self._prompt_latents if self._prompt_text else None
+        use_text = self._prompt_text
+
         async for chunk in self._server.generate(
             target_text=text,
-            prompt_latents=self._prompt_latents,
-            prompt_text=self._prompt_text,
+            prompt_latents=use_latents,
+            prompt_text=use_text,
             cfg_value=cfg.cfg_value,
             temperature=cfg.temperature,
             max_generate_length=cfg.max_generate_length,

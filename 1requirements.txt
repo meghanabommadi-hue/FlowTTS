@@ -8,6 +8,7 @@ triton==3.4.0
 sglang
 flashinfer-python==0.3.1
 flashinfer-cubin==0.5.2
+flash-attn==2.8.3+cu12torch2.8cxx11abitrue  # required for VoxCPM2 (nanovllm_voxcpm)
 transformers==4.57.3
 accelerate==1.12.0
 safetensors==0.7.0
@@ -54,8 +55,7 @@ prometheus-client==0.24.0
 sentry-sdk==2.49.0
 
 # ── Inference extras ───────────────────────────────────────────────────────────
-outlines==0.1.11
-outlines-core==0.1.26
+
 llguidance==0.7.30
 xgrammar==0.1.29
 interegular==0.3.3

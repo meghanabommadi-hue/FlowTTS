@@ -10,13 +10,26 @@ bash run.sh --ctrl-port 8764
 ## Launch server (VoxCPM)
 ```bash
 cd /home/ubuntu/FlowTTS
-source .venv/bin/activate
 FLOWTTS_MODEL_TYPE=voxcpm \
-FLOWTTS_VOXCPM__MODEL_DIR=/home/ubuntu/flow_voxcpm/model \
-bash run.sh --ctrl-port 8764
+.venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
 ```
 
-Set `FLOWTTS_VOXCPM__REF_AUDIO` and `FLOWTTS_VOXCPM__REF_AUDIO_TEXT` for voice cloning (optional).
+Defaults already point to the correct paths:
+- Model: `/home/ubuntu/voxcpm/model`
+- Ref audio: `/home/ubuntu/voxcpm/deployment/simran_3s.wav`
+- Ref audio text: `"नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।"`
+
+Override with env vars:
+```bash
+FLOWTTS_MODEL_TYPE=voxcpm \
+FLOWTTS_VOXCPM__REF_AUDIO=/home/ubuntu/voxcpm/deployment/simran_3s.wav \
+FLOWTTS_VOXCPM__REF_AUDIO_TEXT="नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।" \
+.venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
+```
+
+> **Note:** `REF_AUDIO_TEXT` is required when `REF_AUDIO` is set.
+> If `REF_AUDIO_TEXT` is empty the server falls back to zero-shot mode automatically.
+> Model weights: `/home/ubuntu/voxcpm/model/` (4.6 GB safetensors, real weights — not LFS pointers).
 
 ---
 

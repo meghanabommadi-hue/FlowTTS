@@ -127,15 +127,16 @@ class VoxCpmSettings(BaseModel):
 
     # Path to the VoxCPM2 model checkpoint directory.
     # Must contain config.json, tokenizer.json and *.safetensors weights.
-    model_dir: str = f"{_MODELS_DIR}/voxcpm2"
+    model_dir: str = "/home/ubuntu/voxcpm/model"
 
     # Optional reference (prompt) audio used for voice cloning.
     # Set to "" or a non-existent path to run in zero-shot mode.
-    ref_audio: str = f"{_MODELS_DIR}/voxcpm2/ref_audio.wav"
+    ref_audio: str = "/home/ubuntu/voxcpm/deployment/simran_3s.wav"
 
     # Text transcript that matches the reference audio (required when
     # ref_audio is set, as VoxCPM2 needs text+latent prefix together).
-    ref_audio_text: str = ""
+    # If empty, voice cloning is disabled and zero-shot synthesis is used.
+    ref_audio_text: str = "नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।"
 
     # Warmup sentence — synthesized once at startup to prime CUDA graphs.
     warmup_sentence: str = (
@@ -143,10 +144,10 @@ class VoxCpmSettings(BaseModel):
     )
 
     # ------- VoxCPM2 engine knobs -------
-    inference_timesteps: int = 6       # diffusion ODE steps (fewer = faster, lower quality)
-    max_num_batched_tokens: int = 512  # prefill batch size (lower = better TTFA under load)
-    max_num_seqs: int = 64             # max sequences decoded in parallel
-    max_model_len: int = 4096          # max KV sequence length
+    inference_timesteps: int = 6        # diffusion ODE steps (fewer = faster, lower quality)
+    max_num_batched_tokens: int = 16384 # must be >= max_model_len; prefill batch size
+    max_num_seqs: int = 64              # max sequences decoded in parallel
+    max_model_len: int = 4096           # max KV sequence length
     gpu_memory_utilization: float = 0.80
 
     # Disable CUDA graph compilation — can be faster for small models / low batch.
