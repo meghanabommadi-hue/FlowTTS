@@ -1,74 +1,69 @@
-"""Pipeline position: SYNTHESIS SERVICE — singleton wrapper around the model.
+"""Pipeline position: SYNTHESIS ENGINE — model factory & process-level singleton.
 
-Role in pipeline:
-  Provides a process-wide singleton (synthesis_service) that both the
-  worker (worker.py) and the single-process server (server.py) call via:
+This module is the only place that knows which concrete synthesizer class maps
+to which model_type string.  Everything else (server.py, worker.py, …) only
+imports BaseSynthesizer and calls get_synthesizer().
 
-      audio_tokens = await synthesis_service.synthesize(text)
+Adding a new model:
+  1. Create flowtts/synthesis/<name>.py  →  class <Name>Synthesizer(BaseSynthesizer)
+  2. Add one line to _REGISTRY below.
+  3. Done.  server.py needs zero changes.
 
-  Ensures the sglang Engine and ncodec TTSCodec are loaded exactly once per
-  process, no matter how many concurrent requests arrive.
+Usage:
+    from flowtts.synthesis.engine import get_synthesizer
 
-Lazy initialisation:
-  initialize() is called on first use (worker._process_job) or at server
-  startup (server._get_synthesizer). Subsequent calls are no-ops.
-
-Async safety:
-  synthesize() delegates to FlowTtsSynthesizer.synthesize() which calls
-  sgl.Engine.async_generate() — non-blocking, safe for concurrent coroutines.
-  The sglang Engine serialises GPU requests internally.
+    synth = await get_synthesizer()   # loads once, returns same object on repeat calls
+    result = await synth.synthesize(text)
 """
 
 from __future__ import annotations
 
 import structlog
 
-from flowtts.synthesis.models import FlowTtsSynthesizer
-
+from flowtts.core.config import settings
+from flowtts.synthesis.base import BaseSynthesizer
 
 logger = structlog.get_logger(__name__)
 
+# ── Registry: model_type → synthesizer class ──────────────────────────────
+# To add a new model: import its class and add one entry here.
+def _build_registry() -> dict:
+    from flowtts.synthesis.mira   import MiraSynthesizer    # noqa: PLC0415
+    from flowtts.synthesis.voxcpm import VoxCpmSynthesizer  # noqa: PLC0415
+    return {
+        "mira":   MiraSynthesizer,
+        "voxcpm": VoxCpmSynthesizer,
+    }
 
-class SynthesisService:
-    """Singleton service that manages TTS synthesis."""
-
-    _instance: "SynthesisService | None" = None
-    _initialized: bool = False
-
-    def __new__(cls) -> "SynthesisService":
-        if cls._instance is None:
-            cls._instance = super(SynthesisService, cls).__new__(cls)
-        return cls._instance
-
-    async def initialize(self) -> None:
-        """Initialize the underlying synthesizer."""
-        if self._initialized:
-            logger.info("synthesis_service_already_initialized")
-            return
-
-        logger.info("initializing_synthesis_service")
-        try:
-            self.synthesizer: FlowTtsSynthesizer = FlowTtsSynthesizer()
-            await self.synthesizer.initialize()
-            self._initialized = True
-            logger.info("synthesis_service_initialized")
-        except Exception as e:
-            logger.error("synthesis_service_initialization_failed", error=str(e))
-            raise
-
-    async def synthesize(self, text: str) -> str:
-        """Generate audio token sequence for the given text."""
-        if not self._initialized:
-            raise RuntimeError(
-                "SynthesisService not initialized. "
-                "Call initialize() first during application startup."
-            )
-        return await self.synthesizer.synthesize(text)
-
-    @property
-    def is_initialized(self) -> bool:
-        return self._initialized
+# Process-level singleton
+_synthesizer: BaseSynthesizer | None = None
 
 
-synthesis_service = SynthesisService()
+async def get_synthesizer() -> BaseSynthesizer:
+    """Return the initialized synthesizer for settings.model_type.
 
+    Loads the model on the first call; subsequent calls return the cached
+    instance immediately (no re-initialization).
+    """
+    global _synthesizer
+    if _synthesizer is not None:
+        return _synthesizer
+
+    model_type = settings.model_type
+    registry = _build_registry()
+
+    if model_type not in registry:
+        raise ValueError(
+            f"Unknown model_type {model_type!r}.  "
+            f"Available: {sorted(registry)}"
+        )
+
+    cls = registry[model_type]
+    logger.info("synthesizer_loading", model_type=model_type, cls=cls.__name__)
+
+    synth = cls()
+    await synth.initialize()
+    _synthesizer = synth
+
+    logger.info("synthesizer_ready", model_type=model_type)
+    return _synthesizer

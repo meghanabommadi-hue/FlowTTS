@@ -1,5 +1,11 @@
-"""Synthesis: text → audio tokens (TTS model)."""
+"""Synthesis: text → audio.
 
-from flowtts.synthesis.engine import synthesis_service
+Public API:
+  get_synthesizer()  →  BaseSynthesizer   (from flowtts.synthesis.engine)
+  BaseSynthesizer, SynthChunk, SynthResult (from flowtts.synthesis.base)
+"""
 
-__all__ = ["synthesis_service"]
+from flowtts.synthesis.base   import BaseSynthesizer, SynthChunk, SynthResult
+from flowtts.synthesis.engine import get_synthesizer
+
+__all__ = ["BaseSynthesizer", "SynthChunk", "SynthResult", "get_synthesizer"]
