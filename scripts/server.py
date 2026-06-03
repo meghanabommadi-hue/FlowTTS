@@ -14,9 +14,16 @@ Then open: http://localhost:8080
 import asyncio
 import time
 import json
+import logging
 from collections import defaultdict, deque
 from pathlib import Path
 from aiohttp import web, ClientSession, ClientTimeout
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 METRICS_PORT = 8764
 METRICS_PATH = "/metrics"
@@ -24,8 +31,9 @@ SERVE_PORT   = 8080
 SCRAPE_INTERVAL_S = 15
 MAX_SNAPSHOTS     = 1440  # ~6 hours at 15s interval per node
 
-# IPs loaded from ips.txt at startup
+# IPs loaded from ips.txt at startup (plain IPs, no port)
 NODES: list[str] = []
+NODE_PORTS: dict[str, int] = {}  # ip -> port override
 
 # cache[ip] = deque of {"ts": unix_ms, "metrics": {name: [{labels, value}]}}
 cache: dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_SNAPSHOTS))
@@ -65,7 +73,8 @@ def parse_prometheus(text: str) -> dict:
 # ── Background scraper ───────────────────────────────────────────────────────
 
 async def scrape_node(session: ClientSession, ip: str):
-    url = f"http://{ip}:{METRICS_PORT}{METRICS_PATH}"
+    port = NODE_PORTS.get(ip, METRICS_PORT)
+    url = f"http://{ip}:{port}{METRICS_PATH}"
     try:
         async with session.get(url, timeout=ClientTimeout(total=5)) as resp:
             text = await resp.text()
@@ -74,14 +83,15 @@ async def scrape_node(session: ClientSession, ip: str):
                 "metrics": parse_prometheus(text),
             }
             cache[ip].append(snapshot)
-    except Exception:
-        pass  # node unreachable — just skip this tick
+    except Exception as e:
+        logging.warning(f"scrape {ip}: {e}")
 
 
 async def scrape_loop():
     while True:
         async with ClientSession() as session:
             await asyncio.gather(*[scrape_node(session, ip) for ip in NODES])
+        logging.info(f"scrape cycle done — {len(NODES)} nodes")
         await asyncio.sleep(SCRAPE_INTERVAL_S)
 
 
@@ -92,7 +102,9 @@ async def handle_proxy(request: web.Request) -> web.Response:
     host = request.query.get("host")
     if not host:
         return web.Response(status=400, text="Missing ?host=")
-    url = f"http://{host}:{METRICS_PORT}{METRICS_PATH}"
+    ip = host.split(":")[0]
+    port = NODE_PORTS.get(ip, METRICS_PORT)
+    url = f"http://{ip}:{port}{METRICS_PATH}"
     try:
         async with ClientSession() as session:
             async with session.get(url, timeout=ClientTimeout(total=5)) as resp:
@@ -208,15 +220,21 @@ async def handle_index(request: web.Request) -> web.FileResponse:
 
 async def on_startup(app):
     # Load IPs
-    global NODES
+    global NODES, NODE_PORTS
     import sys
     ips_file = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).parent.parent / "data" / "ips.txt")
     try:
         with open(ips_file) as f:
-            NODES = [
-                line.strip() for line in f
-                if line.strip() and not line.strip().startswith("#")
-            ]
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if ":" in line:
+                    ip, port = line.rsplit(":", 1)
+                    NODES.append(ip)
+                    NODE_PORTS[ip] = int(port)
+                else:
+                    NODES.append(line)
         print(f"Loaded {len(NODES)} nodes from {ips_file}")
     except FileNotFoundError:
         print("ips.txt not found — no background scraping")

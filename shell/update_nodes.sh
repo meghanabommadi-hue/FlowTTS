@@ -17,7 +17,11 @@ while IFS= read -r line; do
   line="${line%%#*}"   # strip inline comments
   line="${line// /}"   # strip spaces
   [ -z "$line" ] && continue
-  NODES+="  \"${line}:8764\",\n"
+  if [[ "$line" == *:* ]]; then
+    NODES+="  \"${line}\",\n"
+  else
+    NODES+="  \"${line}:8764\",\n"
+  fi
 done < "$IPS_FILE"
 NODES+="];"
 
