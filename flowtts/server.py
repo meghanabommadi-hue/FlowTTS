@@ -812,7 +812,7 @@ async def _warmup(synth: FlowTtsSynthesizer) -> None:
     # Warm up each voice with batch_size concurrent requests, one voice at a time.
     # None = default voice, then each named voice in order.
     batch_size  = 40
-    all_voices: list[str | None] = [None] + list(VOICE_REF_AUDIO.keys())
+    all_voices: list[str | None] = ["simran", "tara"]
 
     async def _one(sentence: str, voice_id: str | None) -> bool:
         try:
