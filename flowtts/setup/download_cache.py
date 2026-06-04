@@ -26,7 +26,7 @@ from huggingface_hub import HfApi, hf_hub_download
 
 HF_REPOS = {
     "simran": ("Shubhangi7/simran_cache_full",   "parquet"),
-    "tara":   ("Shubhangi7/tara_cache_full_old", "parquet"),
+    "tara":   ("Shubhangi7/tara_cache_full", "parquet"),
 }
 
 def resolve_token():
