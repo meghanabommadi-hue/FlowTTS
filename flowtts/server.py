@@ -111,9 +111,8 @@ _wav_cache_base: Path = Path.home() / "FlowTTS"
 
 # Explicit per-voice cache directory map. Keys match voice_id sent by clients.
 _VOICE_CACHE_MAP: dict[str, str] = {
-    "tara":         "cached_data_tara",
-    "simran":       "cached_data_simran",
-    "simran_june":  "cached_data_simran_june",
+    "tara":    "cached_data_tara_cache_full",
+    "simran":  "cached_data_simran_june",
     "vikram":       "cached_data_vikram",
     "daya":         "cached_data_daya",
     "vanita":       "cached_data_vanita",

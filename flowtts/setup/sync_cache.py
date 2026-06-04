@@ -34,12 +34,12 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 VOICES = {
     "tara": {
-        "repo":      "Shubhangi7/tara_cache_full",
-        "cache_dir": Path.home() / "FlowTTS/cached_data_tara",
+        "repo":      "Shubhangi7/tara_cache_full_old",
+        "cache_dir": Path.home() / "FlowTTS/cached_data_tara_cache_full",
     },
     "simran": {
         "repo":      "Shubhangi7/simran_cache_full",
-        "cache_dir": Path.home() / "FlowTTS/cached_data_simran",
+        "cache_dir": Path.home() / "FlowTTS/cached_data_simran_june",
     },
 }
 

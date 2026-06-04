@@ -25,10 +25,8 @@ from pathlib import Path
 from huggingface_hub import HfApi, hf_hub_download
 
 HF_REPOS = {
-    "simran":           ("Shubhangi7/simran",           "wav"),
-    "tara":             ("Shubhangi7/tara",             "wav"),
-    "simran_june":      ("Shubhangi7/simran_june",      "parquet"),
-    "tara_cache_full":  ("Shubhangi7/tara_cache_full",  "parquet"),
+    "simran": ("Shubhangi7/simran_cache_full",   "parquet"),
+    "tara":   ("Shubhangi7/tara_cache_full_old", "parquet"),
 }
 
 def resolve_token():
