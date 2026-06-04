@@ -21,10 +21,10 @@ from pathlib import Path
 #   local_dir: absolute path where the model lands (matches config.py defaults)
 # ---------------------------------------------------------------------------
 MODELS = {
-    "MeghanaKap/MiraTTSTelugu": {
-        "hf_repo": "MeghanaKap/MiraTTSTelugu",
-        "local_dir": str(Path.home() / "models" / "MeghanaKap-MiraTTSTelugu"),
-    },
+    #"MeghanaKap/MiraTTSTelugu": {
+    #    "hf_repo": "MeghanaKap/MiraTTSTelugu",
+    #    "local_dir": str(Path.home() / "models" / "MeghanaKap-MiraTTSTelugu"),
+    #},
     "Shubhangi/mira_hindi_second_round": {
         "hf_repo": "Shubhangi7/mira_hindi_second_round",
         "local_dir": str(Path.home() / "models" / "Shubhangi7-mira_hindi_second_round"),

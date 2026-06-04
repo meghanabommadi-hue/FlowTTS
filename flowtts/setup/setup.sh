@@ -15,6 +15,7 @@ uv pip install git+https://github.com/ysharma3501/FlashSR.git@2a69326250613c0a0f
 echo "==> Installing FastBiCodec from git"
 uv pip install git+https://github.com/ysharma3501/FastBiCodec.git@612ba9e29d14b9752dc3174616a6cb5bafe5af15
 
+export HF_TOKEN="${HF_TOKEN:-}"
 echo "==> Downloading models"
 python3 "$SCRIPT_DIR/download_models.py"
 

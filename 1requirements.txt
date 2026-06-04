@@ -54,8 +54,8 @@ prometheus-client==0.24.0
 sentry-sdk==2.49.0
 
 # ── Inference extras ───────────────────────────────────────────────────────────
-outlines==0.1.11
-outlines-core==0.1.26
+#outlines==0.1.11
+#outlines-core==0.1.26
 llguidance==0.7.30
 xgrammar==0.1.29
 interegular==0.3.3
