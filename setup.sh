@@ -12,4 +12,4 @@ echo "==> Updating nodes..."
 bash "$ROOT/shell/update_nodes.sh"
 
 echo "==> Starting server..."
-"$ROOT/.venv/bin/python" "$ROOT/scripts/server.py"
+exec "$ROOT/.venv/bin/python" "$ROOT/scripts/server.py"

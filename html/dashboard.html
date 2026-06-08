@@ -185,8 +185,9 @@
 
 <div id="loading">Loading metrics...</div>
 
-<!-- Summary panel: always visible above tabs -->
-<div id="summary-panel" style="display:none">
+<!-- Summary panels row -->
+<div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:20px">
+<div id="summary-panel" style="display:none;flex:7;min-width:0">
   <div class="summary-top">
     <div class="summary-stat">
       <div class="metric-label">Active WebSockets</div>
@@ -265,6 +266,45 @@
   </div>
 </div>
 
+<!-- Ext servers summary panel -->
+<div id="ext-summary-panel" style="display:none;flex:3;min-width:0;position:sticky;top:16px">
+  <div style="background:#1e2130;border:1px solid #4f6ef7;border-radius:12px;padding:16px">
+    <div style="font-size:0.65rem;font-weight:700;color:#4f6ef7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+      <span>Bajaj FlowTTS</span>
+      <span id="ext-status" style="font-size:0.7rem;font-weight:700">—</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Avg E2E</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#4f6ef7" id="ext-avg-e2e">—</div>
+        <div class="metric-sub" id="ext-avg-e2e-sub"></div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Active WS</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#4ade80" id="ext-ws-active">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">WS (single node)</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#4f6ef7" id="ext-avg-ws">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Cache Hit Rate</div>
+        <div style="font-size:1.2rem;font-weight:700" id="ext-cache-rate">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Cache Hits</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#4ade80" id="ext-cache-hits">—</div>
+        <div class="metric-sub" id="ext-cache-misses-sub"></div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Requests</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#94a3b8" id="ext-total-reqs">—</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div><!-- end panels row -->
+
 <div id="tab-cards" class="tab-content active">
   <div class="grid" id="grid"></div>
 </div>
@@ -283,87 +323,22 @@
 
 <script>
 // ── CONFIG ───────────────────────────────────────────────────────────────────
+const EXT_NODES = [
+  "https://models.kapturecrm.com/bajaj-flowtts/metrics",
+];
+const EXT_NODES_COUNT = 1; // nginx returns single-node metrics (round-robin)
+
 const NODES = [
-  "34.21.135.48:8764",
-  "34.124.137.170:8764",
-  "34.21.242.229:8764",
-  "34.21.145.3:8764",
-  "34.142.244.175:8764",
-  "35.187.228.163:8764",
-  "34.142.134.84:8764",
-  "34.87.34.10:8764",
-  "35.240.226.68:8764",
-  "34.126.136.58:8764",
-  "34.142.242.225:8764",
-  "34.177.88.16:8764",
-  "34.21.163.39:8764",
-  "34.21.172.17:8764",
-  "35.185.180.160:8764",
-  "34.21.173.213:8764",
-  "35.247.140.201:8764",
-  "35.240.200.104:8764",
-  "34.87.131.132:8764",
-  "34.87.48.56:8764",
-  "34.142.151.46:8764",
-  "34.124.170.141:8764",
-  "35.240.228.9:8764",
-  "34.143.146.21:8764",
-  "34.143.150.30:8764",
-  "136.110.3.200:8764",
-  "34.126.158.53:8764",
-  "34.21.202.41:8764",
-  "34.87.145.240:8764",
-  "34.126.98.5:8764",
-  "34.21.187.128:8764",
-  "34.177.108.178:8764",
-  "35.247.187.196:8764",
-  "34.87.101.34:8764",
-  "136.110.21.58:8764",
-  "34.21.134.147:8764",
-  "34.21.215.80:8764",
-  "34.21.168.16:8764",
-  "34.21.191.80:8764",
-  "34.177.109.174:8764",
-  "34.21.181.59:8764",
-  "34.21.197.137:8764",
-  "34.143.247.114:8764",
-  "34.87.69.250:8764",
-  "34.87.176.135:8764",
-  "136.110.47.224:8764",
-  "35.185.177.129:8764",
-  "34.21.228.6:8764",
-  "34.21.161.180:8764",
-  "34.142.208.91:8764",
-  "35.240.232.176:8764",
-  "34.21.143.47:8764",
-  "34.21.248.176:8764",
-  "34.21.155.53:8764",
-  "35.197.158.54:8764",
-  "34.143.204.79:8764",
-  "34.21.225.83:8764",
-  "34.126.113.163:8764",
-  "136.110.13.137:8764",
-  "136.110.12.172:8764",
-  "34.87.17.116:8764",
-  "34.143.230.184:8764",
-  "34.21.245.13:8764",
-  "34.21.242.196:8764",
-  "34.124.151.74:8764",
-  "34.21.228.77:8764",
-  "34.21.191.54:8764",
-  "34.21.252.127:8764",
-  "34.143.244.233:8764",
-  "35.185.181.25:8764",
-  "34.21.199.62:8764",
-  "34.142.148.187:8764",
-  "34.143.130.89:8764",
-  "34.143.249.22:8764",
-  "35.198.230.65:8764",
-  "34.142.239.203:8764",
-  "136.110.36.217:8764",
-  "35.198.239.15:8764",
-  "34.177.103.150:8764",
-  "35.247.159.77:8764",
+  "136.110.47.167:8764",
+  "34.21.177.115:8764",
+  "136.110.56.115:8764",
+  "34.126.83.81:8764",
+  "136.110.16.177:8764",
+  "34.143.168.67:8764",
+  "34.21.236.70:8764",
+  "35.240.210.93:8764",
+  "136.110.10.215:8764",
+  "136.110.38.15:8764",
 ];
 const METRICS_PATH = "/metrics";
 const REFRESH_MS   = 10_000;
@@ -938,6 +913,35 @@ async function updateSummary(dataMap, upNodes, results) {
 
 // ── Main refresh loop ─────────────────────────────────────────────────────────
 
+async function refreshExt() {
+  try {
+    const resp = await fetch("/ext-summary", { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    const rate = d.cache_rate;
+
+    setIfChanged("ext-avg-e2e", d.avg_e2e_ms > 0 ? fmtMs(d.avg_e2e_ms) : "N/A");
+    setIfChanged("ext-avg-e2e-sub", `${d.up}/${d.total} nodes up`);
+    setIfChanged("ext-ws-active", d.total_ws);
+    setIfChanged("ext-avg-ws", d.avg_ws_per_node);
+    setIfChanged("ext-cache-rate", rate > 0 ? `${rate}%` : "N/A");
+    const cacheRateEl = document.getElementById("ext-cache-rate");
+    cacheRateEl.style.color = rate <= 0 ? "#475569" : rate >= 70 ? "#4ade80" : rate >= 30 ? "#f59e0b" : "#f87171";
+    setIfChanged("ext-cache-hits", fmt(d.cache_hits));
+    const cTotal = d.cache_hits + d.cache_misses;
+    setIfChanged("ext-cache-misses-sub", cTotal > 0 ? `${fmt(d.cache_misses)} misses · ${fmt(cTotal)} total` : "no cache data");
+    setIfChanged("ext-total-reqs", fmt(d.total_reqs));
+    const statusEl = document.getElementById("ext-status");
+    statusEl.textContent = d.up === 0 ? "DOWN" : d.total_ws > 0 ? "ACTIVE" : "IDLE";
+    statusEl.style.color = d.up === 0 ? "#f87171" : d.total_ws > 0 ? "#4ade80" : "#f59e0b";
+  } catch(e) {
+    setIfChanged("ext-avg-e2e", "—");
+    const statusEl = document.getElementById("ext-status");
+    statusEl.textContent = "—"; statusEl.style.color = "#475569";
+  }
+  document.getElementById("ext-summary-panel").style.display = "block";
+}
+
 async function refresh() {
   const results = await Promise.allSettled(NODES.map(h => fetchNode(h)));
 
@@ -977,6 +981,7 @@ async function refresh() {
   refreshTraffic();
   refreshReqRate();
   refreshNewReqs();
+  refreshExt();
 }
 
 function switchTab(name) {
