@@ -60,6 +60,46 @@ TTS_ERRORS    = Counter('tts_errors_total',     'Total failed TTS requests',    
 TTS_CACHE_HITS   = Counter('tts_cache_hits_total',   'Total TTS requests served from WAV cache', _LABELS)
 TTS_CACHE_MISSES = Counter('tts_cache_misses_total', 'Total TTS requests that bypassed cache',   _LABELS)
 
+# ── Distributed cache layer metrics ──────────────────────────────────────────
+_DCACHE_LABELS = ["gpu_id", "voice"]
+
+# Hit counters broken out by cache layer
+DCACHE_L1_HITS     = Counter('dcache_l1_hits_total',     'TTS requests served from L1 in-process cache',     _DCACHE_LABELS)
+DCACHE_L2_HITS     = Counter('dcache_l2_hits_total',     'TTS requests served from L2 shared storage',       _DCACHE_LABELS)
+DCACHE_LEGACY_HITS = Counter('dcache_legacy_hits_total', 'TTS requests served from legacy flat-dir caches',  _DCACHE_LABELS)
+DCACHE_PEER_HITS   = Counter('dcache_peer_hits_total',   'TTS requests served from peer-generated audio (stampede prevented)', _DCACHE_LABELS)
+DCACHE_MISSES      = Counter('dcache_misses_total',      'TTS cache misses that required GPU synthesis',      _DCACHE_LABELS)
+
+# Coordination metrics
+DCACHE_LOCK_WAITS         = Counter('dcache_lock_waits_total',          'Times a server waited for a peer to finish generation', _DCACHE_LABELS)
+DCACHE_DUPLICATE_PREVENTED = Counter('dcache_duplicate_prevented_total', 'Duplicate GPU synthesis jobs prevented by distributed lock', _DCACHE_LABELS)
+DCACHE_WRITE_ERRORS       = Counter('dcache_write_errors_total',        'Background cache write failures', _DCACHE_LABELS)
+
+# Timing histograms
+from prometheus_client import Histogram as _Histogram
+DCACHE_GENERATION_TIME = _Histogram(
+    'dcache_generation_seconds',
+    'Time spent on GPU synthesis (cache miss path)',
+    _DCACHE_LABELS,
+    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
+)
+DCACHE_WRITE_TIME = _Histogram(
+    'dcache_write_seconds',
+    'Time spent writing audio to cache storage',
+    _DCACHE_LABELS,
+    buckets=[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
+)
+DCACHE_LOCK_WAIT_TIME = _Histogram(
+    'dcache_lock_wait_seconds',
+    'Time spent waiting for a peer-held distributed lock',
+    _DCACHE_LABELS,
+    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 15.0, 30.0],
+)
+
+# L1 cache utilisation gauge (updated periodically)
+DCACHE_L1_UTIL_PCT = Gauge('dcache_l1_utilisation_pct', 'L1 cache utilisation as percentage of max_bytes', ['gpu_id'])
+DCACHE_L1_ENTRIES  = Gauge('dcache_l1_entries',         'Number of entries in the L1 in-process cache',   ['gpu_id'])
+
 # Short-audio alarm: fired when generated audio is suspiciously brief relative to input text.
 # Labels: gpu_id, voice, reason  (reason = "truncated" | "short_text_ok" not fired for the latter)
 TTS_SHORT_AUDIO = Counter(
@@ -434,6 +474,67 @@ def record_call(
             text_chars=text_chars,
             voice=_v,
         )
+
+
+def record_dcache_event(
+    source: str,
+    *,
+    voice: str = "",
+    generation_s: float = 0.0,
+    write_s: float = 0.0,
+    lock_wait_s: float = 0.0,
+) -> None:
+    """Record one distributed-cache event for Prometheus.
+
+    Parameters
+    ----------
+    source        : one of "l1_hit", "l2_hit", "legacy_hit", "peer_hit", "miss",
+                    "lock_wait", "duplicate_prevented", "write_error".
+    voice         : voice_id label value.
+    generation_s  : synthesis time in seconds (recorded on miss path).
+    write_s       : cache write time in seconds (recorded after background write).
+    lock_wait_s   : time spent waiting for peer lock (recorded on stampede wait).
+    """
+    labels = {"gpu_id": _gpu_id, "voice": voice}
+    if source == "l1_hit":
+        DCACHE_L1_HITS.labels(**labels).inc()
+    elif source == "l2_hit":
+        DCACHE_L2_HITS.labels(**labels).inc()
+    elif source == "legacy_hit":
+        DCACHE_LEGACY_HITS.labels(**labels).inc()
+    elif source == "peer_hit":
+        DCACHE_PEER_HITS.labels(**labels).inc()
+    elif source == "miss":
+        DCACHE_MISSES.labels(**labels).inc()
+    elif source == "lock_wait":
+        DCACHE_LOCK_WAITS.labels(**labels).inc()
+    elif source == "duplicate_prevented":
+        DCACHE_DUPLICATE_PREVENTED.labels(**labels).inc()
+    elif source == "write_error":
+        DCACHE_WRITE_ERRORS.labels(**labels).inc()
+
+    if generation_s > 0:
+        DCACHE_GENERATION_TIME.labels(**labels).observe(generation_s)
+    if write_s > 0:
+        DCACHE_WRITE_TIME.labels(**labels).observe(write_s)
+    if lock_wait_s > 0:
+        DCACHE_LOCK_WAIT_TIME.labels(**labels).observe(lock_wait_s)
+
+
+def refresh_dcache_l1_gauges() -> None:
+    """Update L1 cache utilisation gauges from the live CacheManager stats."""
+    try:
+        from flowtts.cache.cache_manager import get_cache_manager
+        mgr = get_cache_manager()
+        if mgr is None or mgr._l1 is None:
+            return
+        l1 = mgr._l1
+        DCACHE_L1_UTIL_PCT.labels(gpu_id=_gpu_id).set(
+            100 * l1.total_bytes / l1._max_bytes if l1._max_bytes else 0
+        )
+        DCACHE_L1_ENTRIES.labels(gpu_id=_gpu_id).set(l1.entry_count)
+    except Exception:
+        pass
 
 
 def record_port_change(open_ports: set) -> None:

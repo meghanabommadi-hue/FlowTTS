@@ -173,5 +173,62 @@ class Settings(BaseSettings):
 
     redis: RedisSettings = RedisSettings()
 
+    # Distributed cache layer configuration
+    # Architecture: L1 local SSD  →  L2 GCS  (with DragonflyDB/Redis locks)
+    class DistributedCacheSettings(BaseModel):
+        # Master switch. False → falls back to legacy per-voice flat-dir behaviour.
+        enabled: bool = True
+
+        # ── L1: per-server local SSD cache ──────────────────────────────────
+        # Root directory for the sharded local cache tree.
+        storage_root: str = str(Path.home() / "FlowTTS" / "distributed_cache")
+
+        # L1 in-process LRU index budget in bytes (default 2 GB).
+        l1_max_bytes: int = 2 * 1024 ** 3
+
+        # ── L2: Google Cloud Storage shared cache ───────────────────────────
+        # Set gcs_bucket to enable GCS as the L2 shared storage layer.
+        # Example: "kapturecx-ml"
+        gcs_bucket: str | None = None
+
+        # Object key prefix inside the bucket.
+        # Objects are stored as:  gs://<bucket>/<gcs_prefix>/ab/cd/<digest>.wav
+        gcs_prefix: str = "tts-cache"
+
+        # GCP project ID.  None → inferred from Application Default Credentials.
+        gcs_project: str | None = None
+
+        # Path to a service-account JSON key file.
+        # None → use Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS,
+        # gcloud CLI, or Workload Identity on GKE/Cloud Run).
+        gcs_credentials_file: str | None = None
+
+        # Per-GCS-operation HTTP timeout in seconds.
+        gcs_timeout_s: float = 30.0
+
+        # ── DragonflyDB / Redis: distributed locks + metadata ────────────────
+        # Redis-compatible URL.  DragonflyDB is fully Redis-compatible.
+        # None → no distributed locks (each server generates independently).
+        # Example: "redis://dragonfly.internal:6379/1"
+        redis_url: str | None = None
+
+        # Distributed lock auto-expiry in seconds.
+        # Must exceed worst-case TTS synthesis time to prevent premature release.
+        lock_ttl_s: float = 60.0
+
+        # How long a waiter polls before giving up and generating independently.
+        wait_timeout_s: float = 30.0
+
+        # ── Misc ─────────────────────────────────────────────────────────────
+        # Thread pool size for background cache writes.
+        write_workers: int = 4
+
+        # TTS model version tag embedded in cache keys.
+        # Change this whenever the checkpoint changes to prevent stale hits.
+        # Example: "v2.1.0", "mira_hindi_v3", or a git commit hash.
+        model_version: str = ""
+
+    dist_cache: DistributedCacheSettings = DistributedCacheSettings()
+
 
 settings = Settings()

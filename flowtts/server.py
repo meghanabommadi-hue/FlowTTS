@@ -71,11 +71,12 @@ from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RA
 from flowtts.monitoring.metrics import (
     record_call, record_ws_connection_open, record_ws_connection_close,
     record_ws_error, record_ws_done, ws_log_snapshot, record_port_change,
-    register_gpu_info, snapshot_metrics,
+    register_gpu_info, snapshot_metrics, record_dcache_event,
 )
 from flowtts.processing.audio_processing import crossfade, fade_in, fade_out
 
 from flowtts.synthesis.models import FlowTtsSynthesizer
+from flowtts.cache.cache_manager import init_cache_manager, get_cache_manager
 
 # Silence websockets' own logger — we do our own prints
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
@@ -242,6 +243,7 @@ async def _handle_streaming_request(
     ts_text_recv: str,
     voice_id: str | None = None,
     cancel_event: asyncio.Event | None = None,
+    cache_key=None,   # CacheKey | None — if set, write WAV to cache after stream
 ) -> None:
     """Stream audio chunks to the client as the LLM produces speech tokens.
 
@@ -271,6 +273,8 @@ async def _handle_streaming_request(
     first_chunk_sent = False
     llm_ttft_ms:     int | None = None   # ms from t0 to first speech token from LLM
     decoder_ttft_ms: int | None = None   # ms from t0 to first decode_async completion
+    # Collect PCM float32 chunks for post-stream cache write (only when cache_key set)
+    _pcm_chunks: list[np.ndarray] = [] if cache_key is not None else None  # type: ignore[assignment]
 
     loop = asyncio.get_event_loop()
 
@@ -330,6 +334,9 @@ async def _handle_streaming_request(
         # byte stream with no headers causing gaps or parse overhead.
         audio_bytes = await loop.run_in_executor(_wav_executor, pcm_to_int16_bytes, pcm)
         wav_total += time.perf_counter() - tw
+        # Collect for cache write
+        if _pcm_chunks is not None:
+            _pcm_chunks.append(pcm.copy())
 
         n_tok = len(real_tokens)
         total_tokens += n_tok
@@ -436,6 +443,21 @@ async def _handle_streaming_request(
             cache_hit=False,
         )
 
+        # Non-blocking cache write for streaming path — encode full WAV from
+        # collected PCM chunks and store in background after response is sent.
+        if cache_key is not None and _pcm_chunks:
+            _cache_mgr_ref = get_cache_manager()
+            if _cache_mgr_ref is not None:
+                try:
+                    _full_pcm = np.concatenate(_pcm_chunks)
+                    _decoded_full = await loop.run_in_executor(
+                        _wav_executor, tensor_to_wav, _full_pcm
+                    )
+                    record_dcache_event("miss", voice=voice_id or "", generation_s=llm_s + decode_total)
+                    _cache_mgr_ref.store_async(cache_key, _decoded_full.wav_bytes)
+                except Exception as _ce:
+                    pass  # cache write failure is non-fatal
+
         print(
             f"[{ts_done}] :{port} {call_id}  stream_done"
             f"  chunks={chunk_index}"
@@ -505,15 +527,23 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 }))
                 continue
 
-            # Cache lookup: per-voice cache dir first, then global fallback.
-            # Bypass LLM entirely — send cached WAV immediately.
-            _vc_dir = _cache_dir_for_voice(voice_id)
-            if _vc_dir is not None:
-                text_hash = hashlib.sha256(text.encode()).hexdigest()
-                cached_wav = _vc_dir / f"{text_hash}.wav"
-                if cached_wav.exists():
-                    wav_bytes = cached_wav.read_bytes()
-                    print(f"[{_ts()}] :{port} call_id:{call_id}  cache_hit:True  voice:{voice_id or 'default'}  {text[:60]!r}", flush=True)
+            # ── Distributed cache lookup (L1 → legacy flat → L2 sharded → lock) ──
+            # Falls back to the legacy per-voice flat dirs first so existing
+            # 22 GB+ caches remain usable without any migration.
+            _cache_mgr = get_cache_manager()
+            if _cache_mgr is not None:
+                _ckey = _cache_mgr.make_key(text, voice_id=voice_id or "")
+                _t_lookup = time.perf_counter()
+                _get_result = await _cache_mgr.get(_ckey)
+                if _get_result.is_hit:
+                    wav_bytes = _get_result.data
+                    _lookup_ms = round((time.perf_counter() - _t_lookup) * 1000)
+                    print(
+                        f"[{_ts()}] :{port} call_id:{call_id}  cache_hit:{_get_result.source}"
+                        f"  voice:{voice_id or 'default'}  lookup={_lookup_ms}ms  {text[:60]!r}",
+                        flush=True,
+                    )
+                    record_dcache_event(_get_result.source, voice=voice_id or "")
                     await ws.send(
                         json.dumps({
                             "type":        "audio_chunk",
@@ -525,6 +555,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                             "tokens":      0,
                             "is_final":    True,
                             "cache_hit":   True,
+                            "cache_source": _get_result.source,
                         }).encode() + wav_bytes
                     )
                     await ws.send(json.dumps({
@@ -539,21 +570,59 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                         "llm_s":           0.0,
                         "decode_s":        0.0,
                         "cache_hit":       True,
+                        "cache_source":    _get_result.source,
                     }))
                     record_call(
-                        call_id=call_id,
-                        text_id=text_id,
-                        port=port,
-                        text=text,
-                        token_count=0,
-                        llm_s=0.0,
-                        decode_s=0.0,
-                        wav_bytes=len(wav_bytes),
-                        ts=_tsms(),
-                        voice_id=voice_id,
-                        cache_hit=True,
+                        call_id=call_id, text_id=text_id, port=port, text=text,
+                        token_count=0, llm_s=0.0, decode_s=0.0,
+                        wav_bytes=len(wav_bytes), ts=_tsms(),
+                        voice_id=voice_id, cache_hit=True,
                     )
                     continue
+                # miss — _ckey is available for store_async after generation
+            else:
+                # CacheManager not initialised — fall back to legacy direct lookup.
+                _ckey = None
+                _vc_dir = _cache_dir_for_voice(voice_id)
+                if _vc_dir is not None:
+                    text_hash = hashlib.sha256(text.encode()).hexdigest()
+                    cached_wav = _vc_dir / f"{text_hash}.wav"
+                    if cached_wav.exists():
+                        wav_bytes = cached_wav.read_bytes()
+                        print(f"[{_ts()}] :{port} call_id:{call_id}  cache_hit:True  voice:{voice_id or 'default'}  {text[:60]!r}", flush=True)
+                        await ws.send(
+                            json.dumps({
+                                "type":        "audio_chunk",
+                                "call_id":     call_id,
+                                "text_id":     text_id,
+                                "chunk_index": 0,
+                                "sample_rate": SAMPLE_RATE,
+                                "wav_bytes":   len(wav_bytes),
+                                "tokens":      0,
+                                "is_final":    True,
+                                "cache_hit":   True,
+                            }).encode() + wav_bytes
+                        )
+                        await ws.send(json.dumps({
+                            "type":            "audio_done",
+                            "call_id":         call_id,
+                            "text_id":         text_id,
+                            "text":            text,
+                            "chunks":          1,
+                            "total_tokens":    0,
+                            "total_wav_bytes": len(wav_bytes),
+                            "sample_rate":     SAMPLE_RATE,
+                            "llm_s":           0.0,
+                            "decode_s":        0.0,
+                            "cache_hit":       True,
+                        }))
+                        record_call(
+                            call_id=call_id, text_id=text_id, port=port, text=text,
+                            token_count=0, llm_s=0.0, decode_s=0.0,
+                            wav_bytes=len(wav_bytes), ts=_tsms(),
+                            voice_id=voice_id, cache_hit=True,
+                        )
+                        continue
 
             _ws_last_activity[conn_id] = time.monotonic()
             ts_text_recv = _tsms()
@@ -584,7 +653,11 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
 
             if streaming:
                 try:
-                    await _handle_streaming_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id, cancel_event=cancel_ev)
+                    await _handle_streaming_request(
+                        ws, synth, text, call_id, text_id, port, ts_text_recv,
+                        voice_id=voice_id, cancel_event=cancel_ev,
+                        cache_key=_ckey,  # None when CacheManager not initialised
+                    )
                 finally:
                     if _request_semaphore is not None:
                         _request_semaphore.release()
@@ -647,6 +720,12 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                     wav_file = _audio_out_dir / f"{text_id}.wav"
                     wav_file.write_bytes(decoded.wav_bytes)
                     print(f"[{_ts()}] :{port}  saved → {wav_file}", flush=True)
+
+                # Non-blocking cache write — response is sent first, then stored.
+                if _cache_mgr is not None and _ckey is not None:
+                    _t0_gen = time.perf_counter() - t0
+                    record_dcache_event("miss", voice=voice_id or "", generation_s=_t0_gen)
+                    _cache_mgr.store_async(_ckey, decoded.wav_bytes)
 
                 # # Frame 1: JSON metadata (text)
                 # await ws.send(json.dumps({
@@ -960,6 +1039,14 @@ async def _http_ws_active(req: web.Request) -> web.Response:
     return web.json_response(snap["ws"])
 
 
+async def _http_cache_stats(req: web.Request) -> web.Response:
+    """GET /cache/stats  — distributed cache layer statistics."""
+    mgr = get_cache_manager()
+    if mgr is None:
+        return web.json_response({"enabled": False})
+    return web.json_response({"enabled": True, **mgr.stats()})
+
+
 async def _http_metrics(req: web.Request) -> web.Response:
     """GET /metrics  — Prometheus scrape endpoint."""
     from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -987,6 +1074,7 @@ async def _run_control_api(ctrl_port: int) -> None:
     app.router.add_get("/metrics",    _http_metrics)
     app.router.add_get("/ws/log",     _http_ws_log)
     app.router.add_get("/ws/active",  _http_ws_active)
+    app.router.add_get("/cache/stats", _http_cache_stats)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", ctrl_port)
@@ -1001,6 +1089,33 @@ async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None)
     # Start HTTP control API first so the port is claimed before warmup begins
     if ctrl_port:
         await _run_control_api(ctrl_port)
+
+    # Initialise distributed cache layer (Phase 1: local storage + optional Redis)
+    if settings.dist_cache.enabled:
+        _legacy = [
+            (voice_id, _wav_cache_base / dirname)
+            for voice_id, dirname in _VOICE_CACHE_MAP.items()
+        ]
+        init_cache_manager(
+            storage_root=settings.dist_cache.storage_root,
+            legacy_dirs=_legacy,
+            # DragonflyDB / Redis
+            redis_url=settings.dist_cache.redis_url,
+            lock_ttl_s=settings.dist_cache.lock_ttl_s,
+            wait_timeout_s=settings.dist_cache.wait_timeout_s,
+            # L1
+            l1_max_bytes=settings.dist_cache.l1_max_bytes,
+            # L2 GCS
+            gcs_bucket=settings.dist_cache.gcs_bucket,
+            gcs_prefix=settings.dist_cache.gcs_prefix,
+            gcs_project=settings.dist_cache.gcs_project,
+            gcs_credentials_file=settings.dist_cache.gcs_credentials_file,
+            gcs_timeout_s=settings.dist_cache.gcs_timeout_s,
+            # Misc
+            model_version=settings.dist_cache.model_version,
+            write_workers=settings.dist_cache.write_workers,
+        )
+        print(f"[{_ts()}] distributed cache initialised  storage={settings.dist_cache.storage_root}", flush=True)
 
     # Load model once before binding ports
     synth = await _get_synthesizer()
