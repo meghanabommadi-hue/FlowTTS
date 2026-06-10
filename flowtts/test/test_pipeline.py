@@ -1,5 +1,5 @@
 """End-to-end pipeline smoke test.
-
+ये एक recorded line के माध्यम से कॉल है.
 Two execution modes:
 
   Managed (default, --launch):
@@ -109,7 +109,8 @@ _BENCH_TEXTS: List[str] = []  # loaded lazily on first use
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
     # short — Hindi numerals
-    "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
+    "ये एक recorded line के माध्यम से कॉल है.",
+    "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं ?",
     "क्या आप अपना नाम बता सकते हैं?",
     "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें।",
     "कृपया थोड़ा इंतज़ार करें।",

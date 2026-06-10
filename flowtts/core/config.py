@@ -39,7 +39,7 @@ class TtsModelSettings(BaseModel):
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/angry_tara_slow_17.wav"
         # ref_audio: str = "/home/ubuntu/FlowTTS/diff_voices_and_cache/aakash_aryan.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/angry_tara_slow_17.wav"
+        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/friendly_simran.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -56,7 +56,7 @@ class TtsModelSettings(BaseModel):
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 512                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
+    max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.8               # greedy — fastest, deterministic
     top_p: float = 0.7
     top_k: int = 50

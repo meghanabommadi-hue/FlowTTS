@@ -2,9 +2,9 @@
 """Batch TTS audio generation using an already-running FlowTTS server.
 
 Connects to the server via WebSocket (no model reload).
-Text is normalized locally using text_normalize.py before sending.
+No normalization is applied — sentences are sent as-is.
 The server's built-in normalization is bypassed via "pre_normalized": true.
-Output files are named after the normalized text (sanitized, truncated).
+Output files are named by SHA256 of the raw text.
 Already-existing files are skipped — safe to resume.
 All output and logs are saved to <output-dir>/batch_log.txt.
 
@@ -29,9 +29,6 @@ from pathlib import Path
 import hashlib
 
 import websockets
-
-# Local normalization — this is the only normalization applied.
-from text_normalize import normalize_text, split_and_expand_sentences
 
 
 def normalized_filename(text: str) -> str:
@@ -121,37 +118,29 @@ async def process_sentence(
     semaphore: asyncio.Semaphore,
     counters: dict,
 ) -> None:
-    sub_sentences = split_and_expand_sentences(raw_text)
-    n_parts = len(sub_sentences)
+    label = f"{idx}/{total}"
+    out_path = out_dir / normalized_filename(raw_text)
 
-    for part_idx, sub in enumerate(sub_sentences, 1):
-        label = f"{idx}/{total}" if n_parts == 1 else f"{idx}{chr(96 + part_idx)}/{total}"
-        normalized = normalize_text(sub)
-        out_path = out_dir / normalized_filename(normalized)
+    if out_path.exists():
+        counters["skipped"] += 1
+        print(f"[{label}] SKIP  {out_path.name}")
+        print(f"          text: {raw_text!r}")
+        return
 
-        if out_path.exists():
-            counters["skipped"] += 1
-            print(f"[{label}] SKIP  {out_path.name}")
-            print(f"          raw:  {sub!r}")
-            print(f"          norm: {normalized!r}")
-            continue
-
-        t0 = time.perf_counter()
-        try:
-            wav_bytes = await synthesize_one(normalized, port, semaphore)
-            if not wav_bytes:
-                raise RuntimeError("empty WAV response")
-            out_path.write_bytes(wav_bytes)
-            elapsed = time.perf_counter() - t0
-            counters["generated"] += 1
-            print(f"[{label}] OK    {out_path.name}  {elapsed:.2f}s")
-            print(f"          raw:  {sub!r}")
-            print(f"          norm: {normalized!r}")
-        except Exception as exc:
-            counters["errors"] += 1
-            print(f"[{label}] ERROR {exc}")
-            print(f"          raw:  {sub!r}")
-            print(f"          norm: {normalized!r}")
+    t0 = time.perf_counter()
+    try:
+        wav_bytes = await synthesize_one(raw_text, port, semaphore)
+        if not wav_bytes:
+            raise RuntimeError("empty WAV response")
+        out_path.write_bytes(wav_bytes)
+        elapsed = time.perf_counter() - t0
+        counters["generated"] += 1
+        print(f"[{label}] OK    {out_path.name}  {elapsed:.2f}s")
+        print(f"          text: {raw_text!r}")
+    except Exception as exc:
+        counters["errors"] += 1
+        print(f"[{label}] ERROR {exc}")
+        print(f"          text: {raw_text!r}")
 
 
 async def main() -> None:
@@ -182,20 +171,6 @@ async def main() -> None:
     if total == 0:
         print("[ERROR] No sentences found in input file.")
         sys.exit(1)
-
-    # Build expanded sentence list and write a new .txt if any splits occur.
-    expanded: list[str] = []
-    split_count = 0
-    for s in sentences:
-        parts = list(split_and_expand_sentences(s))
-        expanded.extend(parts)
-        if len(parts) > 1:
-            split_count += 1
-
-    if split_count:
-        expanded_path = args.output_dir / (args.input.stem + "_expanded.txt")
-        expanded_path.write_text("\n".join(expanded) + "\n", encoding="utf-8")
-        print(f"[INFO] {split_count} sentence(s) were split → expanded list written to {expanded_path.resolve()}")
 
     print(f"[INFO] {total} sentences  port={args.port}  concurrency={args.concurrency}")
     print(f"[INFO] Output  → {args.output_dir.resolve()}")
