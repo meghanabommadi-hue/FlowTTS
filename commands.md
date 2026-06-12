@@ -14,16 +14,24 @@ FLOWTTS_MODEL_TYPE=voxcpm \
 .venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
 ```
 
+## launch mira
+```bash
+cd /home/ubuntu/FlowTTS
+FLOWTTS_MODEL_TYPE=mira .venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
+
+.venv/bin/python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5
+```
+
 Defaults already point to the correct paths:
 - Model: `/home/ubuntu/voxcpm/model`
-- Ref audio: `/home/ubuntu/voxcpm/deployment/simran_3s.wav`
-- Ref audio text: `"नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।"`
+- Ref audio: `/home/ubuntu/voxcpm/deployment/simran_flow.wav`
+- Ref audio text: `"क्या आप अपना नाम बता सकते हैं?"`
 
 Override with env vars:
 ```bash
 FLOWTTS_MODEL_TYPE=voxcpm \
-FLOWTTS_VOXCPM__REF_AUDIO=/home/ubuntu/voxcpm/deployment/simran_3s.wav \
-FLOWTTS_VOXCPM__REF_AUDIO_TEXT="नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।" \
+FLOWTTS_VOXCPM__REF_AUDIO=/home/ubuntu/voxcpm/deployment/simran_flow.wav \
+FLOWTTS_VOXCPM__REF_AUDIO_TEXT="क्या आप अपना नाम बता सकते हैं?" \
 .venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
 ```
 
@@ -151,11 +159,11 @@ All override via env var (`FLOWTTS_VOXCPM__<FIELD>`):
 
 | Env var | Default | Effect |
 |---|---|---|
-| `FLOWTTS_VOXCPM__MODEL_DIR` | `~/models/voxcpm2` | Path to model checkpoint |
-| `FLOWTTS_VOXCPM__REF_AUDIO` | `~/models/voxcpm2/ref_audio.wav` | Reference audio for voice cloning |
-| `FLOWTTS_VOXCPM__REF_AUDIO_TEXT` | `""` | Transcript of ref audio (required with ref audio) |
+| `FLOWTTS_VOXCPM__MODEL_DIR` | `/home/ubuntu/voxcpm/model` | Path to model checkpoint |
+| `FLOWTTS_VOXCPM__REF_AUDIO` | `/home/ubuntu/voxcpm/deployment/simran_flow.wav` | Reference audio for voice cloning |
+| `FLOWTTS_VOXCPM__REF_AUDIO_TEXT` | `"क्या आप अपना नाम बता सकते हैं?"` | Transcript of ref audio; empty → zero-shot mode |
 | `FLOWTTS_VOXCPM__INFERENCE_TIMESTEPS` | `6` | Diffusion ODE steps (fewer = faster, lower quality) |
-| `FLOWTTS_VOXCPM__MAX_NUM_SEQS` | `64` | Max parallel decode sequences |
+| `FLOWTTS_VOXCPM__MAX_NUM_SEQS` | `150` | Max parallel decode sequences |
 | `FLOWTTS_VOXCPM__GPU_MEMORY_UTILIZATION` | `0.80` | VRAM fraction for model + KV cache |
 | `FLOWTTS_VOXCPM__CFG_VALUE` | `2.0` | Classifier-free guidance scale |
 | `FLOWTTS_VOXCPM__TEMPERATURE` | `1.0` | Sampling temperature |

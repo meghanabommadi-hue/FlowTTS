@@ -110,49 +110,49 @@ _BENCH_TEXTS: List[str] = []  # loaded lazily on first use
 
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
-    # short — Hindi numerals
+    # short
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
     "क्या आप अपना नाम बता सकते हैं?",
-    "आपका खाता नंबर ९८७६५४३२१० है, कृपया confirm करें।",
     "कृपया थोड़ा इंतज़ार करें।",
     "आपकी समस्या हल हो गई है।",
-    "आपका बकाया ₹२,५०० है, कृपया आज ही जमा करें।",
     "हम जल्द ही आपसे संपर्क करेंगे।",
-    "आपका भुगतान ₹१०,०००  सफलतापूर्वक हो गया है।",
-    # short — English numerals in Hindi sentences
-    "आपका account number 9876543210 है, कृपया confirm करें।",
-    "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें।",
-    "आपकी EMI Rs. 3750 हर महीने देय है।",
-    # medium — Hindi numerals
-    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
-    "आपके loan की किस्त ₹३,७५० अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
-    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount ₹५,०००  है, कृपया जल्द से जल्द इसे जमा करें।",
-    "आपकी EMI की due date ३० अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
-    "आपके account नंबर ४५६७८९०१२३ पर ₹१५,००० का loan approve हुआ है, क्या आप details verify करेंगे?",
-    # medium — English numerals in Hindi sentences
-    "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
-    "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
-    # long — Hindi numerals
-    "आपकी loan application approve हो गई है और ₹५०,०००  सीधे आपके bank account ७८९०१२३४५६ में transfer कर दिए जाएंगे, जिसमें २ से ३ कार्य दिवस लग सकते हैं।",
-    "हमारी company की policy के अनुसार अगर payment ३० दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर ₹८,२५०  का भुगतान करें।",
-    "आप हमारे mobile app के माध्यम से अपनी ₹४,५०० की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है।",
-    # long — English numerals in Hindi sentences
-    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
-    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
-    # long — extra variety
-    "आपकी loan application approve हो गई है और loan amount सीधे आपके bank account में transfer कर दी जाएगी, जिसमें दो से तीन कार्य दिवस लग सकते हैं।",
-    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
-    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
-    "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
-    "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
-    "हम आपको सूचित करना चाहते हैं कि आपकी KYC verification pending है, कृपया अपने नजदीकी branch में जाकर या हमारे app के माध्यम से इसे complete करें।",
-    # spoken-number style (numbers as Hindi words / romanized English)
-    "ये कॉल आपके loan number जो three six nine पर end होता है, उसी के बारे में है। आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
-    "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
-    "आपका account number जो seven eight nine zero पर end होता है, उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें और किसी भी assistance के लिए हमें call back करें।",
-    "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो आपको कोई extra charge नहीं लगेगा।",
-    "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं। आपके loan account number ending in three four five six पर total due amount is twenty two thousand five hundred rupees जिसमें principal amount fifteen thousand और late payment charges seven thousand five hundred rupees शामिल हैं, कृपया आज ही payment करें।",
-    "आपके loan की EMI जो हर महीने की five तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले three working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा जिससे future में loan लेने में problem हो सकती है।",
+    "आपका भुगतान सफलतापूर्वक हो गया है।",
+    "क्या मैं आपसे बात कर सकती हूं?",
+    "आपकी जानकारी verify हो गई है।",
+    "कृपया अपना नाम confirm करें।",
+    "आपकी request process हो रही है।",
+    # medium
+    "मैं बजाज finance की तरफ से बोल रही हूं।",
+    "आपके loan की किस्त अभी तक नहीं आई है।",
+    "आपका बकाया है, कृपया जल्द जमा करें।",
+    "late charge से बचने के लिए आज payment करें।",
+    "आपके account पर loan approve हो गया है।",
+    "कृपया नजदीकी branch में जाकर मिलें।",
+    "आपकी EMI हर महीने समय पर देय है।",
+    "loan amount सीधे आपके account में transfer होगी।",
+    "payment के लिए app, NEFT, या UPI उपयोग करें।",
+    "आपका account अब पूरी तरह up to date है।",
+    # long
+    "loan approve हुआ, राशि दो से तीन दिन में आएगी।",
+    "समय पर भुगतान करें, credit score सुरक्षित रहेगा।",
+    "KYC verification pending है, branch जाकर complete करें।",
+    "EMI bounce हुई है, कृपया जल्द payment करें।",
+    "आपकी अगली किस्त की due date निकल चुकी है।",
+    "outstanding balance है, आज payment पर कोई charge नहीं।",
+    "हमारी customer care team हमेशा आपकी मदद के लिए है।",
+    "mobile app से EMI pay करना बहुत आसान है।",
+    "आपकी loan application review के बाद approve होगी।",
+    "payment न होने पर credit score पर असर पड़ेगा।",
+]
+
+_VOX_TEST: List[str] = ["नमस्ते, मैं अग्रिम से साक्षी बात कर रही हूँ | क्या आपकी बीज, कृषि उपकरण और खाद दवाई की दुकान है?",
+"क्या हम अभी भी जुड़े हुए हैं जी?",
+"लगता है अभी आप busy हैं, मैं आपको बाद में फ़ोन करती हूँ। धन्यवाद, आपका दिन शुभ हो! Goodbye",
+"ठीक है, धन्यवाद आपका दिन शुभ हो. Goodbye.",
+"सर, local market से जो खाद, बीज और दवाई लेते होंगे — उस पर आठ हज़ार रुपये तक का discount मिलेगा, और वही सामान local market से आठ टक्का सस्ता भी पड़ेगा। जानना चाहोगे कैसे?",
+"सर, अग्रिम भारत का सबसे बड़ा खाद, बीज और दवाई का online supplier app है — N A C L, Crystal, Atul, H P M, Biostadt सब यहाँ मिलते हैं।", 
+"Local market से जो भी सामान लेते हो — वही यहाँ छह से आठ टक्का सस्ता मिलेगा, सीधे दुकान पर delivery। पहले पाँच orders पर आठ हज़ार रुपये तक का discount — बचत ही बचत।", 
+"एक लाख retailers रोज़ हमसे इसीलिए order कर रहे हैं। बस तीस seconds दीजिए — app download करवा देती हूँ, आपके number पर offer active हो जाएगा।",
 ]
 
 # Mixed very-long + very-short sentences — specifically for testing trimming under batch load.

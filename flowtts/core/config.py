@@ -129,14 +129,13 @@ class VoxCpmSettings(BaseModel):
     # Must contain config.json, tokenizer.json and *.safetensors weights.
     model_dir: str = "/home/ubuntu/voxcpm/model"
 
-    # Optional reference (prompt) audio used for voice cloning.
-    # Set to "" or a non-existent path to run in zero-shot mode.
-    ref_audio: str = "/home/ubuntu/voxcpm/deployment/simran_3s.wav"
-
-    # Text transcript that matches the reference audio (required when
-    # ref_audio is set, as VoxCPM2 needs text+latent prefix together).
-    # If empty, voice cloning is disabled and zero-shot synthesis is used.
+    # Default (simran) reference voice — used when no voice_id is specified.
+    ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/friendly_simran.wav"
     ref_audio_text: str = "नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।"
+
+    # Tara voice — used when voice_id="tara" is passed in the WS request.
+    tara_ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/tara_vox.wav"
+    tara_ref_audio_text: str = "Your EMI of three thousand seven hundred fifty rupees is due on the fifteenth of this month."
 
     # Warmup sentence — synthesized once at startup to prime CUDA graphs.
     warmup_sentence: str = (
@@ -145,8 +144,8 @@ class VoxCpmSettings(BaseModel):
 
     # ------- VoxCPM2 engine knobs -------
     inference_timesteps: int = 6        # diffusion ODE steps (fewer = faster, lower quality)
-    max_num_batched_tokens: int = 16384 # must be >= max_model_len; prefill batch size
-    max_num_seqs: int = 64              # max sequences decoded in parallel
+    max_num_batched_tokens: int = -1 # must be >= max_model_len; prefill batch size
+    max_num_seqs: int = 150             # max sequences decoded in parallel
     max_model_len: int = 4096           # max KV sequence length
     gpu_memory_utilization: float = 0.80
 
@@ -157,8 +156,8 @@ class VoxCpmSettings(BaseModel):
     coalesce_ms: float = 0.0
 
     # ------- generation params -------
-    temperature: float = 1.0
-    cfg_value: float = 2.0
+    temperature: float = 0.1
+    cfg_value: float = 1.5
     max_generate_length: int = 2000
 
 

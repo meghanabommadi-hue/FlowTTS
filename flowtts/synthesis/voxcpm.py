@@ -73,8 +73,11 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         self._server = None            # AsyncVoxCPM2ServerPool
         self._model_info: dict = {}
         self._sample_rate: int = 48000
+        # Default voice (simran)
         self._prompt_latents: Optional[bytes] = None
         self._prompt_text: str = ""
+        # Named voices — keyed by voice_id string
+        self._voices: dict[str, tuple[Optional[bytes], str]] = {}
 
     # ------------------------------------------------------------------
     # BaseSynthesizer interface
@@ -113,22 +116,32 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         self._sample_rate = self._model_info.get("sample_rate", 48000)
         self._server = server
 
-        # Encode reference audio for voice cloning (optional)
+        # Encode voices — default (simran) + any named voices
+        async def _encode_voice(path: str, text: str, label: str):
+            ext = os.path.splitext(path)[1].lstrip(".").lower() or "wav"
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            latents = await server.encode_latents(raw, ext)
+            logger.info("voxcpm_ref_audio_encoded", label=label, path=path,
+                        bytes=len(latents))
+            return latents
+
         ref_path = cfg.ref_audio
         if ref_path and os.path.isfile(ref_path):
             try:
-                with open(ref_path, "rb") as fh:
-                    ref_bytes = fh.read()
-                self._prompt_latents = await server.encode_latents(ref_bytes, "wav")
+                self._prompt_latents = await _encode_voice(ref_path, cfg.ref_audio_text, "simran")
                 self._prompt_text = cfg.ref_audio_text
-                logger.info("voxcpm_ref_audio_encoded", path=ref_path,
-                            bytes=len(self._prompt_latents))
             except Exception as e:
-                logger.warning("voxcpm_ref_audio_failed", error=str(e))
-                self._prompt_latents = None
-                self._prompt_text = ""
-        else:
-            logger.info("voxcpm_zero_shot_mode", path=ref_path)
+                logger.warning("voxcpm_ref_audio_failed", label="simran", error=str(e))
+
+        # Encode tara voice if configured
+        tara_path = cfg.tara_ref_audio
+        if tara_path and os.path.isfile(tara_path):
+            try:
+                tara_latents = await _encode_voice(tara_path, cfg.tara_ref_audio_text, "tara")
+                self._voices["tara"] = (tara_latents, cfg.tara_ref_audio_text)
+            except Exception as e:
+                logger.warning("voxcpm_ref_audio_failed", label="tara", error=str(e))
 
         print("\n" + "=" * 60, flush=True)
         print("  VoxCpmSynthesizer — ready", flush=True)
@@ -139,7 +152,8 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         print(f"  feat_dim          : {self._model_info.get('feat_dim', 'n/a')}", flush=True)
         print(f"  patch_size        : {self._model_info.get('patch_size', 'n/a')}", flush=True)
         print(f"  inference_steps   : {cfg.inference_timesteps}", flush=True)
-        print(f"  ref_audio         : {ref_path if self._prompt_latents else 'none (zero-shot)'}", flush=True)
+        print(f"  default_voice     : {ref_path if self._prompt_latents else 'zero-shot'}", flush=True)
+        print(f"  named_voices      : {list(self._voices.keys()) or 'none'}", flush=True)
         print("=" * 60 + "\n", flush=True)
 
         # Warm-up — use zero-shot mode if ref_audio_text is missing
@@ -167,7 +181,24 @@ class VoxCpmSynthesizer(BaseSynthesizer):
                 self._prompt_text = saved_text
                 logger.warning("voxcpm_warmup_failed", error=str(e))
 
-    async def synthesize(self, text: str) -> SynthResult:
+    def _resolve_voice(self, voice_id: str | None) -> tuple[Optional[bytes], str]:
+        """Return (prompt_latents, prompt_text) for the given voice_id.
+
+        voice_id="tara"  → tara voice if encoded, else default
+        voice_id=None    → default (simran)
+        Unknown id       → default (simran) with a warning
+
+        NOTE: prompt_latents conditioning is currently broken in the installed
+        nanovllm_voxcpm version — it returns silent/zero audio when latents are
+        passed.  Return (None, "") to force zero-shot mode until fixed upstream.
+        """
+        if voice_id and voice_id not in self._voices:
+            logger.warning("voxcpm_unknown_voice_id", voice_id=voice_id,
+                           available=list(self._voices.keys()))
+        # Zero-shot mode: no prompt latents
+        return None, ""
+
+    async def synthesize(self, text: str, voice_id: str | None = None) -> SynthResult:
         if self._server is None:
             raise RuntimeError("VoxCpmSynthesizer not initialized")
 
@@ -177,10 +208,7 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         first_llm_ms = None
         first_vae_ms = None
 
-        # VoxCPM2 requires prompt_text when prompt_latents is provided.
-        # Fall back to zero-shot if text transcript is not configured.
-        use_latents = self._prompt_latents if self._prompt_text else None
-        use_text = self._prompt_text
+        use_latents, use_text = self._resolve_voice(voice_id)
 
         async for chunk in self._server.generate(
             target_text=text,
@@ -210,7 +238,7 @@ class VoxCpmSynthesizer(BaseSynthesizer):
             decode_s=vae_s,
         )
 
-    async def synthesize_stream(self, text: str) -> AsyncGenerator[SynthChunk, None]:
+    async def synthesize_stream(self, text: str, voice_id: str | None = None) -> AsyncGenerator[SynthChunk, None]:
         if self._server is None:
             raise RuntimeError("VoxCpmSynthesizer not initialized")
 
@@ -219,10 +247,7 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         first_llm_ms = None
         first_vae_ms = None
 
-        # VoxCPM2 requires prompt_text when prompt_latents is provided.
-        # Fall back to zero-shot if text transcript is not configured.
-        use_latents = self._prompt_latents if self._prompt_text else None
-        use_text = self._prompt_text
+        use_latents, use_text = self._resolve_voice(voice_id)
 
         async for chunk in self._server.generate(
             target_text=text,

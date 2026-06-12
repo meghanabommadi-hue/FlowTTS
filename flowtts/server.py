@@ -117,6 +117,7 @@ async def _handle_streaming(
     call_id: str,
     text_id: str,
     port: int,
+    voice_id: str | None = None,
 ) -> None:
     """Stream audio chunks to the client as they arrive from the synthesizer.
 
@@ -135,7 +136,7 @@ async def _handle_streaming(
     decode_total = 0.0
 
     try:
-        async for sc in synth.synthesize_stream(text):
+        async for sc in synth.synthesize_stream(text, voice_id=voice_id):
             ts_chunk = _tsms()
 
             if not first_chunk_sent:
@@ -215,6 +216,7 @@ async def _handle_request(
     text_id: str,
     port: int,
     ts_text_recv: str,
+    voice_id: str | None = None,
 ) -> None:
     """Full-response (non-streaming) handler — accumulate everything then send."""
     t0 = time.perf_counter()
@@ -222,7 +224,7 @@ async def _handle_request(
     _log(f"{ts_llm_start}  IN   port={port}  text_id={text_id}  call_id={call_id}  text={text}")
 
     try:
-        result = await asyncio.wait_for(synth.synthesize(text), timeout=60.0)
+        result = await asyncio.wait_for(synth.synthesize(text, voice_id=voice_id), timeout=60.0)
         total_s = time.perf_counter() - t0
         ts_done = _tsms()
         _log(f"{ts_done}  OUT  port={port}  text_id={text_id}  call_id={call_id}"
@@ -301,9 +303,10 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 await ws.send(json.dumps({"type": "error", "error": "Invalid JSON"}))
                 continue
 
-            text    = (data.get("text") or "").strip()
-            call_id = data.get("call_id") or conn_id
-            text_id = data.get("text_id") or str(uuid.uuid4())
+            text     = (data.get("text") or "").strip()
+            call_id  = data.get("call_id") or conn_id
+            text_id  = data.get("text_id") or str(uuid.uuid4())
+            voice_id = data.get("voice_id") or None
 
             if not text:
                 await ws.send(json.dumps({
@@ -324,9 +327,9 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             synth = await get_synthesizer()
 
             if streaming:
-                await _handle_streaming(ws, synth, text, call_id, text_id, port)
+                await _handle_streaming(ws, synth, text, call_id, text_id, port, voice_id=voice_id)
             else:
-                await _handle_request(ws, synth, text, call_id, text_id, port, ts_text_recv)
+                await _handle_request(ws, synth, text, call_id, text_id, port, ts_text_recv, voice_id=voice_id)
 
     except WebSocketException:
         pass

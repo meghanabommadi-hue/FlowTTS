@@ -160,7 +160,7 @@ class MiraSynthesizer(BaseSynthesizer):
         print("=" * 60 + "\n", flush=True)
         logger.info("mira_ready")
 
-    async def synthesize(self, text: str) -> SynthResult:
+    async def synthesize(self, text: str, voice_id: str | None = None) -> SynthResult:
         if self._engine is None:
             raise RuntimeError("MiraSynthesizer not initialized")
 
@@ -185,7 +185,7 @@ class MiraSynthesizer(BaseSynthesizer):
             decode_s=round(decode_s, 4),
         )
 
-    async def synthesize_stream(self, text: str) -> AsyncGenerator[SynthChunk, None]:
+    async def synthesize_stream(self, text: str, voice_id: str | None = None) -> AsyncGenerator[SynthChunk, None]:
         if self._engine is None:
             raise RuntimeError("MiraSynthesizer not initialized")
 

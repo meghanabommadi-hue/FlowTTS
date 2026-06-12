@@ -50,11 +50,11 @@ class BaseSynthesizer(ABC):
         """Load model weights.  Safe to call multiple times (no-op after first)."""
 
     @abstractmethod
-    async def synthesize(self, text: str) -> "SynthResult":
+    async def synthesize(self, text: str, voice_id: str | None = None) -> "SynthResult":
         """Synthesize text fully.  Returns SynthResult (wav_bytes + metadata)."""
 
     @abstractmethod
-    async def synthesize_stream(self, text: str) -> AsyncGenerator[SynthChunk, None]:
+    async def synthesize_stream(self, text: str, voice_id: str | None = None) -> AsyncGenerator[SynthChunk, None]:
         """Async generator — yields SynthChunk for each audio chunk."""
 
     @property
