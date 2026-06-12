@@ -6,7 +6,7 @@ all of them concurrently. Each port gets its own WebSocket connection
 and its own set of randomly-sampled texts.
 
 Usage:
-    # Auto-detect ports 8765-8774, use built-in texts
+    # Auto-detect ports 8080-8774, use built-in texts
     python flowtts/test/test_ports.py
 
     # Custom range + more texts per port
@@ -186,7 +186,7 @@ async def run(host: str, base_port: int, n_ports: int, texts_per_port: int) -> N
 def main() -> None:
     parser = argparse.ArgumentParser(description="FlowTTS parallel port tester")
     parser.add_argument("--host",           default="localhost")
-    parser.add_argument("--base-port",      type=int, default=8765)
+    parser.add_argument("--base-port",      type=int, default=8080)
     parser.add_argument("--n-ports",        type=int, default=10,
                         help="How many consecutive ports to scan (default: 10)")
     parser.add_argument("--texts-per-port", type=int, default=3,

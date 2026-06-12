@@ -27,7 +27,28 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import BaseModel
 from typing import ClassVar, Literal
 
-_MODELS_DIR = str(Path.home() / "models")
+_MODELS_DIR      = str(Path.home() / "models")
+_SAMPLE_FILES_DIR = str(Path.home() / "FlowTTS/sample_files")
+
+# Per-voice reference audio paths. Keys match voice_id values sent by clients.
+VOICE_REF_AUDIO: dict[str, str] = {
+    "simran":       f"{_SAMPLE_FILES_DIR}/simran.wav",
+    "tara":         f"{_SAMPLE_FILES_DIR}/tara.wav",
+    "vikram":       f"{_SAMPLE_FILES_DIR}/vikram.wav",
+    "daya":         f"{_SAMPLE_FILES_DIR}/daya.wav",
+    "british_rose": f"{_SAMPLE_FILES_DIR}/british_rose.wav",
+    "rani": f"{_SAMPLE_FILES_DIR}/rani.wav",
+    "sana":  f"{_SAMPLE_FILES_DIR}/sana.wav",
+    "anita":  f"{_SAMPLE_FILES_DIR}/anita.wav",
+    "vanita": f"{_SAMPLE_FILES_DIR}/vanita.wav",
+    "sunita": f"{_SAMPLE_FILES_DIR}/sunita.wav",
+    "anika":  f"{_SAMPLE_FILES_DIR}/anika_vb.mp3",
+    "anika2": f"{_SAMPLE_FILES_DIR}/anika2_vb.mp3",
+    "monika": f"{_SAMPLE_FILES_DIR}/monika_vb.mp3",
+    "saavi": f"{_SAMPLE_FILES_DIR}/saavi_vb.mp3",
+    "zara": f"{_SAMPLE_FILES_DIR}/zara_vb.mp3",
+    "gargi": f"{_SAMPLE_FILES_DIR}/gargi_vb.mp3",
+}
 
 
 class TtsModelSettings(BaseModel):
@@ -40,24 +61,19 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
-        # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
+        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    # 0.83 × 139.72 GiB ≈ 116 GiB to sglang → ~23 GiB free for decoder ONNX sessions,
-    # AudioTokenizer FP16 weights, and batch tensors (~10-12 GiB needed).
-    # At 0.85 only 3.9 GiB remained → OOM at req 122. All other values restored from
-    # the proven A100 baseline that achieved 0.9s TTFT at 200 requests.
-    mem_fraction_static: float = 0.83
-    attention_backend: str = "triton"
-    chunked_prefill_size: int = 8192
-    max_running_requests: int = 200
-    schedule_policy: str = "lpm"
-    cuda_graph_max_bs: int = 160
+    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
+    attention_backend: str = "triton"      # fastest for decode-heavy TTS
+    chunked_prefill_size: int = 16384
+    max_running_requests: int = 200        # allow all ports to run concurrently in sglang scheduler
+    schedule_policy: str = "lpm"           # longest-prefix-match: reuse KV cache across requests
+    cuda_graph_max_bs: int = 160           # pre-capture CUDA graphs up to this batch size
     disable_radix_cache: bool = False
     num_continuous_decode_steps: int = 10
 
@@ -65,7 +81,7 @@ class TtsModelSettings(BaseModel):
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
     max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
     temperature: float = 0.1
-    top_p: float = 0.7
+    top_p: float = 0.5
     top_k: int = 50
     repetition_penalty: float = 1.6
     min_p: float = 0.05
@@ -91,11 +107,11 @@ class DecoderSettings(BaseModel):
     to_wav: bool = True
 
     # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
-    max_batch: int = 256             # H200 handles larger batches without OOM
-    batch_timeout_ms: float = 0.5   # ms to wait collecting a batch (longer = better packing)
-    gpu_chunk_size: int = 160        # H200 has 2x HBM bandwidth vs A100 — double the chunk
-    onnx_workers: int = 2            # two ONNX threads to keep GPU fed between batches
-    use_trt: bool = False             # load pre-compiled TRT .ep engine for decoder
+    max_batch: int = 256
+    batch_timeout_ms: float = 0.7
+    gpu_chunk_size: int = 150
+    onnx_workers: int = 1
+    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
 
 
 class StreamingSettings(BaseModel):
@@ -104,18 +120,27 @@ class StreamingSettings(BaseModel):
     # Set to True to make streaming the default mode (no --streaming flag needed).
     enabled: bool = True
 
-    # Number of speech tokens accumulated before decoding and sending a chunk.
-    # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
-    # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
-    chunk_tokens: int = 15
+    # Tokens per chunk for the first two chunks (low latency warm-up).
+    # At ~50 tokens/sec: 20 tokens ≈ 400ms of audio.
+    chunk_tokens_early: int = 15
+    chunk_tokens: int = 15  # alias kept for voxcpm path compatibility
 
-    # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
-    # 320 = 20ms. Set to 0 to disable crossfade.
-    crossfade_samples: int = 400
+    # Tokens per chunk from chunk 3 onward (larger = fewer boundaries = smoother).
+    chunk_tokens_late: int = 50
 
-    # Linear fade-out applied to the tail of each non-final chunk to suppress
-    # codec boundary noise (samples at 16 kHz). 480 = 30ms.
-    fade_out_samples: int = 160
+    # --- Codec overlap ---
+    # Tail tokens from the previous chunk prepended to the next decode for context.
+    # Their decoded audio is discarded. Higher = smoother codec boundary quality.
+    # 12 tokens = 240ms of context.
+    overlap_tokens: int = 12
+
+    # --- Server-side crossfade ---
+    # Samples held back from each chunk's tail and blended into the next chunk's head.
+    # 1280 = 80ms at 16kHz. Set to 0 to disable crossfade entirely.
+    crossfade_samples: int = 1280
+
+    # Unused — fade-out disabled to prevent gaps.
+    fade_out_samples: int = 0
 
 
 class VoxCpmSettings(BaseModel):
@@ -165,7 +190,7 @@ class WebSocketSettings(BaseModel):
     """Gateway WebSocket server settings."""
 
     host: str = "0.0.0.0"
-    port: int = 8765
+    port: int = 8080
 
 
 class Settings(BaseSettings):
@@ -183,6 +208,10 @@ class Settings(BaseSettings):
     voxcpm: VoxCpmSettings = VoxCpmSettings()
     decoder: DecoderSettings = DecoderSettings()
     streaming: StreamingSettings = StreamingSettings()
+
+    # Directory of pre-generated WAV files named by SHA256 of raw transcript.
+    # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
+    wav_cache_dir: str | None = str(Path.home() / "FlowTTS/cached_data_simran")
 
     # Redis queue / pubsub configuration
     class RedisSettings(BaseModel):

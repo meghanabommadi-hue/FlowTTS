@@ -3,10 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-echo "==> Installing 2requirements.txt"
-uv pip install -r "$REPO_ROOT/2requirements.txt"
-echo "==> Installing 1requirements.txt"
-uv pip install -r "$REPO_ROOT/1requirements.txt"
+echo "==> Installing requirements.txt"
+uv pip install -r "$REPO_ROOT/requirements.txt"
 
 
 echo "==> Installing FlashSR from git"
@@ -17,5 +15,6 @@ uv pip install git+https://github.com/ysharma3501/FastBiCodec.git@612ba9e29d14b9
 
 echo "==> Downloading models"
 python3 "$SCRIPT_DIR/download_models.py"
+
 
 echo "==> Setup complete."

@@ -26,7 +26,7 @@ Usage:
     # Managed — launch server, allocate 9 ports on demand, run 40 requests
     python -m flowtts.test.test_pipeline --requests 40 --concurrency 9
 
-    # External — server already running on 8765-8773
+    # External — server already running on 8080-8773
     python -m flowtts.test.test_pipeline --no-launch --n-ports 9 --requests 40
 
     # command to kill all ports
@@ -106,53 +106,129 @@ def _load_bench_texts() -> List[str]:
 
 
 SAMPLE_TOKENS = _load_sample_tokens()
-_BENCH_TEXTS: List[str] = []  # loaded lazily on first use
+_BENCH_TEXTS: List[str] = []   # loaded by _build_cache_mix or lazily on first use
+_VOICE_ID: str = ""            # set via --voice arg
+_FIXED_SENTENCE: str = ""      # set via --sentence arg; repeats same text every request
+
+_BAJAJ_SENTENCES_FILE = Path.home() / "FlowTTS/sample_files/bajaj_sentences_unique.txt"
+
+
+def _build_cache_mix(n: int, cache_mix: str, voice: str) -> List[str]:
+    """Return n sentences with requested cache ratio from cached_texts.txt / bajaj_sentences_unique.txt."""
+    import hashlib as _hashlib
+    import random as _random
+
+    voice     = voice or "simran"
+    cache_dir = Path.home() / f"FlowTTS/cached_data_{voice}"
+    cached_txt = cache_dir / "cached_texts.txt"
+
+    if cached_txt.exists():
+        cached = [l.strip() for l in cached_txt.read_text(encoding="utf-8").splitlines() if l.strip()]
+        print(f"[cache_mix] {len(cached)} cached sentences from {cached_txt}", flush=True)
+    elif cache_dir.exists():
+        cached_hashes = {f.stem for f in cache_dir.glob("*.wav")}
+        try:
+            all_sents = [l.strip() for l in _BAJAJ_SENTENCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+            cached = [s for s in all_sents if _hashlib.sha256(s.encode()).hexdigest() in cached_hashes]
+        except Exception:
+            cached = []
+    else:
+        cached = []
+
+    try:
+        all_sents = [l.strip() for l in _BAJAJ_SENTENCES_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except Exception:
+        all_sents = cached[:]
+
+    cached_set = set(cached)
+    uncached   = [s for s in all_sents if s not in cached_set]
+
+    mix = cache_mix.lower().strip()
+    pct = (100 if mix in ("full", "100") else
+           0   if mix in ("none", "0")   else
+           50  if mix in ("half", "partial", "50") else
+           max(0, min(100, int(mix))) if mix.isdigit() else 50)
+
+    n_cached   = round(n * pct / 100)
+    n_uncached = n - n_cached
+
+    def _sample(pool: list, k: int) -> list:
+        if not pool or k == 0:
+            return []
+        return [_random.choice(pool) for _ in range(k)]
+
+    chosen = _sample(cached, n_cached) + _sample(uncached, n_uncached)
+    _random.shuffle(chosen)
+    print(f"[cache_mix] {pct}% cached → {n_cached} cached + {n_uncached} uncached"
+          f"  (pool: {len(cached)} cached, {len(uncached)} uncached)", flush=True)
+    return chosen
+
+# English sentences for testing American accent.
+_ENGLISH_AMERICAN: List[str] = [
+    "Hey there! I just wanted to check in and see how everything's going on your end.",
+    "We're all set for the meeting at three o'clock — I'll send over the agenda in just a bit.",
+    "I can't believe how fast the semester went by; finals are already right around the corner.",
+    "Could you go ahead and pull up that report from last quarter so we can walk through the numbers?",
+    "Honestly, the weather out here in California has been absolutely perfect this time of year.",
+]
 
 # Per-language fallback sentences (short / medium / long mix).
 _HINDI_FALLBACK: List[str] = [
-    # short
+    # short — Hindi numerals'
+    # "थैंक यू hold करने के लिए, अब पूरे steps फिर से clear बता دیتी हूँ:",
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
+    # "😭☺️ I am vaani ✅👀",
+    # "😭 steps फिर से clear बता",
+    # " دیتी हूँ: steps फिर से clear बता دیتी हूँ:",
+    "Hello",
+    "Hi",
+    "नमस्ते मैं आपकी कैसे मदद कर सकती हूं?",
     "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?",
+    "नमस्ते, आपकी कैसे मदद कर सकती हूं?",
+    "Hello, मैं कर सकती हूं?",
+    "Hi, मैं कर सकती हूं?",
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
     "क्या आप अपना नाम बता सकते हैं?",
+    "आपका खाता नंबर नौ आठ सात छह पांच चार तीन दो एक शून्य है, कृपया confirm करें।",
     "कृपया थोड़ा इंतज़ार करें।",
     "आपकी समस्या हल हो गई है।",
+    "आपका बकाया दो हज़ार पांच सौ रुपये है, कृपया आज ही जमा करें।",
     "हम जल्द ही आपसे संपर्क करेंगे।",
-    "आपका भुगतान सफलतापूर्वक हो गया है।",
-    "क्या मैं आपसे बात कर सकती हूं?",
-    "आपकी जानकारी verify हो गई है।",
-    "कृपया अपना नाम confirm करें।",
-    "आपकी request process हो रही है।",
-    # medium
-    "मैं बजाज finance की तरफ से बोल रही हूं।",
-    "आपके loan की किस्त अभी तक नहीं आई है।",
-    "आपका बकाया है, कृपया जल्द जमा करें।",
-    "late charge से बचने के लिए आज payment करें।",
-    "आपके account पर loan approve हो गया है।",
-    "कृपया नजदीकी branch में जाकर मिलें।",
-    "आपकी EMI हर महीने समय पर देय है।",
-    "loan amount सीधे आपके account में transfer होगी।",
-    "payment के लिए app, NEFT, या UPI उपयोग करें।",
-    "आपका account अब पूरी तरह up to date है।",
-    # long
-    "loan approve हुआ, राशि दो से तीन दिन में आएगी।",
-    "समय पर भुगतान करें, credit score सुरक्षित रहेगा।",
-    "KYC verification pending है, branch जाकर complete करें।",
-    "EMI bounce हुई है, कृपया जल्द payment करें।",
-    "आपकी अगली किस्त की due date निकल चुकी है।",
-    "outstanding balance है, आज payment पर कोई charge नहीं।",
-    "हमारी customer care team हमेशा आपकी मदद के लिए है।",
-    "mobile app से EMI pay करना बहुत आसान है।",
-    "आपकी loan application review के बाद approve होगी।",
-    "payment न होने पर credit score पर असर पड़ेगा।",
-]
-
-_VOX_TEST: List[str] = ["नमस्ते, मैं अग्रिम से साक्षी बात कर रही हूँ | क्या आपकी बीज, कृषि उपकरण और खाद दवाई की दुकान है?",
-"क्या हम अभी भी जुड़े हुए हैं जी?",
-"लगता है अभी आप busy हैं, मैं आपको बाद में फ़ोन करती हूँ। धन्यवाद, आपका दिन शुभ हो! Goodbye",
-"ठीक है, धन्यवाद आपका दिन शुभ हो. Goodbye.",
-"सर, local market से जो खाद, बीज और दवाई लेते होंगे — उस पर आठ हज़ार रुपये तक का discount मिलेगा, और वही सामान local market से आठ टक्का सस्ता भी पड़ेगा। जानना चाहोगे कैसे?",
-"सर, अग्रिम भारत का सबसे बड़ा खाद, बीज और दवाई का online supplier app है — N A C L, Crystal, Atul, H P M, Biostadt सब यहाँ मिलते हैं।", 
-"Local market से जो भी सामान लेते हो — वही यहाँ छह से आठ टक्का सस्ता मिलेगा, सीधे दुकान पर delivery। पहले पाँच orders पर आठ हज़ार रुपये तक का discount — बचत ही बचत।", 
-"एक लाख retailers रोज़ हमसे इसीलिए order कर रहे हैं। बस तीस seconds दीजिए — app download करवा देती हूँ, आपके number पर offer active हो जाएगा।",
+    "आपका भुगतान दस हज़ार रुपये सफलतापूर्वक हो गया है।",
+    # short — English numerals in Hindi sentences
+    "आपका account number 9876543210 है, कृपया confirm करें।",
+    "आपका बकाया Rs. 2500 है, कृपया आज ही जमा करें।",
+    "आपकी EMI Rs. 3750 हर महीने देय है।",
+    # medium — Hindi numerals
+    "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?",
+    "आपके loan की किस्त तीन हज़ार सात सौ पचास रुपये अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "हमारे रिकॉर्ड के अनुसार आपका बकाया amount पांच हज़ार रुपये है, कृपया जल्द से जल्द इसे जमा करें।",
+    "आपकी EMI की due date तीस अप्रैल निकल चुकी है, late charge से बचने के लिए आज ही payment करें।",
+    "आपके account नंबर चार पांच छह सात आठ नौ शून्य एक दो तीन पर पंद्रह हज़ार रुपये का loan approve हुआ है, क्या आप details verify करेंगे?",
+    # medium — English numerals in Hindi sentences
+    "आपके loan की किस्त Rs. 3750 अभी तक नहीं आई है, क्या आप बता सकते हैं कि भुगतान कब होगा?",
+    "आपके account number 4567890123 पर Rs. 15000 का loan approve हुआ है, क्या आप details verify करेंगे?",
+    # long — Hindi numerals
+    "आपकी loan application approve हो गई है और पचास हज़ार रुपये सीधे आपके bank account सात आठ नौ शून्य एक दो तीन चार पांच छह में transfer कर दिए जाएंगे, जिसमें दो से तीन कार्य दिवस लग सकते हैं।",
+    "हमारी company की policy के अनुसार अगर payment तीस दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर आठ हज़ार दो सौ पचास रुपये का भुगतान करें।",
+    "आप हमारे mobile app के माध्यम से अपनी चार हज़ार पांच सौ रुपये की EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है।",
+    # long — English numerals in Hindi sentences
+    "आपकी loan application approve हो गई है और Rs. 50000 सीधे आपके bank account 7890123456 में transfer कर दिए जाएंगे, जिसमें 2 से 3 कार्य दिवस लग सकते हैं।",
+    "हमारी company की policy के अनुसार अगर payment 30 दिनों के अंदर नहीं होती तो आपके credit score पर असर पड़ सकता है, इसलिए कृपया समय पर Rs. 8250 का भुगतान करें।",
+    # long — extra variety
+    "आपकी loan application approve हो गई है और loan amount सीधे आपके bank account में transfer कर दी जाएगी, जिसमें दो से तीन कार्य दिवस लग सकते हैं।",
+    "आप हमारे mobile app के माध्यम से अपनी EMI pay कर सकते हैं, इसके अलावा NEFT, IMPS, या UPI का भी उपयोग किया जा सकता है, और किसी भी समस्या के लिए हमारी customer care team हमेशा available है।",
+    "हमारे records के अनुसार आपका loan account number 1234567890 है और आपकी monthly EMI Rs. 4500 है जो हर महीने की 5 तारीख को deduct होती है।",
+    "आपकी payment successfully receive हो गई है और आपका account अब up to date है, अगर आपको कोई और जानकारी चाहिए तो हमें call करें।",
+    "आपके loan की next installment की due date 15 तारीख है और amount Rs. 6200 है, कृपया समय पर भुगतान करें ताकि कोई late fee न लगे।",
+    "हम आपको सूचित करना चाहते हैं कि आपकी KYC verification pending है, कृपया अपने नजदीकी branch में जाकर या हमारे app के माध्यम से इसे complete करें।",
+    # spoken-number style (numbers as Hindi words / romanized English)
+    "ये कॉल आपके loan number जो three six nine पर end होता है, उसी के बारे में है। आपका EMI bounce हो गया है और total overdue amount sixteen zero one two rupees है।",
+    "आपकी next EMI की due date five April है और amount two thousand three hundred rupees है, कृपया समय पर payment करें नहीं तो आपके credit score पर negative impact पड़ेगा।",
+    "आपका account number जो seven eight nine zero पर end होता है, उस पर last month की EMI receive नहीं हुई है, कृपया जल्द से जल्द payment करें और किसी भी assistance के लिए हमें call back करें।",
+    "हम आपको inform करना चाहते हैं कि आपका loan number four five six seven के against outstanding balance forty five hundred rupees है और अगर आप आज payment करते हैं तो आपको कोई extra charge नहीं लगेगा।",
+    "नमस्ते, मैं Bajaj Finance की तरफ से बात कर रही हूं। आपके loan account number ending in three four five six पर total due amount is twenty two thousand five hundred rupees जिसमें principal amount fifteen thousand और late payment charges seven thousand five hundred rupees शामिल हैं, कृपया आज ही payment करें।",
+    "आपके loan की EMI जो हर महीने की five तारीख को आती है वो इस बार bounce हो गई है, और अगर आप अगले three working days में payment नहीं करते तो आपके CIBIL score पर इसका असर पड़ेगा जिससे future में loan लेने में problem हो सकती है।",
 ]
 
 # Mixed very-long + very-short sentences — specifically for testing trimming under batch load.
@@ -194,40 +270,14 @@ _TELUGU_FALLBACK: List[str] = [
     "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
 
-# English sentences used when model_type == "voxcpm"
-_ENGLISH_FALLBACK: List[str] = [
-    # short
-    "Hello, how can I help you today?",
-    "Please hold on for a moment.",
-    "Your payment was received successfully.",
-    "Can you please confirm your account number?",
-    "We will contact you shortly.",
-    # medium
-    "Hello, I am calling from Bajaj Finance on a recorded line. Am I speaking with the account holder?",
-    "Your EMI of three thousand seven hundred fifty rupees is due on the fifteenth of this month.",
-    "According to our records, your outstanding balance is five thousand rupees. Please pay at your earliest convenience.",
-    "Your loan application has been approved and the amount will be transferred within two to three working days.",
-    # long
-    "We would like to inform you that your loan application has been approved and fifty thousand rupees will be deposited directly into your bank account ending in six seven eight nine within two to three working days.",
-    "As per our company policy, if the payment is not received within thirty days, it may negatively impact your credit score, so please ensure timely payment of eight thousand two hundred fifty rupees.",
-    "You can pay your EMI through our mobile application using NEFT, IMPS, or UPI, and our customer care team is always available to assist you with any issues.",
-]
-
-# Pick fallback list based on configured model type and checkpoint.
+# Pick fallback list based on configured checkpoint.
 try:
     from flowtts.core.config import settings as _cfg
-    _model_type   = _cfg.model_type
-    _checkpoint   = _cfg.tts_model.checkpoint_lg
+    _checkpoint = _cfg.tts_model.checkpoint_lg
 except Exception:
-    _model_type   = "mira"
-    _checkpoint   = "hindi"
+    _checkpoint = "hindi"
 
-if _model_type == "voxcpm":
-    _FALLBACK_TEXTS: List[str] = _ENGLISH_FALLBACK
-elif _checkpoint == "telugu":
-    _FALLBACK_TEXTS = _TELUGU_FALLBACK
-else:
-    _FALLBACK_TEXTS = _HINDI_FALLBACK + _HINDI_MIXED_STRESS
+_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +294,11 @@ class RequestResult(NamedTuple):
     token_chars: int        # 0 for decoded/worker mode
     llm_s: Optional[float]
     decode_s: Optional[float]
-    ttff_s: Optional[float] = None   # time-to-first-chunk (streaming only)
-    rtf: Optional[float] = None      # real-time factor for this request
+    ttff_s: Optional[float] = None          # time-to-first-chunk (streaming only, client-measured)
+    rtf: Optional[float] = None             # real-time factor for this request
+    cache_hit: bool = False                 # served from WAV cache, no LLM
+    llm_ttft_ms: Optional[int] = None       # ms to first LLM speech token (server-measured)
+    decoder_ttft_ms: Optional[int] = None   # ms to first decode_async completion (server-measured)
 
 
 
@@ -265,7 +318,7 @@ async def _run_one(
     out_dir: Path,
     worker,       # DecoderWorker instance or None
     skip_decoder: bool = False,
-    streaming: bool = False,
+    streaming: bool = True,
     save_chunks: bool = False,
 ) -> RequestResult:
     call_id = str(uuid.uuid4())
@@ -277,9 +330,13 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Use bench texts if available, else built-in fallback list for active checkpoint
-            if _BENCH_TEXTS:
+            # Pick text: fixed > bench texts > english (non-hindi voices) > fallback
+            if _FIXED_SENTENCE:
+                text = _FIXED_SENTENCE
+            elif _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
+            elif _VOICE_ID in ("simran", "british_rose"):
+                text = _ENGLISH_AMERICAN[req_id % len(_ENGLISH_AMERICAN)]
             else:
                 text = _FALLBACK_TEXTS[req_id % len(_FALLBACK_TEXTS)]
             req = {
@@ -287,6 +344,7 @@ async def _run_one(
                 "call_id": call_id,
                 "text_id": text_id,
                 "text": text,
+                **({"voice_id": _VOICE_ID} if _VOICE_ID else {}),
                 **({"skip_decoder": True} if skip_decoder else {}),
                 **({"streaming": True} if streaming else {}),
             }
@@ -299,10 +357,18 @@ async def _run_one(
                 return await _recv_streaming(req_id, port, out_dir, ws, call_id, text_id, t0, save_chunks)
 
             _log(req_id, port, "waiting for WS response…")
-            # Frame 1: JSON metadata
             raw = await ws.recv()
             latency = round(time.time() - t0, 3)
-            msg = json.loads(raw)
+            # Combined frame: json_bytes + wav_bytes, or plain JSON text frame
+            if isinstance(raw, bytes):
+                end = raw.index(b'}') + 1
+                msg = json.loads(raw[:end])
+                wav_data = raw[end:]
+            else:
+                msg = json.loads(raw)
+                wav_data = await ws.recv()
+                if isinstance(wav_data, str):
+                    wav_data = wav_data.encode()
 
             _log(req_id, port, f"received type={msg.get('type')}  latency={latency}s")
 
@@ -311,16 +377,10 @@ async def _run_one(
                 return RequestResult(req_id, port, False, latency, None,
                                      msg.get("error"), 0, 0, None, None)
 
-            # Frame 2: raw WAV bytes
-            wav_data = await ws.recv()
-            if isinstance(wav_data, str):
-                wav_data = wav_data.encode()
-
             wav_path: Optional[Path] = None
             token_chars = len(msg.get("audio_tokens", ""))
             llm_s = msg.get("llm_s")
             decode_s = msg.get("decode_s")
-            rtf = msg.get("rtf")
             wav_bytes_len = len(wav_data)
 
             if not skip_decoder:
@@ -330,10 +390,10 @@ async def _run_one(
                                          "empty WAV bytes", 0, token_chars, llm_s, decode_s)
                 wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
                 wav_path.write_bytes(wav_data)
-            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
+            _log(req_id, port, f"OK  {wav_bytes_len}B WAV → {wav_path.name if wav_path else '-'}  llm_s={llm_s}  decode_s={decode_s}")
 
             return RequestResult(req_id, port, True, latency, wav_path,
-                                 None, wav_bytes_len, token_chars, llm_s, decode_s, rtf=rtf)
+                                 None, wav_bytes_len, token_chars, llm_s, decode_s)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -406,16 +466,34 @@ async def _recv_streaming(
     chunk_wavs: list[bytes] = []
     llm_s = None
     decode_s = None
+    llm_ttft_ms = None
+    decoder_ttft_ms = None
     total_tokens = 0
     first_chunk_latency: Optional[float] = None
     wav_path: Optional[Path] = None
+    is_cache_hit = False
 
     try:
         while True:
             raw = await ws.recv()
+            # Combined frame: json_bytes + wav_bytes in one binary message.
+            # Find the end of the JSON object by tracking brace depth.
             if isinstance(raw, bytes):
-                continue  # unexpected binary before JSON header
-            msg = json.loads(raw)
+                depth = 0
+                end = 0
+                for i, b in enumerate(raw):
+                    if b == ord('{'):
+                        depth += 1
+                    elif b == ord('}'):
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                msg = json.loads(raw[:end])
+                wav_inline = raw[end:]
+            else:
+                msg = json.loads(raw)
+                wav_inline = None
             mtype = msg.get("type")
 
             if mtype == "error":
@@ -427,10 +505,16 @@ async def _recv_streaming(
                 chunk_idx = msg.get("chunk_index", 0)
                 n_tok = msg.get("tokens", 0)
                 total_tokens += n_tok
+                if msg.get("cache_hit"):
+                    is_cache_hit = True
 
-                wav_chunk = await ws.recv()
-                if isinstance(wav_chunk, str):
-                    wav_chunk = wav_chunk.encode()
+                # Inline wav from combined frame, or separate binary frame (fallback)
+                if wav_inline is not None:
+                    wav_chunk = wav_inline
+                else:
+                    wav_chunk = await ws.recv()
+                    if isinstance(wav_chunk, str):
+                        wav_chunk = wav_chunk.encode()
 
                 if first_chunk_latency is None:
                     first_chunk_latency = round(time.time() - t0, 3)
@@ -443,12 +527,14 @@ async def _recv_streaming(
                     chunk_path.write_bytes(wav_chunk)
 
             elif mtype == "audio_done":
-                latency   = round(time.time() - t0, 3)
-                llm_s     = msg.get("llm_s")
-                decode_s  = msg.get("decode_s")
-                rtf       = msg.get("rtf")
-                chunks    = msg.get("chunks", len(chunk_wavs))
-                total_wav_b = sum(len(w) for w in chunk_wavs)
+                latency         = round(time.time() - t0, 3)
+                llm_s           = msg.get("llm_s")
+                decode_s        = msg.get("decode_s")
+                rtf             = msg.get("rtf")
+                llm_ttft_ms     = msg.get("llm_ttft_ms")
+                decoder_ttft_ms = msg.get("decoder_ttft_ms")
+                chunks          = msg.get("chunks", len(chunk_wavs))
+                total_wav_b     = sum(len(w) for w in chunk_wavs)
 
                 if chunk_wavs:
                     wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
@@ -457,12 +543,14 @@ async def _recv_streaming(
                 _log(req_id, port,
                      f"OK  stream_done  chunks={chunks}  tokens={total_tokens}"
                      f"  {total_wav_b}B → {wav_path.name if wav_path else '-'}"
-                     f"  ttff={first_chunk_latency}s  total={latency}s"
+                     f"  ttff={first_chunk_latency}s  llm_ttft={llm_ttft_ms}ms"
+                     f"  decoder_ttft={decoder_ttft_ms}ms  total={latency}s"
                      f"  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
 
                 return RequestResult(req_id, port, True, latency, wav_path,
                                      None, total_wav_b, total_tokens * 20, llm_s, decode_s,
-                                     ttff_s=first_chunk_latency, rtf=rtf)
+                                     ttff_s=first_chunk_latency, rtf=rtf,
+                                     llm_ttft_ms=llm_ttft_ms, decoder_ttft_ms=decoder_ttft_ms)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -473,9 +561,14 @@ async def _recv_streaming(
 # ---------------------------------------------------------------------------
 # Server management (managed launch mode)
 # ---------------------------------------------------------------------------
-_VENV_PYTHON = str(Path.home() / "FlowTTS/llm/bin/python3")
 _FLOWTTS_DIR = Path.home() / "FlowTTS"
 _DEFAULT_CTRL_PORT = 8764
+
+# Prefer the project venv's Python for the server subprocess so it gets
+# onnxruntime-gpu, torch+CUDA, and all other heavy deps — even when the test
+# is invoked via the system Python.
+_VENV_PYTHON = _FLOWTTS_DIR / ".venv" / "bin" / "python3"
+_SERVER_PYTHON = str(_VENV_PYTHON) if _VENV_PYTHON.exists() else sys.executable
 
 
 def _ctrl_url(ctrl_port: int, path: str) -> str:
@@ -493,15 +586,10 @@ def _ctrl_post(ctrl_port: int, path: str, timeout: float = 2.0):
         return json.loads(r.read())
 
 
-def _launch_server(ctrl_port: int, save_audio: Optional[str] = None,
-                   model_type: Optional[str] = None) -> subprocess.Popen:
-    """Start flowtts.server with --ports 0 (no WS ports) + control API.
-
-    model_type: "mira" or "voxcpm" — forwarded as FLOWTTS_MODEL_TYPE.
-                When None the env-var is left as-is (inherits from parent).
-    """
+def _launch_server(ctrl_port: int, save_audio: Optional[str] = None) -> subprocess.Popen:
+    """Start flowtts.server with --ports 0 (no WS ports) + control API."""
     cmd = [
-        _VENV_PYTHON, "-m", "flowtts.server",
+        _SERVER_PYTHON, "-m", "flowtts.server",
         "--ports", "0",
         "--ctrl-port", str(ctrl_port),
     ]
@@ -509,8 +597,6 @@ def _launch_server(ctrl_port: int, save_audio: Optional[str] = None,
         cmd += ["--save-audio", save_audio]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(_FLOWTTS_DIR)
-    if model_type:
-        env["FLOWTTS_MODEL_TYPE"] = model_type
     proc = subprocess.Popen(
         cmd, cwd=str(_FLOWTTS_DIR), env=env,
         stdout=sys.stdout, stderr=sys.stderr,
@@ -562,12 +648,11 @@ async def run_test(
     launch: bool = True,
     ctrl_port: int = _DEFAULT_CTRL_PORT,
     concurrency: int = 9,
-    base_port: int = 8765,
+    base_port: int = 8080,
     save_audio: Optional[str] = None,
     skip_decoder: bool = False,
-    streaming: bool = False,
+    streaming: bool = True,
     save_chunks: bool = False,
-    model_type: Optional[str] = None,   # "mira" | "voxcpm" | None (inherit)
     # external-server args
     ports: Optional[List[int]] = None,
 ) -> List[RequestResult]:
@@ -582,24 +667,35 @@ async def run_test(
 
     server_proc: Optional[subprocess.Popen] = None
     active_ports: List[int] = [base_port]
+    _already_running = False
 
     if launch:
-        # ── Managed: start server, open ports on demand ──────────────────────
-        server_proc = _launch_server(ctrl_port, save_audio, model_type=model_type)
+        # ── Managed: reuse existing server if already ready, else launch ──────
         try:
-            await _wait_server_ready(ctrl_port)
-        except TimeoutError as e:
-            server_proc.kill()
-            print(f"[server] FATAL: {e}", flush=True)
-            sys.exit(1)
+            data = _ctrl_get(ctrl_port, "/ready", timeout=1.0)
+            _already_running = bool(data.get("ready"))
+        except Exception:
+            pass
 
-        # Open exactly `concurrency` WS ports starting at base_port
+        if _already_running:
+            print(f"[server] reusing running server on ctrl=:{ctrl_port} (ref_audio stays loaded)", flush=True)
+        else:
+            server_proc = _launch_server(ctrl_port, save_audio)
+            try:
+                await _wait_server_ready(ctrl_port)
+            except TimeoutError as e:
+                server_proc.kill()
+                print(f"[server] FATAL: {e}", flush=True)
+                sys.exit(1)
+
+        # Open exactly `concurrency` WS ports starting at base_port (skip already-open ones)
         ws_ports: List[int] = []
         for i in range(concurrency):
             p = base_port + i
-            await _open_port(ctrl_port, p)
+            if not _port_open(p):
+                await _open_port(ctrl_port, p)
             ws_ports.append(p)
-        print(f"[server] opened {len(ws_ports)} port(s): {ws_ports}", flush=True)
+        print(f"[server] using {len(ws_ports)} port(s): {ws_ports}", flush=True)
         active_ports = ws_ports
 
     else:
@@ -621,10 +717,9 @@ async def run_test(
                     print(f"[server] reusing existing port(s): {already}", flush=True)
                 active_ports = needed
             else:
-                # No explicit ports — use all ports the server already has open
-                data = _ctrl_get(ctrl_port, "/ports")
-                active_ports = data.get("ports", [])
-                print(f"[server] using {len(active_ports)} existing port(s): {active_ports}", flush=True)
+                # No explicit ports — use only the base port
+                active_ports = [base_port]
+                print(f"[server] using single port: {active_ports}", flush=True)
         else:
             # No ctrl port — just use whatever is already live
             if ports is None:
@@ -678,6 +773,8 @@ async def run_test(
         except subprocess.TimeoutExpired:
             server_proc.kill()
         print("[server] stopped", flush=True)
+    elif launch and _already_running:
+        print("[server] left running (was already up before test)", flush=True)
 
     return results
 
@@ -694,48 +791,69 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
     lines.append(f"SUMMARY  mode={mode}  total={len(results)}  passed={len(passed)}  failed={len(failed)}")
     lines.append(f"{'='*70}")
 
-    has_ttff = any(r.ttff_s is not None for r in results)
-    has_rtf  = any(r.rtf   is not None for r in results)
+    cache_hits = [r for r in passed if r.cache_hit]
+    llm_hits   = [r for r in passed if not r.cache_hit]
+
+    has_ttff     = any(r.ttff_s          is not None for r in results)
+    has_llm_ttft = any(r.llm_ttft_ms     is not None for r in results)
+    has_dec_ttft = any(r.decoder_ttft_ms is not None for r in results)
+
     header = (
         f"{'req':>4}  {'port':>5}  {'ok':>4}  {'lat(s)':>7}  "
         + (f"{'ttff(s)':>7}  " if has_ttff else "")
-        + f"{'llm_s':>6}  {'dec_s':>6}  "
-        + (f"{'rtf':>5}  " if has_rtf else "")
-        + f"{'bytes':>8}  {'tokens':>7}  detail"
+        + (f"{'llm_ttft':>8}  " if has_llm_ttft else "")
+        + (f"{'dec_ttft':>8}  " if has_dec_ttft else "")
+        + f"{'llm_s':>6}  {'dec_s':>6}  {'bytes':>8}  {'tokens':>7}  detail"
     )
     lines.append(header)
-    lines.append("-" * (93 if has_ttff and has_rtf else 88 if has_ttff or has_rtf else 80))
+    lines.append("-" * len(header))
 
     for r in sorted(results, key=lambda x: x.req_id):
-        detail = str(r.wav_path.name) if r.wav_path else (r.error or "")
-        ttff_col = (f"{r.ttff_s:>7.3f}  " if r.ttff_s is not None else f"{'─':>7}  ") if has_ttff else ""
-        rtf_col  = (f"{r.rtf:>5.3f}  " if r.rtf is not None else f"{'─':>5}  ") if has_rtf else ""
+        detail       = str(r.wav_path.name) if r.wav_path else (r.error or "")
+        ttff_col     = (f"{r.ttff_s:>7.3f}  "              if r.ttff_s          is not None else f"{'─':>7}  ")  if has_ttff     else ""
+        llm_ttft_col = (f"{r.llm_ttft_ms/1000:>8.3f}  "    if r.llm_ttft_ms    is not None else f"{'─':>8}  ")  if has_llm_ttft else ""
+        dec_ttft_col = (f"{r.decoder_ttft_ms/1000:>8.3f}  " if r.decoder_ttft_ms is not None else f"{'─':>8}  ") if has_dec_ttft else ""
         lines.append(
             f"{r.req_id:>4}  {r.port:>5}  {'✓' if r.passed else '✗':>4}  "
             f"{r.latency_s:>7.3f}  "
-            + ttff_col
+            + ttff_col + llm_ttft_col + dec_ttft_col
             + f"{r.llm_s if r.llm_s is not None else '-':>6}  "
             f"{r.decode_s if r.decode_s is not None else '-':>6}  "
-            + rtf_col
-            + f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
+            f"{r.wav_bytes:>8}  {r.token_chars:>7}  {detail}"
         )
 
     if passed:
-        lats  = [r.latency_s for r in passed]
-        llms  = [r.llm_s     for r in passed if r.llm_s    is not None]
-        decs  = [r.decode_s  for r in passed if r.decode_s is not None]
-        ttffs = [r.ttff_s    for r in passed if r.ttff_s   is not None]
-        rtfs  = [r.rtf       for r in passed if r.rtf      is not None]
+        lats            = [r.latency_s      for r in passed]
+        llms            = [r.llm_s          for r in passed if r.llm_s          is not None]
+        decs            = [r.decode_s       for r in passed if r.decode_s       is not None]
+        ttffs           = [r.ttff_s         for r in passed if r.ttff_s         is not None]
+        rtfs            = [r.rtf            for r in passed if r.rtf            is not None]
+        llm_ttfts       = [r.llm_ttft_ms    for r in passed if r.llm_ttft_ms    is not None]
+        decoder_ttfts   = [r.decoder_ttft_ms for r in passed if r.decoder_ttft_ms is not None]
 
         def _fmt(vals: list, unit: str = "s") -> str:
             if not vals:
                 return "n/a"
-            return f"min={min(vals):.3f}{unit}  avg={sum(vals)/len(vals):.3f}{unit}  max={max(vals):.3f}{unit}"
+            sv = sorted(vals)
+            p95 = sv[int(len(sv) * 0.95)]
+            return f"min={min(vals):.3f}{unit}  avg={sum(vals)/len(vals):.3f}{unit}  p95={p95:.3f}{unit}  max={max(vals):.3f}{unit}"
+
+        def _fmt_ms(vals: list) -> str:
+            if not vals:
+                return "n/a"
+            return f"min={min(vals)}ms  avg={sum(vals)//len(vals)}ms  max={max(vals)}ms"
 
         lines.append(f"\n{'─'*60}")
-        lines.append(f"  total latency : {_fmt(lats)}")
+        lines.append(f"  total latency    : {_fmt(lats)}")
         if ttffs:
-            lines.append(f"  time-to-first : {_fmt(ttffs)}  (first audio chunk)")
+            lines.append(f"  time-to-first : {_fmt(ttffs)}  (first audio chunk, client-measured)")
+        if llm_ttfts:
+            lines.append(f"  llm ttft      : {_fmt_ms(llm_ttfts)}  (first speech token from LLM)")
+        if decoder_ttfts:
+            lines.append(f"  decoder ttft  : {_fmt_ms(decoder_ttfts)}  (first decode_async done)")
+        if llm_ttfts and decoder_ttfts and len(llm_ttfts) == len(decoder_ttfts):
+            decode_lag = [d - l for d, l in zip(decoder_ttfts, llm_ttfts)]
+            lines.append(f"  decode lag    : {_fmt_ms(decode_lag)}  (decoder_ttft - llm_ttft)")
         lines.append(f"  llm           : {_fmt(llms)}")
         lines.append(f"  decoder       : {_fmt(decs)}")
         if llms and decs and len(llms) == len(decs):
@@ -751,6 +869,8 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         for r in failed:
             lines.append(f"  req{r.req_id:04d} port={r.port}: {r.error}")
 
+    pct = round(len(cache_hits) / len(passed) * 100) if passed else 0
+    lines.append(f"\n  cache_hits={len(cache_hits)}  llm_requests={len(llm_hits)}  ({pct}% cached)")
     lines.append(f"\n{'✓ ALL PASSED' if not failed else f'✗ {len(failed)} FAILED'}")
     lines.append(f"{'='*70}")
 
@@ -793,7 +913,7 @@ def _is_flowtts_gateway(port: int, host: str = "localhost") -> bool:
         return False
 
 
-def _discover_ports(base: int = 8765, scan_range: int = 50) -> List[int]:
+def _discover_ports(base: int = 8080, scan_range: int = 50) -> List[int]:
     """Return all live FlowTTS gateway ports in [base, base+scan_range)."""
     live = [p for p in range(base, base + scan_range)
             if _port_open(p) and _is_flowtts_gateway(p)]
@@ -830,14 +950,25 @@ def _resolve_ports(
 # Entry point
 # ---------------------------------------------------------------------------
 async def main(args: argparse.Namespace) -> None:
+    global _VOICE_ID, _FIXED_SENTENCE, _BENCH_TEXTS
     out_dir = _make_out_dir()
 
-    streaming   = getattr(args, "streaming", None)
+    streaming        = getattr(args, "streaming", None)
     if streaming is None:
         streaming = _settings.streaming.enabled
-    save_chunks = getattr(args, "save_chunks", False)
+    save_chunks      = getattr(args, "save_chunks", False)
+    _VOICE_ID        = getattr(args, "voice", "") or ""
+    _FIXED_SENTENCE  = getattr(args, "sentence", "") or ""
+    cache_mix        = getattr(args, "cache_mix", None)
 
-    model_type = getattr(args, "model_type", None) or None  # None = inherit from env
+    if _VOICE_ID:
+        print(f"[voice] using voice_id={_VOICE_ID!r}", flush=True)
+    if _FIXED_SENTENCE:
+        print(f"[sentence] repeating: {_FIXED_SENTENCE!r}", flush=True)
+    if cache_mix and not _FIXED_SENTENCE:
+        _BENCH_TEXTS = _build_cache_mix(args.requests, cache_mix, _VOICE_ID)
+        if not _BENCH_TEXTS:
+            print("[cache_mix] fallback to default texts", flush=True)
 
     if args.launch:
         results = await run_test(
@@ -850,7 +981,6 @@ async def main(args: argparse.Namespace) -> None:
             skip_decoder=args.skip_decoder,
             streaming=streaming,
             save_chunks=save_chunks,
-            model_type=model_type,
         )
     else:
         # Prefer ctrl API for port discovery if available and no explicit port list given
@@ -869,7 +999,6 @@ async def main(args: argparse.Namespace) -> None:
             ports=port_list,
             streaming=streaming,
             save_chunks=save_chunks,
-            model_type=model_type,
         )
 
     ok = _print_summary(results, args.mode, out_dir)
@@ -906,14 +1035,12 @@ if __name__ == "__main__":
                         help="Use streaming mode (default: settings.streaming.enabled)")
     parser.add_argument("--save-chunks", dest="save_chunks", action="store_true", default=False,
                         help="In streaming mode, also save each individual chunk WAV (in addition to the concatenated file)")
-    parser.add_argument(
-        "--model-type", dest="model_type", choices=["mira", "voxcpm"], default=None,
-        help=(
-            "TTS model to use: 'mira' (default, MiraITS/sglang) or 'voxcpm' (VoxCPM2). "
-            "Sets FLOWTTS_MODEL_TYPE in the launched server subprocess. "
-            "When omitted the value from the current environment is used."
-        ),
-    )
+    parser.add_argument("--voice", default="", choices=["", "simran", "tara", "vikram", "daya", "british_rose", "rani", "sana", "anita", "vanita", "sunita", "anika", "anika2", "monika", "saavi", "zara", "gargi"],
+                        help="Voice ID to use for synthesis (default: server default)")
+    parser.add_argument("--sentence", default="", metavar="TEXT",
+                        help="Repeat this single sentence for all requests")
+    parser.add_argument("--cache-mix", default=None, metavar="MIX",
+                        help="Sentence mix: full/100=all cached, none/0=all uncached, half/50, or 0-100")
 
     # External-server port selection
     pg = parser.add_mutually_exclusive_group()
@@ -921,12 +1048,12 @@ if __name__ == "__main__":
                     help="Explicit comma-separated port list (--no-launch)")
     pg.add_argument("--n-ports", type=int, default=None,
                     help="Number of sequential ports from --base-port (--no-launch)")
-    parser.add_argument("--base-port", "--port", dest="base_port", type=int, default=8765,
-                        help="Base WS port (default: 8765)")
+    parser.add_argument("--base-port", "--port", dest="base_port", type=int, default=8080,
+                        help="Base WS port (default: 8080)")
 
     args = parser.parse_args()
     # If neither --launch nor --no-launch was given, auto-detect from other flags.
     if args.launch is None:
-        _external_hints = {"--ctrl-port", "--n-ports", "--ports", "--no-launch"}
+        _external_hints = {"--n-ports", "--ports", "--no-launch"}
         args.launch = not bool(_external_hints.intersection(sys.argv))
     asyncio.run(main(args))

@@ -17,7 +17,7 @@ from typing import Iterable
 import websockets
 
 
-WS_URL = "ws://localhost:8765/ws"
+WS_URL = "ws://localhost:8080/ws"
 
 
 async def synthesize_stream(texts: Iterable[str], call_id: str) -> None:

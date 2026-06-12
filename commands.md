@@ -1,45 +1,16 @@
 # FlowTTS Commands
 
-## Launch server (Mira — default)
+## Launch server
 ```bash
-cd /home/ubuntu/FlowTTS
+cd FlowTTS/
+source llmc/bin/activate
 source .venv/bin/activate
+
+```
+```bash
+cd /root/FlowTTS
 bash run.sh --ctrl-port 8764
 ```
-
-## Launch server (VoxCPM)
-```bash
-cd /home/ubuntu/FlowTTS
-FLOWTTS_MODEL_TYPE=voxcpm \
-.venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
-```
-
-## launch mira
-```bash
-cd /home/ubuntu/FlowTTS
-FLOWTTS_MODEL_TYPE=mira .venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
-
-.venv/bin/python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5
-```
-
-Defaults already point to the correct paths:
-- Model: `/home/ubuntu/voxcpm/model`
-- Ref audio: `/home/ubuntu/voxcpm/deployment/simran_flow.wav`
-- Ref audio text: `"क्या आप अपना नाम बता सकते हैं?"`
-
-Override with env vars:
-```bash
-FLOWTTS_MODEL_TYPE=voxcpm \
-FLOWTTS_VOXCPM__REF_AUDIO=/home/ubuntu/voxcpm/deployment/simran_flow.wav \
-FLOWTTS_VOXCPM__REF_AUDIO_TEXT="क्या आप अपना नाम बता सकते हैं?" \
-.venv/bin/python -m flowtts.server --ports 1 --ctrl-port 8764
-```
-
-> **Note:** `REF_AUDIO_TEXT` is required when `REF_AUDIO` is set.
-> If `REF_AUDIO_TEXT` is empty the server falls back to zero-shot mode automatically.
-> Model weights: `/home/ubuntu/voxcpm/model/` (4.6 GB safetensors, real weights — not LFS pointers).
-
----
 
 ## Open N ports
 
@@ -47,16 +18,10 @@ FLOWTTS_VOXCPM__REF_AUDIO_TEXT="क्या आप अपना नाम ब�
 python3 -m flowtts.test.open_ports --n 40
 ```
 
----
-
 ## Send N requests (1 per port)
 
 ```bash
-# Full pipeline — Mira (LLM + decoder, returns WAV)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75
-
-# Full pipeline — VoxCPM
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --model-type voxcpm
+# Full pipeline (LLM + decoder, returns WAV)
 
 # Streaming — audio chunks sent as they are generated (shows time-to-first-chunk)
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
@@ -64,18 +29,16 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
 # Streaming + save each chunk as an individual WAV file
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming --save-chunks
 
-# LLM only — no decoder, measure pure generation latency (Mira only)
+# LLM only — no decoder, measure pure generation latency
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-decoder
 ```
 
 - Auto-discovers all open ports from the server
 - Assigns exactly 1 request per port (round-robin matches when requests == ports)
-- `--model-type voxcpm` tells the test to launch/use a VoxCPM server and use English test sentences
-- `--streaming` uses the streaming pipeline; summary shows `ttff(s)` (time to first audio chunk)
+- `--streaming` uses the streaming pipeline: LLM tokens → decoder → WAV in chunks; summary shows `ttff(s)` (time to first audio chunk) per request
 - `--save-chunks` (requires `--streaming`) saves each chunk WAV individually alongside the combined output
-- Streaming chunk size, crossfade, and fade-out are configured in `flowtts/core/config.py → StreamingSettings`
-  - Override via env: `FLOWTTS_STREAMING__CHUNK_TOKENS=50`, `FLOWTTS_STREAMING__CROSSFADE_SAMPLES=0`
-- `--skip-decoder` sends `skip_decoder=true` per-request (Mira only, tokens-only, no WAV)
+- Streaming chunk size, crossfade, and fade-out are configured in `flowtts/core/config.py → StreamingSettings` (or via env vars)
+- `--skip-decoder` sends `skip_decoder=true` per-request to the running server (no WAV decode, tokens only)
 
 ---
 
@@ -85,7 +48,15 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-deco
 python3 -m flowtts.test.open_ports --n 50
 ```
 
-Continues from the next port after the highest already open.
+- Continues from the next port after the highest already open
+
+---
+
+## Send M+N requests (1 per port)
+
+```bash
+cd /root/FlowTTS && python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 90
+```
 
 ---
 
@@ -110,73 +81,129 @@ ss -tlnp | grep python3 | awk '{print $4}' | sort -t: -k2 -n
 
 ---
 
-## Launch server without decoder (Mira — LLM only, faster)
+## Launch server without decoder (LLM only, faster)
 
 ```bash
-bash run.sh --ctrl-port 8764 --skip-decoder
+cd /root/FlowTTS && bash run.sh --ctrl-port 8764 --skip-decoder
 ```
 
 Returns `audio_tokens` only, no WAV. Use for LLM latency benchmarking.
 
 ---
 
-## Test batch decode — Mira ncodec (no server needed)
+## Test batch decode (no server needed)
 
+Must set LD_LIBRARY_PATH so onnxruntime uses GPU (libcudnn.so.9):
 ```bash
-cd /home/ubuntu/FlowTTS
+cd /root/FlowTTS
+export LD_LIBRARY_PATH=/root/CleanTTSData/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
 python3 flowtts/test/test_concurrent_decode.py --n-requests 30 --rounds 3
 ```
 
 - Codec initialised **once** (model load + ONNX session warm-up)
 - Runs R rounds of N concurrent `decode_async()` — only round 1 pays cold-start cost
 - Reports per-round: batch sizes dispatched, GPU call count, latency (p50/p95/p99), req/s
+- Without `libcudnn.so.9` on LD_LIBRARY_PATH, ONNX falls back to CPU (~15x slower!)
+- `run.sh` sets this automatically when launching the server
 
 Options:
 ```bash
-python3 flowtts/test/test_concurrent_decode.py \
+# 90 requests, 5 rounds, larger GPU chunk, more ONNX workers
+export LD_LIBRARY_PATH=/root/CleanTTSData/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+/root/CleanTTSData/.venv/bin/python3 flowtts/test/test_concurrent_decode.py \
     --n-requests 90 --rounds 5 --gpu-chunk 100 --onnx-workers 4
 ```
 
 ---
 
-## Enable TensorRT decoder — Mira only (3-5x faster, first run ~60s compile)
+## Enable TensorRT decoder (3-5x faster, first run ~60s compile)
 
+Set in config or via env var:
 ```bash
 # Via env var (one-off)
-FLOWTTS_DECODER__USE_TRT=true bash run.sh --ports 1
+FLOWTTS_DECODER__USE_TRT=true cd /root/FlowTTS && bash run.sh --ports 1
 
 # Or edit flowtts/core/config.py → DecoderSettings → use_trt: bool = True
 ```
 
 - Engine cached to disk as `decoder_trt_b50.ep` next to model weights
 - Subsequent starts load cache instantly (no recompile)
+- Requires: `torch-tensorrt 2.9.0` (already installed)
 
 ---
 
-## VoxCPM tuning knobs
+## Use a specific voice
 
-All override via env var (`FLOWTTS_VOXCPM__<FIELD>`):
+```bash
+# Use tara voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice tara
 
-| Env var | Default | Effect |
-|---|---|---|
-| `FLOWTTS_VOXCPM__MODEL_DIR` | `/home/ubuntu/voxcpm/model` | Path to model checkpoint |
-| `FLOWTTS_VOXCPM__REF_AUDIO` | `/home/ubuntu/voxcpm/deployment/simran_flow.wav` | Reference audio for voice cloning |
-| `FLOWTTS_VOXCPM__REF_AUDIO_TEXT` | `"क्या आप अपना नाम बता सकते हैं?"` | Transcript of ref audio; empty → zero-shot mode |
-| `FLOWTTS_VOXCPM__INFERENCE_TIMESTEPS` | `6` | Diffusion ODE steps (fewer = faster, lower quality) |
-| `FLOWTTS_VOXCPM__MAX_NUM_SEQS` | `150` | Max parallel decode sequences |
-| `FLOWTTS_VOXCPM__GPU_MEMORY_UTILIZATION` | `0.80` | VRAM fraction for model + KV cache |
-| `FLOWTTS_VOXCPM__CFG_VALUE` | `2.0` | Classifier-free guidance scale |
-| `FLOWTTS_VOXCPM__TEMPERATURE` | `1.0` | Sampling temperature |
-| `FLOWTTS_VOXCPM__MAX_GENERATE_LENGTH` | `2000` | Max latent patches to generate |
+# Use simran voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice simran
+
+# Use vikram voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vikram
+
+# Use daya voice
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice daya
+
+# Use vanita voice  (sample_files/vanita.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vanita
+
+# Use sunita voice  (sample_files/sunita.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice sunita
+
+# Use rani voice  (sample_files/rani.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice rani
+
+# Use sana voice  (sample_files/sana.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice sana
+
+# Use anita voice  (sample_files/anita.wav)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice anita
+```
+
+```bash
+# Use british_rose voice (English sentences — auto-selected)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice british_rose
+
+# Run simran with English sentences (auto-selected)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice simran
+```
+
+- Available voices: `simran`, `tara`, `vikram`, `daya`, `british_rose`, `rani`, `sana`, `anita`, `vanita`, `sunita`
+- `simran` and `british_rose` automatically use English test sentences (`_ENGLISH_AMERICAN`)
+- `tara`, `vikram`, `daya` use Hindi fallback sentences
+- Default voice (no `--voice`) is `british_rose` (set in `TtsModelSettings.ref_audio`)
+- If WAV cache exists for that voice (`~/FlowTTS/cached_data_<voice>/`), matching sentences are served instantly without hitting the LLM
+
+---
+
+## Download WAV cache (for cache hits)
+
+```bash
+# Download tara cache → ~/FlowTTS/cached_data_tara
+python3 flowtts/setup/download_cache.py --voice tara
+
+# Download simran cache → ~/FlowTTS/cached_data_simran
+python3 flowtts/setup/download_cache.py --voice simran
+
+# Both at once
+python3 flowtts/setup/download_cache.py --voice tara --voice simran
+```
+
+- WAVs are sha256-named and served directly on cache hit (bypasses LLM entirely)
+- Cache dirs are auto-detected per voice by the server (`cached_data_<voice>/`)
 
 ---
 
 ## Notes
 
 - Server ctrl API runs on `127.0.0.1:8764`
-- WS ports start at `8765` by default
-- Model type is selected by `FLOWTTS_MODEL_TYPE=mira|voxcpm` (default: `mira`)
-- All requests run fully parallel (sglang batches for Mira; VoxCPM2 scheduler batches internally)
-- WAV output saved to `~/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/`
-- VoxCPM outputs **48 kHz** audio; Mira outputs **16 kHz**
-- Decoder config (Mira) lives in `DecoderSettings` (`max_batch`, `gpu_chunk_size`, `onnx_workers`, `use_trt`)
+- WS ports start at `8080` by default
+- All requests run fully parallel (sglang batches LLM, decoder batches via TTSCodec queue)
+- WAV output saved to `/root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/`
+- `--skip-decoder` skips ONNX/GPU decode — returns tokens only, no audio_base64
+- Decoder config lives in `DecoderSettings` (`max_batch`, `gpu_chunk_size`, `onnx_workers`, `use_trt`)
+- Streaming config lives in `StreamingSettings` (`chunk_tokens`, `crossfade_samples`, `fade_out_samples`)
+  - Override via env: `FLOWTTS_STREAMING__CHUNK_TOKENS=50`, `FLOWTTS_STREAMING__CROSSFADE_SAMPLES=0`, `FLOWTTS_STREAMING__FADE_OUT_SAMPLES=480`

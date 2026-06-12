@@ -38,6 +38,16 @@ class DecodedAudio:
     num_samples: int
 
 
+def pcm_to_int16_bytes(pcm: np.ndarray) -> bytes:
+    """Convert float32 PCM array to raw int16 bytes (no WAV header).
+
+    Use this for streaming chunks so the client can concatenate frames
+    into one continuous PCM stream without header interference.
+    """
+    pcm = np.clip(pcm, -1.0, 1.0)
+    return (pcm * 32767).astype(np.int16).tobytes()
+
+
 def tensor_to_wav(wav_tensor, sample_rate: int = SAMPLE_RATE) -> DecodedAudio:
     """Convert the tensor returned by TTSCodec.decode / decode_async → DecodedAudio."""
     wav = np.asarray(wav_tensor)

@@ -10,7 +10,7 @@ synthesized audio in real-time.  It mirrors the structure of litranscriber.py
 
 Usage
 -----
-    synth = FlowSynthesizer(url="ws://localhost:8765", call_id="call-abc")
+    synth = FlowSynthesizer(url="ws://localhost:8080", call_id="call-abc")
     synth.start()                         # connect + start background loops
 
     synth.send_text("నమస్తే!")             # queue a sentence
@@ -68,7 +68,7 @@ class FlowSynthesizer:
     Parameters
     ----------
     url:
-        WebSocket URL of the FlowTTS server, e.g. ``"ws://localhost:8765"``.
+        WebSocket URL of the FlowTTS server, e.g. ``"ws://localhost:8080"``.
     call_id:
         Identifier for this call session.  Echoed back in every response and
         used by the server for logging.
@@ -81,7 +81,7 @@ class FlowSynthesizer:
 
     def __init__(
         self,
-        url: str = "ws://localhost:8765",
+        url: str = "ws://localhost:8080",
         call_id: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         request_timeout: Optional[float] = None,
@@ -344,7 +344,7 @@ class FlowSynthesizer:
 async def _demo() -> None:
     import sys
 
-    url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8765"
+    url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8080"
     texts = sys.argv[2:] or [
         "నమస్తే! ఈ రోజు మీరు ఎలా ఉన్నారు?",
         "తెలుగు భాష చాలా మధురంగా ఉంటుంది.",
