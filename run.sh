@@ -18,6 +18,8 @@
 
 set -uo pipefail
 
+export CUDA_HOME=/usr/local/cuda-12.8
+
 VENV="${VIRTUAL_ENV:-${HOME}/FlowTTS/.venv}"
 PYTHON="${VENV}/bin/python3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

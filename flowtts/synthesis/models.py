@@ -279,9 +279,8 @@ class FlowTtsSynthesizer:
                         yield ""
                         return
                 else:
-                    if pending_silence:
-                        to_yield.extend(pending_silence)
-                        pending_silence.clear()
+                    # Drop pending silence tokens — they decode as clicks/pops.
+                    pending_silence.clear()
                     silence_streak = 0
                     to_yield.append(tok)
 

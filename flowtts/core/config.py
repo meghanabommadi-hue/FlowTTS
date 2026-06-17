@@ -56,25 +56,25 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
+        ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
+        # ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
-    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
+    mem_fraction_static: float = 0.82      # ~80GB KV cache on 97GB GPU; more slots = more concurrent requests
+    attention_backend: str = "triton"      # triton is fastest for decode-heavy TTS
     chunked_prefill_size: int = 16384
-    max_running_requests: int = 200         # allow all ports to run concurrently in sglang scheduler
-    schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
-    cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
+    max_running_requests: int = 200        # allow all ports to run concurrently in sglang scheduler
+    schedule_policy: str = "fcfs"          # first-come-first-served: lower tail latency under deep queue vs lpm
+    cuda_graph_max_bs: int = 256           # pre-capture CUDA graphs up to this batch size; covers 100 concurrent reqs
     disable_radix_cache: bool = False
-    num_continuous_decode_steps: int = 4    # batch N decode steps before re-scheduling → less scheduler overhead
+    num_continuous_decode_steps: int = 20  # run 20 decode steps before re-scheduling → far less scheduler overhead under load
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
+    max_tokens: int = 600                  # ~12s max audio; 400 was cutting long sentences mid-word
     temperature: float = 0.1               # greedy — fastest, deterministic
     top_p: float = 0.5
     top_k: int = 50
@@ -118,10 +118,10 @@ class StreamingSettings(BaseModel):
     # --- Chunk size ---
     # Tokens per chunk for the first two chunks (low latency warm-up).
     # At ~50 tokens/sec: 20 tokens ≈ 400ms of audio.
-    chunk_tokens_early: int = 15
+    chunk_tokens_early: int = 25
 
     # Tokens per chunk from chunk 3 onward (larger = fewer boundaries = smoother).
-    chunk_tokens_late: int = 50
+    chunk_tokens_late: int = 60
 
     # --- Codec overlap ---
     # Tail tokens from the previous chunk prepended to the next decode for context.
@@ -132,7 +132,7 @@ class StreamingSettings(BaseModel):
     # --- Server-side crossfade ---
     # Samples held back from each chunk's tail and blended into the next chunk's head.
     # 1280 = 80ms at 16kHz. Set to 0 to disable crossfade entirely.
-    crossfade_samples: int = 1280
+    crossfade_samples: int = 2560  # 160ms at 16kHz — long enough to hide codec boundary transients
 
     # Unused — fade-out disabled to prevent gaps.
     fade_out_samples: int = 0

@@ -262,7 +262,8 @@ async def _handle_streaming_request(
     token_buf     = []          # complete <|speech_token_N|> strings ready to decode
     overlap_tokens: list = []   # tail tokens from previous chunk prepended for codec context
     _OVERLAP      = _OVERLAP_TOKENS      # from config: overlap_tokens
-    _XFADE        = _CROSSFADE_SAMPLES   # from config: crossfade_samples (used for fade-in/out length)
+    _XFADE        = 160                  # 10ms at 16kHz — small enough to never gap, enough to hide click
+    prev_tail: np.ndarray | None = None  # held-back tail of previous chunk for crossfade
     chunk_index   = 0
     total_tokens  = 0
     total_wav_b   = 0
@@ -275,8 +276,23 @@ async def _handle_streaming_request(
     loop = asyncio.get_event_loop()
 
     async def _flush_chunk(is_final: bool) -> None:
-        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens, decoder_ttft_ms
+        nonlocal chunk_index, total_tokens, total_wav_b, decode_total, wav_total, first_chunk_sent, overlap_tokens, decoder_ttft_ms, prev_tail
         if not token_buf:
+            if is_final and prev_tail is not None:
+                # No new tokens but held-back tail still needs sending with fade-out.
+                tail = prev_tail.copy()
+                tail[-min(_XFADE, len(tail)):] *= np.linspace(1.0, 0.0, min(_XFADE, len(tail)), dtype=np.float32)
+                prev_tail = None
+                audio_bytes = await loop.run_in_executor(_wav_executor, pcm_to_int16_bytes, tail)
+                total_wav_b += len(audio_bytes)
+                await ws.send(
+                    json.dumps({"type": "audio_chunk", "call_id": call_id, "text_id": text_id,
+                                "chunk_index": chunk_index, "sample_rate": SAMPLE_RATE,
+                                "encoding": "pcm_int16", "wav_bytes": len(audio_bytes),
+                                "tokens": 0, "is_final": True, "cache_hit": False,
+                    }).encode() + audio_bytes
+                )
+                chunk_index += 1
             return
 
         real_tokens   = list(token_buf)
@@ -302,29 +318,24 @@ async def _handle_streaming_request(
             discard = n_overlap * 320  # 1 token = 320 samples at 16kHz
             pcm = pcm[discard:]
 
-        # Remove DC offset across the whole chunk to prevent waveform baseline
-        # shifts that cause clicks at boundaries.
         pcm = pcm - pcm.mean()
 
-        # Server-side crossfade: blend the tail of the previous chunk's output
-        # with the head of this chunk IN PLACE — no audio is repeated or held back.
-        # prev_tail is the last xfade samples already sent to the client; we overlap
-        # them with the first xfade samples of this chunk and send the blend as a
-        # correction prefix, effectively smoothing the join without echoing content.
-        #
-        # Simpler and echo-free approach: just apply a short fade-in to the head of
-        # every non-first chunk. This removes the codec boundary transient without
-        # any double-play of audio.
-        xfade = min(_XFADE, len(pcm) // 4)
-        if chunk_index > 0 and xfade > 0:
-            fade_len = min(xfade, len(pcm))
+        # Crossfade: blend held-back tail of previous chunk with head of this chunk.
+        # _XFADE=160 samples (10ms) — small enough to never cause audible gaps.
+        if prev_tail is not None:
+            fl = min(_XFADE, len(prev_tail), len(pcm))
             pcm = pcm.copy()
-            pcm[:fade_len] *= np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
+            pcm[:fl] = (prev_tail[-fl:] * np.linspace(1.0, 0.0, fl, dtype=np.float32)
+                      + pcm[:fl]         * np.linspace(0.0, 1.0, fl, dtype=np.float32))
 
-        # Fade out the final chunk's tail so the audio ends cleanly.
-        if is_final and xfade > 0 and len(pcm) > xfade:
-            pcm = pcm.copy()
-            pcm[-xfade:] *= np.linspace(1.0, 0.0, xfade, dtype=np.float32)
+        if not is_final and len(pcm) > _XFADE:
+            prev_tail = pcm[-_XFADE:].copy()
+            pcm = pcm[:-_XFADE]
+        else:
+            prev_tail = None
+            if is_final and len(pcm) > _XFADE:
+                pcm = pcm.copy()
+                pcm[-_XFADE:] *= np.linspace(1.0, 0.0, _XFADE, dtype=np.float32)
 
         # Send raw int16 PCM — no WAV header — so client receives a continuous
         # byte stream with no headers causing gaps or parse overhead.
