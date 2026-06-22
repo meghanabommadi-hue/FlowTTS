@@ -143,6 +143,28 @@ class VoxCpmSynthesizer(BaseSynthesizer):
             except Exception as e:
                 logger.warning("voxcpm_ref_audio_failed", label="tara", error=str(e))
 
+        # Encode all named voices from VOICE_REF_AUDIO that have ref text defined
+        from flowtts.core.config import VOICE_REF_AUDIO  # noqa: PLC0415
+        _VOICE_REF_TEXTS: dict[str, str] = {
+            "anika":  "janta ki sarkar janta dwara janta keliye prithvi se nahi mitegi",
+            "anika2": "namasthe, call karne keliye aapka dhanyavaad, chinta mat kijiye, mein abhi aapki madad karti hun",
+            "gargi":  "samluchu sir, uh order delivery mein delay dikh raha hain, mein courier se abhi confirm kar rahi hun, app please hold kijiye",
+            "monika": "hello sir, mein monika bol rhi hun customer support se, batayiye kya dikkat aa rhi hain, mein poori koshish karungi aapki help karne ki",
+            "saavi":  "hello sir, i hope sab theek chal raha hoga, batayiye mein aapki kis tarah se madad kar sakti hun",
+            "zara":   "theek hai, bas pehele ek choti si confirmation chahiye. haan bas wahi detail, ab aap ka request smoothly aage badh jaayega",
+        }
+        for v_id, v_path in VOICE_REF_AUDIO.items():
+            if v_id in self._voices:
+                continue  # already encoded
+            ref_text = _VOICE_REF_TEXTS.get(v_id, "")
+            if not ref_text or not os.path.isfile(v_path):
+                continue
+            try:
+                latents = await _encode_voice(v_path, ref_text, v_id)
+                self._voices[v_id] = (latents, ref_text)
+            except Exception as e:
+                logger.warning("voxcpm_ref_audio_failed", label=v_id, error=str(e))
+
         print("\n" + "=" * 60, flush=True)
         print("  VoxCpmSynthesizer — ready", flush=True)
         print("=" * 60, flush=True)
@@ -192,11 +214,13 @@ class VoxCpmSynthesizer(BaseSynthesizer):
         nanovllm_voxcpm version — it returns silent/zero audio when latents are
         passed.  Return (None, "") to force zero-shot mode until fixed upstream.
         """
-        if voice_id and voice_id not in self._voices:
+        if voice_id and voice_id in self._voices:
+            return self._voices[voice_id]
+        if voice_id:
             logger.warning("voxcpm_unknown_voice_id", voice_id=voice_id,
                            available=list(self._voices.keys()))
-        # Zero-shot mode: no prompt latents
-        return None, ""
+        # Fall back to default voice — always use ref audio, never zero-shot
+        return self._prompt_latents, self._prompt_text
 
     async def synthesize(self, text: str, voice_id: str | None = None) -> SynthResult:
         if self._server is None:
@@ -223,6 +247,7 @@ class VoxCpmSynthesizer(BaseSynthesizer):
                 first_vae_ms = chunk.get("first_vae_ms")
                 continue
             chunks.append(np.asarray(chunk, dtype=np.float32))
+        # synthesize() always consumes the full generator — no cancel needed
 
         total_s = time.perf_counter() - t0
         pcm = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
@@ -249,47 +274,51 @@ class VoxCpmSynthesizer(BaseSynthesizer):
 
         use_latents, use_text = self._resolve_voice(voice_id)
 
-        async for chunk in self._server.generate(
+        gen = self._server.generate(
             target_text=text,
             prompt_latents=use_latents,
             prompt_text=use_text,
             cfg_value=cfg.cfg_value,
             temperature=cfg.temperature,
             max_generate_length=cfg.max_generate_length,
-        ):
-            if isinstance(chunk, dict):
-                first_llm_ms = chunk.get("first_llm_ms")
-                first_vae_ms = chunk.get("first_vae_ms")
-                continue
-
-            pcm = np.asarray(chunk, dtype=np.float32)
-            if pending is not None:
-                # Yield the previous chunk as non-final
-                yield SynthChunk(
-                    wav_bytes=_pcm_to_wav(pending, self._sample_rate),
-                    is_final=False,
-                    sample_rate=self._sample_rate,
-                    n_tokens=0,
-                    meta={},
-                )
-            pending = pcm
-
-        # Last chunk is final and carries timing
-        if pending is not None and pending.size > 0:
-            pcm_final = pending
-        else:
-            pcm_final = np.zeros(0, dtype=np.float32)
-
-        yield SynthChunk(
-            wav_bytes=_pcm_to_wav(pcm_final, self._sample_rate),
-            is_final=True,
-            sample_rate=self._sample_rate,
-            n_tokens=0,
-            meta={
-                "first_llm_ms": first_llm_ms,
-                "first_vae_ms": first_vae_ms,
-            },
         )
+        try:
+            async for chunk in gen:
+                if isinstance(chunk, dict):
+                    first_llm_ms = chunk.get("first_llm_ms")
+                    first_vae_ms = chunk.get("first_vae_ms")
+                    continue
+
+                pcm = np.asarray(chunk, dtype=np.float32)
+                if pending is not None:
+                    yield SynthChunk(
+                        wav_bytes=_pcm_to_wav(pending, self._sample_rate),
+                        is_final=False,
+                        sample_rate=self._sample_rate,
+                        n_tokens=0,
+                        meta={},
+                    )
+                pending = pcm
+
+            # Last chunk is final and carries timing
+            if pending is not None and pending.size > 0:
+                pcm_final = pending
+            else:
+                pcm_final = np.zeros(0, dtype=np.float32)
+
+            yield SynthChunk(
+                wav_bytes=_pcm_to_wav(pcm_final, self._sample_rate),
+                is_final=True,
+                sample_rate=self._sample_rate,
+                n_tokens=0,
+                meta={
+                    "first_llm_ms": first_llm_ms,
+                    "first_vae_ms": first_vae_ms,
+                },
+            )
+        except GeneratorExit:
+            await gen.aclose()
+            raise
 
     @property
     def sample_rate(self) -> int:

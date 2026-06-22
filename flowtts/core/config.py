@@ -68,7 +68,7 @@ class TtsModelSettings(BaseModel):
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
+    mem_fraction_static: float = 0.83      # proven A100/H200 baseline — 0.70 caused KV cache evictions
     attention_backend: str = "triton"      # fastest for decode-heavy TTS
     chunked_prefill_size: int = 16384
     max_running_requests: int = 200        # allow all ports to run concurrently in sglang scheduler
@@ -111,7 +111,7 @@ class DecoderSettings(BaseModel):
     batch_timeout_ms: float = 0.7
     gpu_chunk_size: int = 150
     onnx_workers: int = 1
-    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
+    use_trt: bool = False            # no compiled TRT engine present; use ONNX
 
 
 class StreamingSettings(BaseModel):
@@ -154,9 +154,9 @@ class VoxCpmSettings(BaseModel):
     # Must contain config.json, tokenizer.json and *.safetensors weights.
     model_dir: str = "/home/ubuntu/voxcpm/model"
 
-    # Default (simran) reference voice — used when no voice_id is specified.
-    ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/friendly_simran.wav"
-    ref_audio_text: str = "नमस्ते मैं बजाज फिनानके की तरफ से बात कर रही हूँ।"
+    # Default (zara) reference voice — used when no voice_id is specified.
+    ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/zara_vb.mp3"
+    ref_audio_text: str = "theek hai, bas pehele ek choti si confirmation chahiye. haan bas wahi detail, ab aap ka request smoothly aage badh jaayega"
 
     # Tara voice — used when voice_id="tara" is passed in the WS request.
     tara_ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/tara_vox.wav"
@@ -169,7 +169,7 @@ class VoxCpmSettings(BaseModel):
 
     # ------- VoxCPM2 engine knobs -------
     inference_timesteps: int = 6        # diffusion ODE steps (fewer = faster, lower quality)
-    max_num_batched_tokens: int = -1 # must be >= max_model_len; prefill batch size
+    max_num_batched_tokens: int = 16384  # must be >= max_model_len
     max_num_seqs: int = 150             # max sequences decoded in parallel
     max_model_len: int = 4096           # max KV sequence length
     gpu_memory_utilization: float = 0.80
@@ -181,8 +181,8 @@ class VoxCpmSettings(BaseModel):
     coalesce_ms: float = 0.0
 
     # ------- generation params -------
-    temperature: float = 0.1
-    cfg_value: float = 1.5
+    temperature: float = 0.2
+    cfg_value: float = 2.0
     max_generate_length: int = 2000
 
 

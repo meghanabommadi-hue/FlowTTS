@@ -64,10 +64,24 @@ _TEST_ROOT = Path.home() / "FlowTTS/test"
 _LLM_LOG   = Path.home() / "FlowTTS/llm.log"
 
 
-def _make_out_dir() -> Path:
+def _get_server_model_type(ctrl_port: int = 8764) -> str:
+    """Ask the running server what model_type it loaded. Falls back to env var, then 'mira'."""
+    try:
+        data = _ctrl_get(ctrl_port, "/ready", timeout=2.0)
+        model_type = data.get("model_type", "").strip()
+        if model_type:
+            return model_type
+    except Exception:
+        pass
+    return os.environ.get("FLOWTTS_MODEL_TYPE", "mira").strip() or "mira"
+
+
+def _make_out_dir(ctrl_port: int = 8764) -> Path:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    d = _TEST_ROOT / f"pipeline_test_{ts}"
+    model_type = _get_server_model_type(ctrl_port)
+    d = _TEST_ROOT / model_type / f"pipeline_test_{ts}"
     d.mkdir(parents=True, exist_ok=True)
+    print(f"[output] model_type={model_type!r}  dir={d}", flush=True)
     return d
 
 
@@ -951,7 +965,12 @@ def _resolve_ports(
 # ---------------------------------------------------------------------------
 async def main(args: argparse.Namespace) -> None:
     global _VOICE_ID, _FIXED_SENTENCE, _BENCH_TEXTS
-    out_dir = _make_out_dir()
+    if getattr(args, "out_dir", None):
+        out_dir = Path(args.out_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[output] dir={out_dir}", flush=True)
+    else:
+        out_dir = _make_out_dir(args.ctrl_port)
 
     streaming        = getattr(args, "streaming", None)
     if streaming is None:
@@ -1039,6 +1058,8 @@ if __name__ == "__main__":
                         help="Voice ID to use for synthesis (default: server default)")
     parser.add_argument("--sentence", default="", metavar="TEXT",
                         help="Repeat this single sentence for all requests")
+    parser.add_argument("--out-dir", default=None, metavar="DIR",
+                        help="Directory to save output WAV files (default: auto-generated under ~/FlowTTS/test/)")
     parser.add_argument("--cache-mix", default=None, metavar="MIX",
                         help="Sentence mix: full/100=all cached, none/0=all uncached, half/50, or 0-100")
 

@@ -22,6 +22,7 @@ python3 -m flowtts.test.open_ports --n 40
 
 ```bash
 # Full pipeline (LLM + decoder, returns WAV)
+python3 -m flowtts.test.test_pipeline --no-launch --ctrl-port 8764  --requests 100 --voice simran
 
 # Streaming — audio chunks sent as they are generated (shows time-to-first-chunk)
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
@@ -132,9 +133,12 @@ FLOWTTS_DECODER__USE_TRT=true cd /root/FlowTTS && bash run.sh --ports 1
 
 ---
 
+
 ## Use a specific voice
 
 ```bash
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice simran
+
 # Use tara voice
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice tara
 
@@ -171,6 +175,22 @@ python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice brit
 python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice simran
 ```
 
+```bash
+# Synthesize a specific sentence (repeated for all requests)
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --no-launch --requests 1 --voice zara \
+  --sentence "नमस्ते, आपकी कैसे मदद कर सकती हूं?"
+
+# Save output WAV to a specific directory
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --no-launch --requests 1 --voice zara \
+  --sentence "theek hai, aapki request process ho rahi hai" \
+  --out-dir ~/my_audio/
+
+# Combine both: specific sentence + specific output dir
+python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --no-launch --requests 3 --voice zara \
+  --sentence "Your EMI is due on the fifteenth." \
+  --out-dir ~/FlowTTS/test/custom/
+```
+
 - Available voices: `simran`, `tara`, `vikram`, `daya`, `british_rose`, `rani`, `sana`, `anita`, `vanita`, `sunita`
 - `simran` and `british_rose` automatically use English test sentences (`_ENGLISH_AMERICAN`)
 - `tara`, `vikram`, `daya` use Hindi fallback sentences
@@ -194,6 +214,66 @@ python3 flowtts/setup/download_cache.py --voice tara --voice simran
 
 - WAVs are sha256-named and served directly on cache hit (bypasses LLM entirely)
 - Cache dirs are auto-detected per voice by the server (`cached_data_<voice>/`)
+
+---
+
+## Run VoxCPM (diffusion TTS, 48kHz, voice cloning)
+
+VoxCPM is a separate model — runs instead of Mira/sglang. Set `FLOWTTS_MODEL_TYPE=voxcpm`.
+
+```bash
+# Start server with VoxCPM model (1 port)
+cd /home/ubuntu/FlowTTS
+FLOWTTS_MODEL_TYPE=voxcpm bash run.sh --ctrl-port 8764 --ports 1
+
+# With multiple ports
+FLOWTTS_MODEL_TYPE=voxcpm bash run.sh --ctrl-port 8764 --ports 3
+
+# With zara as default voice
+FLOWTTS_MODEL_TYPE=voxcpm \
+FLOWTTS_VOXCPM__REF_AUDIO=/home/ubuntu/FlowTTS/sample_files/zara_vb.mp3 \
+FLOWTTS_VOXCPM__REF_AUDIO_TEXT="theek hai, bas pehele ek choti si confirmation chahiye. haan bas wahi detail, ab aap ka request smoothly aage badh jaayega" \
+bash run.sh --ctrl-port 8764 --ports 1
+```
+
+### Generate voice samples directly (no server needed)
+
+```bash
+cd /home/ubuntu/FlowTTS
+
+# All 7 voices × 8 sentences → test/voiced_output/<voice>/
+.venv/bin/python3 gen_voices.py
+
+# Regenerate only saavi_vb
+.venv/bin/python3 gen_saavi.py
+```
+
+### Concatenate all chunks per voice into a single WAV
+
+```bash
+for dir in /home/ubuntu/FlowTTS/test/voiced_output/*/; do
+  voice=$(basename "$dir")
+  ls "$dir"${voice}_*.wav | grep -v concat | sort | sed "s/^/file '/;s/$/'/" > /tmp/concat_list.txt
+  /usr/bin/ffmpeg -y -f concat -safe 0 -i /tmp/concat_list.txt -c copy "$dir${voice}_concat.wav"
+done
+```
+
+### VoxCPM voices (sample_files/)
+
+| voice_id | file | ref text |
+|----------|------|----------|
+| `anika`  | `anika_vb.mp3`  | janta ki sarkar janta dwara janta keliye prithvi se nahi mitegi |
+| `anika2` | `anika2_vb.mp3` | namasthe, call karne keliye aapka dhanyavaad... |
+| `gargi`  | `gargi_vb.mp3`  | samluchu sir, uh order delivery mein delay dikh raha hain... |
+| `monika` | `monika_vb.mp3` | hello sir, mein monika bol rhi hun customer support se... |
+| `saavi`  | `saavi_vb.mp3`  | hello sir, i hope sab theek chal raha hoga... |
+| `tara`   | `tara_firm.mp3` | I am not here to argue, but when the same account... |
+| `zara`   | `zara_vb.mp3`   | theek hai, bas pehele ek choti si confirmation chahiye... |
+
+- VoxCPM config lives in `VoxCpmSettings` in `flowtts/core/config.py`
+- Model path: `/home/ubuntu/voxcpm/model`
+- flow_voxcpm package: `/home/ubuntu/flow_voxcpm` (auto-injected on sys.path)
+- Output: 48kHz WAV, float32 PCM
 
 ---
 
