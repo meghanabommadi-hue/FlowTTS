@@ -147,26 +147,80 @@
     }
     .ws-node-grid {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
+      flex-direction: column;
+      gap: 6px;
     }
-    .ws-node-chip {
+    .ws-node-row {
       background: #0f1117;
       border: 1px solid #2d3148;
       border-radius: 8px;
-      padding: 6px 12px;
-      font-size: 0.78rem;
+      padding: 8px 14px;
       display: flex;
-      flex-direction: column;
       align-items: center;
-      min-width: 120px;
+      justify-content: space-between;
+      font-size: 0.82rem;
     }
-    .ws-node-chip .chip-ip   { color: #64748b; font-family: monospace; font-size: 0.7rem; }
-    .ws-node-chip .chip-val  { font-size: 1.1rem; font-weight: 700; color: #4f6ef7; margin: 2px 0; }
-    .ws-node-chip.down-chip  { border-color: #f87171; opacity: 0.6; }
-    .ws-node-chip .chip-val.down  { color: #f87171; font-size: 0.75rem; }
-    .ws-node-chip.stale-chip      { border-color: #f59e0b; opacity: 0.7; }
-    .ws-node-chip .chip-val.stale { color: #f59e0b; }
+    .ws-node-row .row-ip    { font-family: monospace; color: #cbd5e1; font-size: 0.8rem; }
+    .ws-node-row .row-ws    { font-size: 1rem; font-weight: 700; color: #4f6ef7; min-width: 32px; text-align: right; }
+    .ws-node-row .row-badge { font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 10px; }
+    .ws-node-row.active-row { border-color: #4ade80; }
+    .ws-node-row.active-row .row-ws { color: #4ade80; }
+    .ws-node-row.active-row .row-badge { background: #14532d; color: #4ade80; }
+    .ws-node-row.idle-row   { border-color: #f59e0b44; }
+    .ws-node-row.idle-row   .row-ws { color: #f59e0b; }
+    .ws-node-row.idle-row   .row-badge { background: #451a0344; color: #f59e0b; }
+    .ws-node-row.down-row   { border-color: #f8717155; opacity: 0.7; }
+    .ws-node-row.down-row   .row-ws { color: #f87171; font-size: 0.75rem; }
+    .ws-node-row.down-row   .row-badge { background: #450a0a; color: #f87171; }
+    .ws-node-chip { display: none; }
+    /* small square chips for ext2 panel */
+    .ext-chip-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ext-chip {
+      background: #0f1117; border: 1px solid #2d3148; border-radius: 8px;
+      padding: 7px 10px; font-size: 0.75rem; display: flex; flex-direction: column;
+      align-items: center; min-width: 110px; flex: 1;
+    }
+    .ext-chip .chip-ip  { color: #64748b; font-family: monospace; font-size: 0.68rem; }
+    .ext-chip .chip-ws  { font-size: 1.05rem; font-weight: 700; margin: 3px 0 1px; }
+    .ext-chip .chip-lbl { font-size: 0.62rem; font-weight: 600; }
+    .ext-chip.chip-active { border-color: #4ade80; }
+    .ext-chip.chip-active .chip-ws  { color: #4ade80; }
+    .ext-chip.chip-active .chip-lbl { color: #4ade80; }
+    .ext-chip.chip-idle   { border-color: #f59e0b55; }
+    .ext-chip.chip-idle   .chip-ws  { color: #f59e0b; }
+    .ext-chip.chip-idle   .chip-lbl { color: #f59e0b; }
+    .ext-chip.chip-down   { border-color: #f8717155; opacity: 0.65; }
+    .ext-chip.chip-down   .chip-ws  { color: #f87171; font-size: 0.75rem; }
+    .ext-chip.chip-down   .chip-lbl { color: #f87171; }
+    .node-panel {
+      background: #161924;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .node-panel-header {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .node-panel-count {
+      background: #1e2130;
+      border-radius: 999px;
+      padding: 1px 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+    }
+    .node-panel-empty {
+      font-size: 0.78rem;
+      color: #475569;
+      padding: 4px 0;
+    }
   </style>
 </head>
 <body>
@@ -187,7 +241,7 @@
 
 <!-- Summary panels row -->
 <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:20px">
-<div id="summary-panel" style="display:none;flex:7;min-width:0">
+<div id="summary-panel" style="display:none;flex:1;min-width:0">
   <div class="summary-top">
     <div class="summary-stat">
       <div class="metric-label">Active WebSockets</div>
@@ -253,12 +307,33 @@
     </div>
   </div>
   <div style="margin-top:16px">
-    <div class="ws-grid-label" style="color:#4ade80">Active Nodes (requests in last 5 min) — <span id="count-active">0</span></div>
-    <div class="ws-node-grid" id="ws-node-grid-active" style="margin-bottom:16px"></div>
-    <div class="ws-grid-label" style="color:#f59e0b">Idle Nodes (UP but no requests in 5+ min) — <span id="count-idle">0</span></div>
-    <div class="ws-node-grid" id="ws-node-grid-idle" style="margin-bottom:16px"></div>
-    <div class="ws-grid-label" style="color:#f87171">Down Nodes (unreachable) — <span id="count-down">0</span></div>
-    <div class="ws-node-grid" id="ws-node-grid-down"></div>
+    <div class="node-panel">
+      <div class="node-panel-header" style="color:#4ade80">
+        Active Nodes (requests in last 5 min)
+        <span class="node-panel-count" style="color:#4ade80;border:1px solid #4ade8044" id="count-active">0</span>
+      </div>
+      <div class="ext-chip-grid" id="ws-node-grid-active">
+        <div class="node-panel-empty">No active nodes</div>
+      </div>
+    </div>
+    <div class="node-panel">
+      <div class="node-panel-header" style="color:#f59e0b">
+        Idle Nodes (UP but no requests in 5+ min)
+        <span class="node-panel-count" style="color:#f59e0b;border:1px solid #f59e0b44" id="count-idle">0</span>
+      </div>
+      <div class="ext-chip-grid" id="ws-node-grid-idle">
+        <div class="node-panel-empty">None</div>
+      </div>
+    </div>
+    <div class="node-panel">
+      <div class="node-panel-header" style="color:#f87171">
+        Down Nodes (unreachable)
+        <span class="node-panel-count" style="color:#f87171;border:1px solid #f8717144" id="count-down">0</span>
+      </div>
+      <div class="ext-chip-grid" id="ws-node-grid-down">
+        <div class="node-panel-empty">None</div>
+      </div>
+    </div>
   </div>
   <div style="margin-top:16px">
     <div class="ws-grid-label">Total Requests by Voice (all nodes)</div>
@@ -266,39 +341,64 @@
   </div>
 </div>
 
-<!-- Ext servers summary panel -->
-<div id="ext-summary-panel" style="display:none;flex:3;min-width:0;position:sticky;top:16px">
-  <div style="background:#1e2130;border:1px solid #4f6ef7;border-radius:12px;padding:16px">
-    <div style="font-size:0.65rem;font-weight:700;color:#4f6ef7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>Bajaj FlowTTS</span>
+<!-- H200 nginx cluster panel -->
+<div id="ext-summary-panel" style="display:none;flex:1;min-width:0;position:sticky;top:16px;align-self:flex-start">
+  <div style="background:#1e2130;border:1px solid #a78bfa;border-radius:12px;padding:16px">
+    <div style="font-size:0.65rem;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+      <span>H200 Cluster</span>
       <span id="ext-status" style="font-size:0.7rem;font-weight:700">—</span>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
       <div style="background:#0f1117;border-radius:8px;padding:10px">
-        <div class="metric-label">Avg E2E</div>
-        <div style="font-size:1.2rem;font-weight:700;color:#4f6ef7" id="ext-avg-e2e">—</div>
-        <div class="metric-sub" id="ext-avg-e2e-sub"></div>
-      </div>
-      <div style="background:#0f1117;border-radius:8px;padding:10px">
-        <div class="metric-label">Active WS</div>
+        <div class="metric-label">Active WS (total)</div>
         <div style="font-size:1.2rem;font-weight:700;color:#4ade80" id="ext-ws-active">—</div>
       </div>
       <div style="background:#0f1117;border-radius:8px;padding:10px">
-        <div class="metric-label">WS (single node)</div>
-        <div style="font-size:1.2rem;font-weight:700;color:#4f6ef7" id="ext-avg-ws">—</div>
+        <div class="metric-label">Avg Active WS / Node</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#a78bfa" id="ext-avg-ws">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Avg E2E</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#a78bfa" id="ext-avg-e2e">—</div>
+        <div class="metric-sub" id="ext-avg-e2e-sub"></div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:10px">
+        <div class="metric-label">Max E2E</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#f59e0b" id="ext-max-e2e">—</div>
       </div>
       <div style="background:#0f1117;border-radius:8px;padding:10px">
         <div class="metric-label">Cache Hit Rate</div>
         <div style="font-size:1.2rem;font-weight:700" id="ext-cache-rate">—</div>
       </div>
       <div style="background:#0f1117;border-radius:8px;padding:10px">
-        <div class="metric-label">Cache Hits</div>
-        <div style="font-size:1.2rem;font-weight:700;color:#4ade80" id="ext-cache-hits">—</div>
-        <div class="metric-sub" id="ext-cache-misses-sub"></div>
-      </div>
-      <div style="background:#0f1117;border-radius:8px;padding:10px">
-        <div class="metric-label">Requests</div>
+        <div class="metric-label">Total Requests</div>
         <div style="font-size:1.2rem;font-weight:700;color:#94a3b8" id="ext-total-reqs">—</div>
+      </div>
+    </div>
+
+    <!-- Per-node chip panels -->
+    <div class="node-panel" style="margin-bottom:8px">
+      <div class="node-panel-header" style="color:#4ade80">
+        Active <span class="node-panel-count" style="color:#4ade80;border:1px solid #4ade8044" id="ext-count-active">0</span>
+      </div>
+      <div class="ext-chip-grid" id="ext-node-grid-active">
+        <div class="node-panel-empty">No active nodes</div>
+      </div>
+    </div>
+    <div class="node-panel" style="margin-bottom:8px">
+      <div class="node-panel-header" style="color:#f59e0b">
+        Idle <span class="node-panel-count" style="color:#f59e0b;border:1px solid #f59e0b44" id="ext-count-idle">0</span>
+      </div>
+      <div class="ext-chip-grid" id="ext-node-grid-idle">
+        <div class="node-panel-empty">None</div>
+      </div>
+    </div>
+    <div class="node-panel">
+      <div class="node-panel-header" style="color:#f87171">
+        Down <span class="node-panel-count" style="color:#f87171;border:1px solid #f8717144" id="ext-count-down">0</span>
+      </div>
+      <div class="ext-chip-grid" id="ext-node-grid-down">
+        <div class="node-panel-empty">None</div>
       </div>
     </div>
   </div>
@@ -773,19 +873,15 @@ async function updateSummary(dataMap, upNodes, results) {
 
   let activeWS = 0, idleWS = 0;
   for (const h of upNodes) {
-    const info = activityData[h.split(":")[0]];
+    const info = activityData[h];
     const ws   = getVal(dataMap[h], "tts_active_websockets");
-    // tts_active_websockets gauge never decrements on disconnect — only count
-    // WS as active if the node actually has new requests flowing
     if (info?.active === true) {
       activeWS += ws;
     }
-    // idle/unknown nodes: ws gauge is unreliable, treat as 0
   }
 
-  const activeNodeCount = upNodes.filter(h => activityData[h.split(":")[0]]?.active === true).length;
-  // idle = UP but not explicitly active (includes nodes with no activity entry)
-  const idleNodeCount   = upNodes.filter(h => activityData[h.split(":")[0]]?.active !== true).length;
+  const activeNodeCount = upNodes.filter(h => activityData[h]?.active === true).length;
+  const idleNodeCount   = upNodes.filter(h => activityData[h]?.active !== true).length;
   const avgActiveWS     = activeNodeCount > 0 ? (activeWS / activeNodeCount).toFixed(1) : "—";
 
   setIfChanged("sum-ws-active", activeWS);
@@ -877,35 +973,34 @@ async function updateSummary(dataMap, upNodes, results) {
     });
   }
 
-  // Per-node WebSocket chips — split into active / idle / down grids
+  // Per-node chips — split into active / idle / down panels
   const activeChips = [], idleChips = [], downChips = [];
   results.forEach((r, i) => {
     const host = NODES[i];
-    const ip   = host.split(":")[0];
     if (r.status === "fulfilled") {
-      const ws      = getVal(r.value, "tts_active_websockets");
-      const info    = activityData[host.split(":")[0]];
-      // Only active if explicitly marked active=true; unknown (no entry) treated as idle
+      const ws       = getVal(r.value, "tts_active_websockets");
+      const info     = activityData[host];
       const isActive = info?.active === true;
-      const isIdle   = !isActive;
-      const idleMs   = isIdle && info?.idle_since_ms ? now - info.idle_since_ms : 0;
+      const idleMs   = !isActive && info?.idle_since_ms ? now - info.idle_since_ms : 0;
       const idleMin  = Math.floor(idleMs / 60000);
-      const chip = `<div class="ws-node-chip ${isIdle ? 'stale-chip' : ''}">
-        <span class="chip-ip">${ip}</span>
-        <span class="chip-val ${isIdle ? 'stale' : ''}">${ws}</span>
-        <span style="font-size:0.65rem;color:${isIdle ? '#f59e0b' : '#475569'}">${isIdle ? (idleMin > 0 ? `idle ${idleMin}m` : `idle`) : `active`}</span>
+      const lbl      = isActive ? "active" : (idleMin > 0 ? `idle ${idleMin}m` : "idle");
+      const chip = `<div class="ext-chip ${isActive ? 'chip-active' : 'chip-idle'}">
+        <span class="chip-ip">${host}</span>
+        <span class="chip-ws">${ws}</span>
+        <span class="chip-lbl">${lbl}</span>
       </div>`;
       if (isActive) activeChips.push(chip); else idleChips.push(chip);
     } else {
-      downChips.push(`<div class="ws-node-chip down-chip">
-        <span class="chip-ip">${ip}</span>
-        <span class="chip-val down">DOWN</span>
+      downChips.push(`<div class="ext-chip chip-down">
+        <span class="chip-ip">${host}</span>
+        <span class="chip-ws">—</span>
+        <span class="chip-lbl">down</span>
       </div>`);
     }
   });
-  setHTMLIfChanged("ws-node-grid-active", activeChips.join("") || '<span style="color:#475569;font-size:0.8rem">No active nodes</span>');
-  setHTMLIfChanged("ws-node-grid-idle",   idleChips.join("")   || '<span style="color:#475569;font-size:0.8rem">None</span>');
-  setHTMLIfChanged("ws-node-grid-down",   downChips.join("")   || '<span style="color:#475569;font-size:0.8rem">None</span>');
+  setHTMLIfChanged("ws-node-grid-active", activeChips.join("") || '<div class="node-panel-empty">No active nodes</div>');
+  setHTMLIfChanged("ws-node-grid-idle",   idleChips.join("")   || '<div class="node-panel-empty">None</div>');
+  setHTMLIfChanged("ws-node-grid-down",   downChips.join("")   || '<div class="node-panel-empty">None</div>');
   setIfChanged("count-active", activeChips.length);
   setIfChanged("count-idle",   idleChips.length);
   setIfChanged("count-down",   downChips.length);
@@ -915,29 +1010,62 @@ async function updateSummary(dataMap, upNodes, results) {
 
 async function refreshExt() {
   try {
-    const resp = await fetch("/ext-summary", { signal: AbortSignal.timeout(8000) });
+    const resp = await fetch("/ext2-summary", { signal: AbortSignal.timeout(8000) });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const d = await resp.json();
     const rate = d.cache_rate;
 
-    setIfChanged("ext-avg-e2e", d.avg_e2e_ms > 0 ? fmtMs(d.avg_e2e_ms) : "N/A");
+    setIfChanged("ext-ws-active",  d.total_ws);
+    setIfChanged("ext-avg-ws",     d.avg_ws_per_active > 0 ? d.avg_ws_per_active : "—");
+    setIfChanged("ext-avg-e2e",    d.avg_e2e_ms > 0 ? fmtMs(d.avg_e2e_ms) : "N/A");
     setIfChanged("ext-avg-e2e-sub", `${d.up}/${d.total} nodes up`);
-    setIfChanged("ext-ws-active", d.total_ws);
-    setIfChanged("ext-avg-ws", d.avg_ws_per_node);
+    setIfChanged("ext-max-e2e",    d.max_e2e_ms > 0 ? fmtMs(d.max_e2e_ms) : "N/A");
     setIfChanged("ext-cache-rate", rate > 0 ? `${rate}%` : "N/A");
-    const cacheRateEl = document.getElementById("ext-cache-rate");
-    cacheRateEl.style.color = rate <= 0 ? "#475569" : rate >= 70 ? "#4ade80" : rate >= 30 ? "#f59e0b" : "#f87171";
-    setIfChanged("ext-cache-hits", fmt(d.cache_hits));
-    const cTotal = d.cache_hits + d.cache_misses;
-    setIfChanged("ext-cache-misses-sub", cTotal > 0 ? `${fmt(d.cache_misses)} misses · ${fmt(cTotal)} total` : "no cache data");
+    document.getElementById("ext-cache-rate").style.color =
+      rate <= 0 ? "#475569" : rate >= 70 ? "#4ade80" : rate >= 30 ? "#f59e0b" : "#f87171";
     setIfChanged("ext-total-reqs", fmt(d.total_reqs));
+
     const statusEl = document.getElementById("ext-status");
     statusEl.textContent = d.up === 0 ? "DOWN" : d.total_ws > 0 ? "ACTIVE" : "IDLE";
-    statusEl.style.color = d.up === 0 ? "#f87171" : d.total_ws > 0 ? "#4ade80" : "#f59e0b";
+    statusEl.style.color  = d.up === 0 ? "#f87171" : d.total_ws > 0 ? "#4ade80" : "#f59e0b";
+
+    // Per-node chips
+    const activeChips = [], idleChips = [], downChips = [];
+    for (const n of (d.nodes || [])) {
+      const ip = n.node;
+      if (!n.up) {
+        downChips.push(`<div class="ext-chip chip-down">
+          <span class="chip-ip">${ip}</span>
+          <span class="chip-ws">—</span>
+          <span class="chip-lbl">down</span>
+        </div>`);
+      } else if (n.ws > 0) {
+        activeChips.push(`<div class="ext-chip chip-active">
+          <span class="chip-ip">${ip}</span>
+          <span class="chip-ws">${n.ws}</span>
+          <span class="chip-lbl">active</span>
+        </div>`);
+      } else {
+        idleChips.push(`<div class="ext-chip chip-idle">
+          <span class="chip-ip">${ip}</span>
+          <span class="chip-ws">0</span>
+          <span class="chip-lbl">idle</span>
+        </div>`);
+      }
+    }
+    setHTMLIfChanged("ext-node-grid-active", activeChips.join("") || '<div class="node-panel-empty">No active nodes</div>');
+    setHTMLIfChanged("ext-node-grid-idle",   idleChips.join("")   || '<div class="node-panel-empty">None</div>');
+    setHTMLIfChanged("ext-node-grid-down",   downChips.join("")   || '<div class="node-panel-empty">None</div>');
+    setIfChanged("ext-count-active", activeChips.length);
+    setIfChanged("ext-count-idle",   idleChips.length);
+    setIfChanged("ext-count-down",   downChips.length);
   } catch(e) {
     setIfChanged("ext-avg-e2e", "—");
-    const statusEl = document.getElementById("ext-status");
-    statusEl.textContent = "—"; statusEl.style.color = "#475569";
+    document.getElementById("ext-status").textContent = "—";
+    document.getElementById("ext-status").style.color = "#475569";
+    setHTMLIfChanged("ext-node-grid-active", '<div class="node-panel-empty">No active nodes</div>');
+    setHTMLIfChanged("ext-node-grid-idle",   '<div class="node-panel-empty">None</div>');
+    setHTMLIfChanged("ext-node-grid-down",   '<div class="node-panel-empty">None</div>');
   }
   document.getElementById("ext-summary-panel").style.display = "block";
 }
@@ -1009,8 +1137,7 @@ async function refreshTraffic() {
     }
 
     // Update WS counts
-    // idle = UP nodes not explicitly active (includes nodes with no activity entry)
-    const idleNodeCount2 = NODES.filter(host => data[host.split(":")[0]]?.active !== true).length - Object.values(data).filter(v => v.status === "down").length;
+    const idleNodeCount2 = NODES.filter(host => data[host]?.active !== true).length;
     setIfChanged("sum-ws-active", activeWS);
     setIfChanged("sum-ws-idle",    idleNodeCount2 > 0 ? `${idleNodeCount2} nodes` : "0");
     setIfChanged("sum-ws-idle-sub", idleNodeCount2 > 0 ? `no requests in 5+ min` : `all nodes active`);
@@ -1018,25 +1145,25 @@ async function refreshTraffic() {
     setIfChanged("sum-avg-ws-sub", `across ${activeNodeCount} active node${activeNodeCount !== 1 ? "s" : ""}`);
 
     // Rebuild chips
-    const activeChips = [], idleChips = [];
+    const activeChips2 = [], idleChips2 = [];
     NODES.forEach(host => {
-      const ip   = host.split(":")[0];
-      const info = data[ip];
-      // Only active if explicitly marked active=true; unknown (no entry) treated as idle
+      const info     = data[host];
       const isActive = info?.active === true;
-      const isIdle   = !isActive;
-      const idleMs   = isIdle && info?.idle_since_ms ? now - info.idle_since_ms : 0;
+      const idleMs   = !isActive && info?.idle_since_ms ? now - info.idle_since_ms : 0;
       const idleMin  = Math.floor(idleMs / 60000);
       const wsVal    = info?.ws ?? 0;
-      const chip = `<div class="ws-node-chip ${isIdle ? 'stale-chip' : ''}">
-        <span class="chip-ip">${ip}</span>
-        <span class="chip-val ${isIdle ? 'stale' : ''}">${wsVal}</span>
-        <span style="font-size:0.65rem;color:${isIdle ? '#f59e0b' : '#475569'}">${isIdle ? (idleMin > 0 ? `idle ${idleMin}m` : `idle`) : `active`}</span>
+      const lbl      = isActive ? "active" : (idleMin > 0 ? `idle ${idleMin}m` : "idle");
+      const chip = `<div class="ext-chip ${isActive ? 'chip-active' : 'chip-idle'}">
+        <span class="chip-ip">${host}</span>
+        <span class="chip-ws">${wsVal}</span>
+        <span class="chip-lbl">${lbl}</span>
       </div>`;
-      if (isActive) activeChips.push(chip); else idleChips.push(chip);
+      if (isActive) activeChips2.push(chip); else idleChips2.push(chip);
     });
-    setHTMLIfChanged("ws-node-grid-active", activeChips.join("") || '<span style="color:#475569;font-size:0.8rem">No active nodes</span>');
-    setHTMLIfChanged("ws-node-grid-idle",   idleChips.join("")   || '<span style="color:#475569;font-size:0.8rem">None</span>');
+    setHTMLIfChanged("ws-node-grid-active", activeChips2.join("") || '<div class="node-panel-empty">No active nodes</div>');
+    setHTMLIfChanged("ws-node-grid-idle",   idleChips2.join("")   || '<div class="node-panel-empty">None</div>');
+    setIfChanged("count-active", activeChips2.length);
+    setIfChanged("count-idle",   idleChips2.length);
 
     // Traffic status
     if (activeNodeCount > 0) {
@@ -1060,9 +1187,8 @@ async function refreshNewReqs() {
 
   let totalDelta = 0, activeCount = 0;
   await Promise.all(NODES.map(async host => {
-    const ip = host.split(":")[0];
     try {
-      const resp = await fetch(`/history?host=${ip}&since=${since}`);
+      const resp = await fetch(`/history?host=${encodeURIComponent(host)}&since=${since}`);
       if (!resp.ok) return;
       const snaps = await resp.json();
       if (snaps.length < 2) return;

@@ -36,14 +36,14 @@ SERVE_PORT   = 8080
 SCRAPE_INTERVAL_S = 15
 MAX_SNAPSHOTS     = 1440  # ~6 hours at 15s interval per node
 
-# IPs loaded from ips.txt at startup (plain IPs, no port)
-NODES: list[str] = []
-NODE_PORTS: dict[str, int] = {}  # ip -> port override
+# NODES stores "ip:port" keys — allows same IP on multiple ports
+NODES: list[str] = []      # main GCP cluster
+EXT2_NODES: list[str] = [] # secondary cluster (47.29.24.x)
 
-# cache[ip] = deque of {"ts": unix_ms, "metrics": {name: [{labels, value}]}}
+# cache["ip:port"] = deque of {"ts": unix_ms, "metrics": {name: [{labels, value}]}}
 cache: dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_SNAPSHOTS))
 
-# ── Ext nginx config ─────────────────────────────────────────────────────────
+# ── Ext nginx config (Bajaj FlowTTS) ─────────────────────────────────────────
 EXT_METRICS_URL = "https://models.kapturecrm.com/bajaj-flowtts/metrics"
 EXT_NODE_COUNT  = 7
 
@@ -81,9 +81,8 @@ def parse_prometheus(text: str) -> dict:
 
 # ── Background scraper ───────────────────────────────────────────────────────
 
-async def scrape_node(session: ClientSession, ip: str):
-    port = NODE_PORTS.get(ip, METRICS_PORT)
-    url = f"http://{ip}:{port}{METRICS_PATH}"
+async def scrape_node(session: ClientSession, node: str):
+    url = f"http://{node}{METRICS_PATH}"
     try:
         async with session.get(url, timeout=ClientTimeout(total=5)) as resp:
             text = await resp.text()
@@ -91,16 +90,17 @@ async def scrape_node(session: ClientSession, ip: str):
                 "ts": int(time.time() * 1000),
                 "metrics": parse_prometheus(text),
             }
-            cache[ip].append(snapshot)
+            cache[node].append(snapshot)
     except Exception as e:
-        logging.warning(f"scrape {ip}: {e}")
+        logging.warning(f"scrape {node}: {e}")
 
 
 async def scrape_loop():
     while True:
+        all_nodes = NODES + EXT2_NODES
         async with ClientSession() as session:
-            await asyncio.gather(*[scrape_node(session, ip) for ip in NODES])
-        logging.info(f"scrape cycle done — {len(NODES)} nodes")
+            await asyncio.gather(*[scrape_node(session, node) for node in all_nodes])
+        logging.info(f"scrape cycle done — {len(NODES)} main + {len(EXT2_NODES)} ext2 nodes")
         await asyncio.sleep(SCRAPE_INTERVAL_S)
 
 
@@ -114,9 +114,9 @@ async def handle_proxy(request: web.Request) -> web.Response:
     if host.startswith("http://") or host.startswith("https://"):
         url = host
     else:
-        ip = host.split(":")[0]
-        port = NODE_PORTS.get(ip, METRICS_PORT)
-        url = f"http://{ip}:{port}{METRICS_PATH}"
+        if ":" not in host:
+            host = f"{host}:{METRICS_PORT}"
+        url = f"http://{host}{METRICS_PATH}"
     try:
         async with ClientSession() as session:
             async with session.get(url, timeout=ClientTimeout(total=5), ssl=SSL_CTX) as resp:
@@ -166,6 +166,73 @@ async def handle_ext_summary(request: web.Request) -> web.Response:
         )
 
 
+async def handle_ext2_summary(request: web.Request) -> web.Response:
+    """Return aggregated metrics for the ext2 (47.29.24.x) cluster from cache."""
+    nodes = EXT2_NODES
+    if not nodes:
+        return web.Response(
+            text=json.dumps({"nodes": [], "total": 0, "up": 0}),
+            content_type="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    result = []
+    for node in nodes:
+        snaps = list(cache.get(node, []))
+        if not snaps:
+            result.append({"node": node, "up": False})
+            continue
+        m = snaps[-1]["metrics"]
+        ws      = sum(e["value"] for e in m.get("tts_active_websockets", []))
+        reqs    = sum(e["value"] for e in m.get("tts_requests_total", []))
+        hits    = sum(e["value"] for e in m.get("tts_cache_hits_total", []))
+        misses  = sum(e["value"] for e in m.get("tts_cache_misses_total", []))
+        named_reqs = sum(e["value"] for e in m.get("tts_requests_total", []) if e["labels"].get("voice", ""))
+        e2e_ms  = sum(e["value"] for e in m.get("tts_e2e_ms_total", []) if e["labels"].get("voice", ""))
+        avg_e2e = (e2e_ms / named_reqs) if named_reqs > 0 else 0
+        cache_total = hits + misses
+        result.append({
+            "node":       node,
+            "up":         True,
+            "ws":         int(ws),
+            "reqs":       int(reqs),
+            "cache_hits": int(hits),
+            "cache_misses": int(misses),
+            "cache_rate": round(hits / cache_total * 100, 1) if cache_total else 0,
+            "avg_e2e_ms": round(avg_e2e, 1),
+        })
+
+    up_nodes       = [n for n in result if n.get("up")]
+    active_nodes   = [n for n in up_nodes if n["ws"] > 0]
+    total_ws       = sum(n["ws"] for n in up_nodes)
+    total_reqs     = sum(n["reqs"] for n in up_nodes)
+    total_hits     = sum(n["cache_hits"] for n in up_nodes)
+    total_miss     = sum(n["cache_misses"] for n in up_nodes)
+    cache_total    = total_hits + total_miss
+    e2e_vals       = [n["avg_e2e_ms"] for n in up_nodes if n["avg_e2e_ms"] > 0]
+    avg_e2e        = round(sum(e2e_vals) / len(e2e_vals), 1) if e2e_vals else 0
+    max_e2e        = round(max(e2e_vals), 1) if e2e_vals else 0
+    avg_ws_active  = round(total_ws / len(active_nodes), 1) if active_nodes else 0
+
+    return web.Response(
+        text=json.dumps({
+            "nodes":             result,
+            "total":             len(nodes),
+            "up":                len(up_nodes),
+            "total_ws":          total_ws,
+            "avg_ws_per_active": avg_ws_active,
+            "total_reqs":        total_reqs,
+            "cache_hits":        total_hits,
+            "cache_misses":      total_miss,
+            "cache_rate":        round(total_hits / cache_total * 100, 1) if cache_total else 0,
+            "avg_e2e_ms":        avg_e2e,
+            "max_e2e_ms":        max_e2e,
+        }),
+        content_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
+
 async def handle_history(request: web.Request) -> web.Response:
     """
     Return cached snapshots for a node, optionally filtered by time.
@@ -207,11 +274,10 @@ async def handle_activity(request: web.Request) -> web.Response:
     cutoff    = now - window_ms
     result    = {}
 
-    for ip in NODES:
-        snaps = [s for s in cache.get(ip, []) if s["ts"] >= cutoff]
+    for node in NODES:
+        snaps = [s for s in cache.get(node, []) if s["ts"] >= cutoff]
         if len(snaps) < 2:
-            # not enough data yet
-            result[ip] = {"active": None, "ws": 0, "idle_since_ms": None}
+            result[node] = {"active": None, "ws": 0, "idle_since_ms": None}
             continue
 
         def named_reqs(metrics):
@@ -225,7 +291,6 @@ async def handle_activity(request: web.Request) -> web.Response:
         ws         = sum(e["value"] for e in snaps[-1]["metrics"].get("tts_active_websockets", []))
         active     = last_reqs > first_reqs
 
-        # Find when it last went idle — walk backwards to find last snapshot with new reqs
         idle_since = None
         if not active:
             for i in range(len(snaps) - 1, 0, -1):
@@ -233,9 +298,9 @@ async def handle_activity(request: web.Request) -> web.Response:
                     idle_since = snaps[i]["ts"]
                     break
             if idle_since is None:
-                idle_since = snaps[0]["ts"]  # idle for the whole window
+                idle_since = snaps[0]["ts"]
 
-        result[ip] = {
+        result[node] = {
             "active":        active,
             "ws":            int(ws),
             "idle_since_ms": idle_since,
@@ -250,11 +315,11 @@ async def handle_activity(request: web.Request) -> web.Response:
 
 async def handle_cache_info(request: web.Request) -> web.Response:
     """Return how many snapshots are cached per node."""
-    info = {ip: len(cache[ip]) for ip in NODES}
+    info = {node: len(cache[node]) for node in NODES}
     oldest = {}
-    for ip in NODES:
-        if cache[ip]:
-            oldest[ip] = cache[ip][0]["ts"]
+    for node in NODES:
+        if cache[node]:
+            oldest[node] = cache[node][0]["ts"]
     return web.Response(
         text=json.dumps({"snapshots": info, "oldest_ts": oldest, "max": MAX_SNAPSHOTS}),
         content_type="application/json",
@@ -269,23 +334,25 @@ async def handle_index(request: web.Request) -> web.FileResponse:
 # ── App startup ──────────────────────────────────────────────────────────────
 
 async def on_startup(app):
-    # Load IPs
-    global NODES, NODE_PORTS
+    global NODES, EXT2_NODES
     import sys
     ips_file = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).parent.parent / "data" / "ips.txt")
     try:
+        current = NODES
         with open(ips_file) as f:
             for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
+                raw = line.strip()
+                if not raw:
                     continue
-                if ":" in line:
-                    ip, port = line.rsplit(":", 1)
-                    NODES.append(ip)
-                    NODE_PORTS[ip] = int(port)
-                else:
-                    NODES.append(line)
-        print(f"Loaded {len(NODES)} nodes from {ips_file}")
+                if raw == "# cluster:ext2":
+                    current = EXT2_NODES
+                    continue
+                if raw.startswith("#"):
+                    continue
+                if ":" not in raw:
+                    raw = f"{raw}:{METRICS_PORT}"
+                current.append(raw)
+        print(f"Loaded {len(NODES)} main nodes + {len(EXT2_NODES)} ext2 nodes from {ips_file}")
     except FileNotFoundError:
         print("ips.txt not found — no background scraping")
 
@@ -297,12 +364,13 @@ async def on_startup(app):
 
 app = web.Application()
 app.on_startup.append(on_startup)
-app.router.add_get("/proxy",       handle_proxy)
-app.router.add_get("/history",     handle_history)
-app.router.add_get("/activity",    handle_activity)
-app.router.add_get("/cache-info",  handle_cache_info)
-app.router.add_get("/ext-summary", handle_ext_summary)
-app.router.add_get("/",           handle_index)
+app.router.add_get("/proxy",        handle_proxy)
+app.router.add_get("/history",      handle_history)
+app.router.add_get("/activity",     handle_activity)
+app.router.add_get("/cache-info",   handle_cache_info)
+app.router.add_get("/ext-summary",  handle_ext_summary)
+app.router.add_get("/ext2-summary", handle_ext2_summary)
+app.router.add_get("/",            handle_index)
 app.router.add_static("/",        str(Path(__file__).parent.parent / "html"))
 
 if __name__ == "__main__":
