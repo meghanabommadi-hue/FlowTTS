@@ -33,7 +33,7 @@ HF_REPOS = {
     "tara":   "Shubhangi7/tara_cache_full",
 }
 
-DEFAULT_TOKEN    = os.environ.get("HF_TOKEN", "<your_hf_token>")
+DEFAULT_TOKEN    = os.environ.get("HF_TOKEN", "")
 DEFAULT_PARQUET  = str(HERE / "normalized_sentences.parquet")
 PUSH_PROGRESS_TMPL = "{voice}_push_progress.json"
 SHARD_SIZE       = 500

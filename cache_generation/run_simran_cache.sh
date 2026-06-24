@@ -15,7 +15,10 @@ PYTHON="${FLOWTTS_DIR}/.venv/bin/python"
 PORT=8765
 LOG="${SCRIPT_DIR}/simran_cache_run.log"
 
-export HF_TOKEN="${HF_TOKEN:-<your_hf_token>}"
+if [[ -z "${HF_TOKEN:-}" ]]; then
+    echo "[ERROR] HF_TOKEN is not set. Export it before running this script." >&2
+    exit 1
+fi
 
 echo "[INFO] FlowTTS dir : ${FLOWTTS_DIR}"
 echo "[INFO] Log file    : ${LOG}"
