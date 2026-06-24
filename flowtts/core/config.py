@@ -154,9 +154,12 @@ class VoxCpmSettings(BaseModel):
     # Must contain config.json, tokenizer.json and *.safetensors weights.
     model_dir: str = "/home/ubuntu/voxcpm/model"
 
-    # Default (zara) reference voice — used when no voice_id is specified.
-    ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/zara_vb.mp3"
-    ref_audio_text: str = "theek hai, bas pehele ek choti si confirmation chahiye. haan bas wahi detail, ab aap ka request smoothly aage badh jaayega"
+    # Default (saavi) reference voice — used when no voice_id is specified.
+    ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/saavi_vb.mp3"
+    ref_audio_text: str = "hello sir, i hope sab theek chal raha hoga, batayiye mein aapki kis tarah se madad kar sakti hun"
+
+    zara_ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/zara_vb.mp3"
+    zara_ref_audio_text: str = "theek hai, bas pehele ek choti si confirmation chahiye. haan bas wahi detail, ab aap ka request smoothly aage badh jaayega"
 
     # Tara voice — used when voice_id="tara" is passed in the WS request.
     tara_ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/tara_vox.wav"
@@ -201,7 +204,8 @@ class Settings(BaseSettings):
     # ── Model selector ──────────────────────────────────────────────────────
     # "mira"   → use MiraITS / sglang path  (synthesis/models.py)
     # "voxcpm" → use VoxCPM2 path           (synthesis/voxcpm_synthesizer.py)
-    model_type: Literal["mira", "voxcpm"] = "mira"
+    # model_type: Literal["mira", "voxcpm"] = "mira"
+    model_type: Literal["mira", "voxcpm"] = "voxcpm"
 
     ws: WebSocketSettings = WebSocketSettings()
     tts_model: TtsModelSettings = TtsModelSettings()
