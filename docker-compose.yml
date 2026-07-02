@@ -1,0 +1,55 @@
+# FlowTTS (OmniVoice) — dev container for a single-GPU VM (RTX 6000 Ada / H200 / any CC>=8.0).
+#
+# Prereqs on the host VM: NVIDIA driver + nvidia-container-toolkit
+#   (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+#
+# First run (one-time; downloads ~3.3GB model + builds voices):
+#   docker compose run --rm omnivoice-tts setup
+# Serve:
+#   docker compose up          # foreground
+#   docker compose up -d       # background
+# Smoke test / clone a voice:
+#   docker compose exec omnivoice-tts python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --streaming
+#   docker compose run --rm omnivoice-tts clone --add priya --ref-audio sample_files/priya.wav
+
+services:
+  omnivoice-tts:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: omnivoice-tts:latest
+    container_name: omnivoice-tts
+    pull_policy: build        # local-only image — build, never try to pull from a registry
+    environment:
+      # Server shape
+      PORTS: "1"
+      BASE_PORT: "8080"
+      CTRL_PORT: "8764"
+      HF_TOKEN: "${HF_TOKEN:-}"           # only needed for gated repos
+      # RTX 6000 Ada tuning (48GB, CC 8.9). Bump MAX_BATCH on an H200 (141GB).
+      FLOWTTS_OMNIVOICE__DTYPE: "bfloat16"
+      FLOWTTS_OMNIVOICE__NUM_STEP: "16"
+      FLOWTTS_OMNIVOICE__MAX_BATCH: "16"
+      FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS: "8"
+      # FLOWTTS_OMNIVOICE__COMPILE_MODEL: "true"   # torch.compile (+CUDA graphs); slow first run
+      # FLOWTTS_OUTPUT__SAMPLE_RATE: "16000"       # resample from native 24k for telephony
+    ports:
+      - "8080:8080"    # WebSocket (add 8081:8081 … if PORTS>1)
+      - "8764:8764"    # control API + /metrics
+    volumes:
+      - hf-cache:/root/.cache/huggingface        # persist model download across rebuilds
+      - ./voices:/root/FlowTTS/voices            # persist built npz (visible on host)
+      - wav-cache:/root/FlowTTS/cached_data      # persist WAV cache
+    shm_size: "8gb"
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all       # or: device_ids: ["0"]
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:
+  wav-cache:

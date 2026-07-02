@@ -1,6 +1,20 @@
 # FlowTTS (OmniVoice) Commands
 
-## One-time setup (on the H200 box)
+## Docker (recommended on a dev VM — keeps the box clean)
+
+```bash
+docker compose run --rm omnivoice-tts setup     # one-time: model download + build voices
+docker compose up -d                  # serve on :8080 (WS) + :8764 (ctrl/metrics)
+docker compose logs -f omnivoice-tts
+```
+
+Needs the NVIDIA driver + nvidia-container-toolkit on the host. Full guide + tuning:
+[docker/README.md](docker/README.md). Everything below runs the same **inside** the
+container (`docker compose exec omnivoice-tts …`) or on a bare-metal venv install.
+
+---
+
+## One-time setup (bare metal / venv)
 
 ```bash
 # 1. Install PyTorch CUDA build matching your box, then deps + model + voices:

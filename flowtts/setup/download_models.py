@@ -24,7 +24,7 @@ def download(repo: str) -> None:
         print("ERROR: huggingface_hub not installed. Run: pip install huggingface-hub")
         sys.exit(1)
 
-    token = os.environ.get("HF_TOKEN")  # optional, for gated repos
+    token = os.environ.get("HF_TOKEN") or None  # empty string → None (avoids illegal "Bearer " header)
     path = snapshot_download(
         repo_id=repo,
         token=token,

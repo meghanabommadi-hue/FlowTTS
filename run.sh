@@ -26,8 +26,10 @@ export PATH="${VENV}/bin:${PATH}"
 
 # torch bundles its CUDA libs; cudnn wheel dir added for completeness.
 export LD_LIBRARY_PATH="${VENV}/lib/python3.12/site-packages/torch/lib:${VENV}/lib/python3.12/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
-# Faster HF downloads.
-export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+# Faster HF downloads (Xet high-performance transfer).
+export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
+# Treat an empty HF_TOKEN as unset (avoids an illegal "Bearer " auth header).
+[ -n "${HF_TOKEN:-}" ] || unset HF_TOKEN 2>/dev/null || true
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 BASE_PORT=8080

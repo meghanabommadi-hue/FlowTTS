@@ -1,0 +1,29 @@
+# Keep the build context small & the image clean.
+.git
+.gitignore
+.venv
+venv
+llmc
+**/__pycache__
+*.py[cod]
+*.pyo
+
+# large / runtime artifacts not needed in the image
+sample_audio/
+voices/*.npz
+cached_data*/
+monitoring/requests/
+monitoring/prometheus-data/
+monitoring/*.jsonl
+monitoring/*.json
+llm.log
+test/
+**/pipeline_test_*/
+**/bench_*/
+
+# docs / editor / agent scratch
+.claude
+.idea
+.vscode
+*.md
+!README.md
