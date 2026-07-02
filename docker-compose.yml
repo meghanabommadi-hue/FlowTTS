@@ -19,7 +19,6 @@ services:
       dockerfile: docker/Dockerfile
     image: omnivoice-tts:latest
     container_name: omnivoice-tts
-    pull_policy: build        # local-only image — build, never try to pull from a registry
     environment:
       # Server shape
       PORTS: "1"
