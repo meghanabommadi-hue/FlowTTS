@@ -63,7 +63,7 @@ import logging
 from aiohttp import web
 
 import websockets
-from websockets.exceptions import WebSocketException
+from websockets.exceptions import WebSocketException, ConnectionClosed
 from websockets.http11 import Response as WsResponse, Headers as WsHeaders
 
 from flowtts.core.config import settings
@@ -385,6 +385,10 @@ async def _handle_streaming_request(
             flush=True,
         )
 
+    except ConnectionClosed:
+        # Client hung up (e.g. code 1000 OK) mid-stream — a normal disconnect, not an error.
+        print(f"[{_ts()}] :{port} {call_id}  client closed  text_id={text_id}", flush=True)
+        return
     except Exception as e:
         ts_err = _tsms()
         print(f"[{ts_err}] :{port} {call_id}  STREAM ERROR: {e}", flush=True)

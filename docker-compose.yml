@@ -26,12 +26,13 @@ services:
       BASE_PORT: "8080"
       CTRL_PORT: "8764"
       HF_TOKEN: "${HF_TOKEN:-}"           # only needed for gated repos
-      # RTX 6000 Ada tuning (48GB, CC 8.9). Bump MAX_BATCH on an H200 (141GB).
+      # RTX 6000 Ada tuning (48GB, CC 8.9). Bump MAX_BATCH further on an H200 (141GB).
       FLOWTTS_OMNIVOICE__DTYPE: "bfloat16"
-      FLOWTTS_OMNIVOICE__NUM_STEP: "16"
-      FLOWTTS_OMNIVOICE__MAX_BATCH: "16"
-      FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS: "8"
-      # FLOWTTS_OMNIVOICE__COMPILE_MODEL: "true"   # torch.compile (+CUDA graphs); slow first run
+      FLOWTTS_OMNIVOICE__NUM_STEP: "16"            # ↓ to 10–12 for lower latency (test quality)
+      FLOWTTS_OMNIVOICE__MAX_BATCH: "48"           # bigger batch = higher throughput (watch VRAM in nvidia-smi)
+      FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS: "20"    # wider window lets batches fill under load
+      FLOWTTS_OMNIVOICE__COMPILE_MODEL: "true"     # torch.compile — big per-step speedup; first start compiles (warmup absorbs it)
+      TORCHINDUCTOR_CACHE_DIR: "/root/FlowTTS/cached_data/torchinductor"  # persist compile cache across restarts
       # FLOWTTS_OUTPUT__SAMPLE_RATE: "16000"       # resample from native 24k for telephony
     ports:
       - "8080:8080"    # WebSocket (add 8081:8081 … if PORTS>1)

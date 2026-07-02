@@ -218,7 +218,10 @@ class OmniVoiceEngine:
                 generation_config=self._gen_cfg,
             )
             dt = (time.perf_counter() - t0) * 1000
-            logger.debug("omnivoice_batch", n=len(group), ms=round(dt, 1))
+            # INFO so batch size + per-batch latency are visible during tuning
+            # (n should approach MAX_BATCH under load; ms/n is the amortized cost).
+            logger.info("omnivoice_batch", n=len(group), ms=round(dt, 1),
+                        per_item_ms=round(dt / max(1, len(group)), 1))
             for r, wav in zip(group, audios):
                 if not r.future.done():
                     r.future.get_loop().call_soon_threadsafe(
