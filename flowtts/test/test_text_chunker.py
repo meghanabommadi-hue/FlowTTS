@@ -51,9 +51,12 @@ def test_tiny_trailing_merged():
 
 
 def test_normalize_text():
-    assert normalize_text("Hello 😀 नमस्ते ☺️") == "Hello  नमस्ते"
-    assert normalize_text("مرحبا hi") == "hi"          # Arabic stripped, ASCII kept
+    # multilingual: every script is preserved (OmniVoice supports 600+ languages)
+    assert normalize_text("নমস্কাৰ মই পুজা") == "নমস্কাৰ মই পুজা"   # Assamese/Bengali kept
+    assert normalize_text("مرحبا hi") == "مرحبا hi"                 # Arabic kept
+    assert normalize_text("नमस्ते hello") == "नमस्ते hello"          # Hindi + English kept
     assert normalize_text("  spaced  ") == "spaced"
+    assert normalize_text("a\x00b\x07c") == "abc"                   # control chars stripped
 
 
 def _run_all():

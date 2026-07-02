@@ -105,10 +105,15 @@ def split_for_streaming(
 
 
 def normalize_text(text: str) -> str:
-    """Keep only English (ASCII) and Hindi (Devanagari U+0900–U+097F); drop the rest.
+    """Light, multilingual-safe normalization.
 
-    Mirrors the normalization the previous model applied so client behaviour is
-    unchanged. Removes emoji, Arabic/Urdu, CJK, etc. that OmniVoice's tokenizer
-    would otherwise mishandle for this Hindi/English deployment.
+    OmniVoice is a 600+ language model with its own subword tokenizer, so we must
+    NOT drop non-Latin/non-Devanagari scripts — doing that silently emptied
+    Bengali/Assamese/Tamil/… input and produced garbage audio. We only strip C0/C1
+    control characters (keeping tab/newline) and trim; every language's letters,
+    marks, digits and punctuation pass through untouched.
     """
-    return re.sub(r"[^\x00-\x7Fऀ-ॿ]", "", text or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", text)
+    return text.strip()
