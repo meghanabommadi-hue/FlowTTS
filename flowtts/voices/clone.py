@@ -43,7 +43,9 @@ _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 _model = None
 
 
-def _get_model():
+def _get_model(load_asr: bool):
+    """Load OmniVoice once. Whisper ASR is loaded only when transcription is needed
+    (i.e. some voice has no ref_text), so fully-specified manifests avoid that download."""
     global _model
     if _model is not None:
         return _model
@@ -55,12 +57,12 @@ def _get_model():
     cfg = settings.omnivoice
     dtype = getattr(torch, cfg.dtype)
     model_source = resolve_model_source()
-    print(f"[clone] loading {model_source} (load_asr=True for transcription)…", flush=True)
+    print(f"[clone] loading {model_source} (load_asr={load_asr})…", flush=True)
     _model = OmniVoice.from_pretrained(
         model_source,
         device_map=cfg.device,
         dtype=dtype,
-        load_asr=True,               # so ref_text can be auto-filled when omitted
+        load_asr=load_asr,           # only needed to auto-fill missing ref_text
         trust_remote_code=cfg.trust_remote_code,
     )
     print("[clone] model ready", flush=True)
@@ -83,9 +85,15 @@ def _extract_fields(model, prompt) -> dict:
     }
 
 
-def build_one(alias: str, ref_audio: str | Path, ref_text: str | None) -> Path:
-    """Create voices_dir/<alias>.npz from a reference clip."""
-    model = _get_model()
+def build_one(alias: str, ref_audio: str | Path, ref_text: str | None,
+              load_asr: bool | None = None) -> Path:
+    """Create voices_dir/<alias>.npz from a reference clip.
+
+    load_asr defaults to True only when ref_text is missing (Whisper transcribes it).
+    """
+    if load_asr is None:
+        load_asr = ref_text is None
+    model = _get_model(load_asr)
     ref_audio = str(ref_audio)
     print(f"[clone] '{alias}' ← {ref_audio}"
           + (f"  ref_text={ref_text[:40]!r}" if ref_text else "  (auto-transcribe)"), flush=True)
@@ -105,29 +113,41 @@ def build_one(alias: str, ref_audio: str | Path, ref_text: str | None) -> Path:
 
 
 def build_all(manifest_path: str | None) -> None:
-    manifest: dict[str, dict] = {}
+    manifest: dict = {}
     if manifest_path and Path(manifest_path).is_file():
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        print(f"[clone] manifest: {len(manifest)} entries from {manifest_path}", flush=True)
 
-    # Union of manifest aliases + every audio file in sample_files/.
-    sample_dir = Path.home() / "FlowTTS/sample_files"
     jobs: dict[str, tuple[str, str | None]] = {}
-    for alias, entry in manifest.items():
-        jobs[alias] = (entry["ref_audio"], entry.get("ref_text"))
-    if sample_dir.is_dir():
-        for f in sorted(sample_dir.iterdir()):
-            if f.suffix.lower() in _AUDIO_EXTS and f.stem not in jobs:
-                jobs[f.stem] = (str(f), None)
+    if manifest:
+        # A manifest means "build exactly these voices". Skip comment/non-entry keys
+        # (e.g. "_comment") and any value that isn't an object with a ref_audio.
+        for alias, entry in manifest.items():
+            if alias.startswith("_") or not isinstance(entry, dict) or "ref_audio" not in entry:
+                continue
+            jobs[alias] = (entry["ref_audio"], entry.get("ref_text"))
+        print(f"[clone] {len(jobs)} voice(s) from manifest {manifest_path}", flush=True)
+    else:
+        # No manifest → build one voice per clip in sample_files/ (auto-transcribed).
+        sample_dir = Path.home() / "FlowTTS/sample_files"
+        if sample_dir.is_dir():
+            for f in sorted(sample_dir.iterdir()):
+                if f.suffix.lower() in _AUDIO_EXTS:
+                    jobs[f.stem] = (str(f), None)
+        print(f"[clone] {len(jobs)} voice(s) from {sample_dir}", flush=True)
 
     if not jobs:
-        print("[clone] nothing to build (no manifest, no sample_files/*)", file=sys.stderr)
+        print("[clone] nothing to build (empty manifest, no sample_files/*)", file=sys.stderr)
         return
+
+    # Load Whisper only if at least one voice needs transcription.
+    need_asr = any(rt is None for (_ra, rt) in jobs.values())
+    if need_asr:
+        print("[clone] some voices lack ref_text → loading Whisper ASR (one-time download).", flush=True)
 
     ok = 0
     for alias, (ref_audio, ref_text) in jobs.items():
         try:
-            build_one(alias, ref_audio, ref_text)
+            build_one(alias, ref_audio, ref_text, load_asr=need_asr)
             ok += 1
         except Exception as e:  # noqa: BLE001
             print(f"[clone] FAILED '{alias}': {e}", file=sys.stderr, flush=True)
