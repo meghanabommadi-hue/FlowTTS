@@ -70,6 +70,22 @@ class VoiceRegistry:
     def has(self, alias: str | None) -> bool:
         return bool(alias) and alias in self._raw
 
+    def language(self, voice_id: str | None) -> str | None:
+        """Return the resolved voice's preferred language, or None if unset."""
+        alias = self.resolve(voice_id)
+        if alias is None:
+            return None
+        lang = self._raw[alias].get("language")
+        return lang or None
+
+    def add(self, alias: str, npz_path: str | Path) -> dict[str, Any]:
+        """Hot-register a voice from an npz (used by the live clone REST endpoint)."""
+        data = load_voice_npz(npz_path)
+        self._raw[alias] = data
+        self._prompts.pop(alias, None)  # drop any stale cached prompt
+        logger.info("voice_registered", alias=alias, tokens=tuple(data["ref_audio_tokens"].shape))
+        return data
+
     def resolve(self, voice_id: str | None) -> str | None:
         """Return the alias to use: the requested one if known, else the default."""
         if voice_id and voice_id in self._raw:

@@ -43,16 +43,28 @@ docker compose exec omnivoice-tts python -m pytest flowtts/test/test_text_chunke
 
 ## Voices
 
+**Recommended — REST on the running server** (no extra container, no second model
+load, no GPU contention, usable immediately):
+
 ```bash
-# add a voice (drop the wav in sample_files/ first — it's in the image + bind mount)
+curl -sf -X POST http://localhost:8764/voices \
+  -F voice_id=niharika -F preferred_lang=hi \
+  -F ref_text="एकटा कथा बोली कोलकाता का जो मिष्टी दही है ना …" \
+  -F audio=@voices/voice_preview_niharika_bengali.mp3
+
+curl -s http://localhost:8764/voices        # list loaded voices
+```
+
+Offline CLI alternative (stop the server first if the GPU is tight — cloning needs VRAM too):
+
+```bash
 docker compose run --rm omnivoice-tts clone --add priya --ref-audio sample_files/priya.wav \
     --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"
-
 docker compose run --rm omnivoice-tts clone --list
 ```
 
 Built `.npz` land in `./voices/` on the host (bind-mounted) and persist across
-container rebuilds. Restart the server to pick up new voices.
+container rebuilds. The REST endpoint registers the voice live; the CLI needs a restart.
 
 ## Tuning (edit `docker-compose.yml` env, or pass `-e`)
 

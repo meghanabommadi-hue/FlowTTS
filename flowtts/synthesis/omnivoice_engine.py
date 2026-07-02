@@ -31,12 +31,14 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 import structlog
 
 from flowtts.core.config import settings, resolve_model_source
+from flowtts.voices.npz_io import save_voice_npz
 from flowtts.voices.registry import VoiceRegistry
 
 logger = structlog.get_logger(__name__)
@@ -258,11 +260,67 @@ class OmniVoiceEngine:
         self._ensure_batch_loop()
 
         prompt = self.registry.prompt(voice_id) if self.registry else None
-        lang = language if language is not None else settings.voices.default_language
+        # Language precedence: explicit request > the voice's preferred language > default.
+        if language is not None:
+            lang = language
+        elif self.registry is not None and self.registry.language(voice_id):
+            lang = self.registry.language(voice_id)
+        else:
+            lang = settings.voices.default_language
 
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         await self._queue.put(_Req(text=text, prompt=prompt, speed=speed, language=lang, future=fut))
         return await fut
+
+    async def create_voice(
+        self,
+        voice_id: str,
+        audio_path: str,
+        ref_text: str,
+        language: str | None = None,
+    ) -> dict:
+        """Clone a voice from a reference clip in-process, persist it, register it live.
+
+        Runs the codec encode on the single GPU worker thread (shared with the batch
+        loop) so there's no second model load and no GPU contention. The voice is
+        usable immediately — no server restart.
+        """
+        if self.model is None:
+            raise RuntimeError("OmniVoiceEngine not initialized")
+        if not ref_text or not ref_text.strip():
+            raise ValueError("ref_text is required for voice cloning")
+
+        loop = asyncio.get_event_loop()
+
+        def _encode():
+            prompt = self.model.create_voice_clone_prompt(ref_audio=str(audio_path), ref_text=ref_text)
+            tokens = prompt.ref_audio_tokens.detach().cpu().numpy()
+            return tokens, str(prompt.ref_text), float(prompt.ref_rms)
+
+        tokens, rtext, rrms = await loop.run_in_executor(self._executor, _encode)
+
+        out = Path(settings.voices.voices_dir) / f"{voice_id}.npz"
+        save_voice_npz(
+            out,
+            ref_audio_tokens=tokens,
+            ref_text=rtext,
+            ref_rms=rrms,
+            sample_rate=self.sampling_rate,
+            frame_rate=self.frame_rate,
+            alias=voice_id,
+            language=language,
+        )
+        self.registry.add(voice_id, out)
+        logger.info("voice_cloned", voice_id=voice_id, tokens=list(tokens.shape), language=language)
+        return {
+            "voice_id": voice_id,
+            "tokens": list(tokens.shape),
+            "ref_rms": round(rrms, 4),
+            "ref_text": rtext,
+            "language": language,
+            "sample_rate": self.sampling_rate,
+            "npz": str(out),
+        }
 
     async def _warmup(self) -> None:
         cfg = settings.omnivoice

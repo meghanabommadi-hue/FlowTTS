@@ -49,14 +49,34 @@ bash run.sh --compile                                           # torch.compile 
 
 ## Voices (clone by alias)
 
+### Easiest — REST endpoint on the running server (no restart, no extra GPU load)
+
+`POST /voices` on the control API (`:8764`). Inputs: `audio` file, `voice_id`,
+`ref_text`, optional `preferred_lang`. Returns clone status; voice is usable immediately.
+
+```bash
+# multipart upload
+curl -sf -X POST http://localhost:8764/voices \
+  -F voice_id=niharika \
+  -F preferred_lang=hi \
+  -F ref_text="एकटा कथा बोली कोलकाता का जो मिष्टी दही है ना …" \
+  -F audio=@voices/voice_preview_niharika_bengali.mp3
+# → {"status":"ok","voice_id":"niharika","tokens":[8,NNN],"sample_rate":24000, ...}
+
+curl -s http://localhost:8764/voices          # list loaded voices
+```
+Then synthesize with `"voice_id":"niharika"` right away — no restart needed.
+
+### Offline CLI (alternative)
+
 ```bash
 python -m flowtts.voices.clone --build-all --manifest voices/manifest.json   # build all
 python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
-    --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"                              # one voice
+    --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"                              # one voice (ref_text required)
 python -m flowtts.voices.clone --list                                        # list installed
 ```
 
-Restart the server to pick up new voices. Select one per request with `voice_id`.
+Select a voice per request with `voice_id`.
 
 ## Smoke test
 

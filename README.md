@@ -129,8 +129,20 @@ Concatenate the PCM from each `audio_chunk` (same `sample_rate`) for the full ut
 ## Voices (clone by alias)
 
 A voice is a precomputed `voices/<alias>.npz` (Higgs-codec tokens of a reference clip +
-its transcript + loudness). Build once, offline; the server loads them at startup.
+its transcript + loudness). Clone it two ways:
 
+**REST (easiest — on the running server, no restart, no extra GPU load):**
+```bash
+curl -sf -X POST http://localhost:8764/voices \
+  -F voice_id=priya -F preferred_lang=hi \
+  -F ref_text="नमस्ते, मैं प्रिया बोल रही हूँ।" \
+  -F audio=@sample_files/priya.wav
+# → {"status":"ok","voice_id":"priya","tokens":[8,NNN], ...}   → usable immediately
+```
+`POST /voices` inputs: `audio` (file), `voice_id`, `ref_text` (**required** — no ASR),
+`preferred_lang` (optional). `GET /voices` lists loaded voices.
+
+**Offline CLI (build ahead of time):**
 ```bash
 # build all voices from sample_files/ (+ voices/manifest.json overrides)
 python -m flowtts.voices.clone --build-all --manifest voices/manifest.json

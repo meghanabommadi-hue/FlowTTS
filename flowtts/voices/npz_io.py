@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 adds optional "language"; v1 files still load (language → "")
 
 
 def save_voice_npz(
@@ -34,11 +34,13 @@ def save_voice_npz(
     sample_rate: int,
     frame_rate: float,
     alias: str,
+    language: str | None = None,
 ) -> Path:
     """Persist a voice-clone prompt as a compressed .npz (no pickle).
 
     ``ref_audio_tokens`` is stored as int16 to stay tiny (a few KB). Codec token
-    ids are < 1025 so int16 is lossless.
+    ids are < 1025 so int16 is lossless. ``language`` is the voice's preferred
+    synthesis language (optional).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +59,7 @@ def save_voice_npz(
         sample_rate=np.asarray(int(sample_rate), dtype=np.int32),
         frame_rate=np.asarray(float(frame_rate), dtype=np.float32),
         alias=np.asarray(str(alias)),
+        language=np.asarray(str(language or "")),
         schema_version=np.asarray(SCHEMA_VERSION, dtype=np.int32),
     )
     # np.savez_compressed appends .npz if missing — normalize the returned path.
@@ -87,5 +90,6 @@ def load_voice_npz(path: str | Path) -> dict[str, Any]:
             "sample_rate": int(data["sample_rate"]) if "sample_rate" in data.files else 0,
             "frame_rate": float(data["frame_rate"]) if "frame_rate" in data.files else 0.0,
             "alias": str(data["alias"]) if "alias" in data.files else path.stem,
+            "language": str(data["language"]) if "language" in data.files else "",
             "schema_version": version,
         }

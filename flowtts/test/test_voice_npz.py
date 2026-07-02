@@ -26,6 +26,7 @@ def test_round_trip():
             sample_rate=24000,
             frame_rate=25.0,
             alias="priya",
+            language="hi",
         )
         assert out.suffix == ".npz"
         data = load_voice_npz(out)
@@ -38,6 +39,7 @@ def test_round_trip():
     assert data["sample_rate"] == 24000
     assert abs(data["frame_rate"] - 25.0) < 1e-6
     assert data["alias"] == "priya"
+    assert data["language"] == "hi"
     assert data["schema_version"] == SCHEMA_VERSION
 
 

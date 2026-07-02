@@ -53,6 +53,7 @@ import json
 import gc
 import re
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -852,8 +853,87 @@ async def _http_health(req: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "ready": True})
 
 
+_VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+async def _http_clone_voice(req: web.Request) -> web.Response:
+    """POST /voices — clone a voice from an uploaded reference clip (in-process; live).
+
+    Accepts either:
+      • multipart/form-data:  audio=<file>, voice_id=..., ref_text=..., preferred_lang=...
+      • application/json:      {"voice_id","ref_text","preferred_lang","audio_base64"}
+
+    ref_text is REQUIRED (no ASR). Returns JSON clone status; the voice is usable
+    immediately (no restart) via the WebSocket `voice_id` field.
+    """
+    voice_id = ref_text = preferred_lang = None
+    audio_bytes: bytes | None = None
+    audio_name = "ref.wav"
+    ctype = req.headers.get("Content-Type", "")
+    try:
+        if ctype.startswith("multipart/"):
+            reader = await req.multipart()
+            async for part in reader:
+                if part.name == "audio":
+                    audio_name = part.filename or audio_name
+                    audio_bytes = await part.read(decode=False)
+                elif part.name == "voice_id":
+                    voice_id = (await part.read()).decode("utf-8").strip()
+                elif part.name == "ref_text":
+                    ref_text = (await part.read()).decode("utf-8")
+                elif part.name in ("preferred_lang", "language"):
+                    preferred_lang = (await part.read()).decode("utf-8").strip()
+        else:
+            data = await req.json()
+            voice_id = (data.get("voice_id") or "").strip()
+            ref_text = data.get("ref_text")
+            preferred_lang = (data.get("preferred_lang") or data.get("language") or "").strip()
+            b64 = data.get("audio_base64") or data.get("audio")
+            if b64:
+                audio_bytes = base64.b64decode(b64)
+    except Exception as e:  # noqa: BLE001
+        return web.json_response({"status": "error", "error": f"bad request: {e}"}, status=400)
+
+    # ── validate ──
+    if not voice_id or not _VOICE_ID_RE.match(voice_id):
+        return web.json_response(
+            {"status": "error", "error": "voice_id required and must match [A-Za-z0-9_-]{1,64}"}, status=400)
+    if not ref_text or not ref_text.strip():
+        return web.json_response({"status": "error", "error": "ref_text is required (no auto-transcription)"}, status=400)
+    if not audio_bytes:
+        return web.json_response(
+            {"status": "error", "error": "audio required (multipart field 'audio' or json 'audio_base64')"}, status=400)
+    if _restarting or _oom_recovery_active:
+        return web.json_response({"status": "error", "error": "server busy (GPU recovery/restart)"}, status=503)
+
+    suffix = Path(audio_name).suffix or ".wav"
+    tmp = tempfile.NamedTemporaryFile(prefix=f"clone_{voice_id}_", suffix=suffix, delete=False)
+    try:
+        tmp.write(audio_bytes)
+        tmp.flush()
+        tmp.close()
+        synth = await _get_synthesizer()
+        result = await synth.engine.create_voice(voice_id, tmp.name, ref_text, language=preferred_lang or None)
+        print(f"[{_ts()}] voice cloned: {voice_id}  tokens={result['tokens']}  lang={preferred_lang or '-'}", flush=True)
+        return web.json_response({"status": "ok", **result})
+    except Exception as e:  # noqa: BLE001
+        if _is_oom(e):
+            await _handle_oom(e)
+        print(f"[{_ts()}] voice clone FAILED {voice_id}: {e}", flush=True)
+        return web.json_response({"status": "error", "voice_id": voice_id, "error": str(e)}, status=500)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+
+async def _http_list_voices(req: web.Request) -> web.Response:
+    """GET /voices — list the aliases currently loaded."""
+    if _synthesizer is None:
+        return web.json_response({"status": "error", "error": "model loading"}, status=503)
+    return web.json_response({"status": "ok", "voices": _synthesizer.engine.registry.aliases()})
+
+
 async def _run_control_api(ctrl_port: int) -> None:
-    app = web.Application()
+    app = web.Application(client_max_size=64 * 1024 * 1024)  # allow up to 64MB audio uploads
     app.router.add_post("/ports/add", _http_add_port)
     app.router.add_get("/ports",      _http_list_ports)
     app.router.add_get("/ready",      _http_ready)
@@ -861,6 +941,8 @@ async def _run_control_api(ctrl_port: int) -> None:
     app.router.add_get("/metrics",    _http_metrics)
     app.router.add_get("/ws/log",     _http_ws_log)
     app.router.add_get("/ws/active",  _http_ws_active)
+    app.router.add_post("/voices",    _http_clone_voice)
+    app.router.add_get("/voices",     _http_list_voices)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", ctrl_port)
