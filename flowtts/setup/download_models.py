@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
 
-from flowtts.core.config import settings
+from flowtts.core.config import is_local_model, resolve_model_source, settings
 
 
 def download(repo: str) -> None:
@@ -35,10 +35,18 @@ def download(repo: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Download OmniVoice weights from HuggingFace")
-    ap.add_argument("--repo", default=settings.omnivoice.model_repo,
+    ap.add_argument("--repo", default=None,
                     help=f"HF repo id (default: {settings.omnivoice.model_repo})")
+    ap.add_argument("--force", action="store_true",
+                    help="Download from HF even if local weights are present")
     args = ap.parse_args()
-    download(args.repo)
+
+    # Skip the HF download entirely when local weights already exist.
+    if args.repo is None and not args.force and is_local_model():
+        print(f"[download] local weights present at {resolve_model_source()} — skipping HF download.")
+        return
+
+    download(args.repo or settings.omnivoice.model_repo)
     print("\nDownload complete.")
 
 

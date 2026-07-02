@@ -37,7 +37,8 @@ services:
       - "8080:8080"    # WebSocket (add 8081:8081 … if PORTS>1)
       - "8764:8764"    # control API + /metrics
     volumes:
-      - hf-cache:/root/.cache/huggingface        # persist model download across rebuilds
+      - ./model_dir:/root/FlowTTS/model_dir      # local OmniVoice weights (model_dir/base) — used if present
+      - hf-cache:/root/.cache/huggingface        # HF cache fallback (if no local weights)
       - ./voices:/root/FlowTTS/voices            # persist built npz (visible on host)
       - wav-cache:/root/FlowTTS/cached_data      # persist WAV cache
     shm_size: "8gb"

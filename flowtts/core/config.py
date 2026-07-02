@@ -33,6 +33,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Filesystem layout
 # ---------------------------------------------------------------------------
 _HOME = Path.home()
+# Repo root (…/FlowTTS) — used to resolve a relative local model path regardless of cwd.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _SAMPLE_FILES_DIR = str(_HOME / "FlowTTS/sample_files")
 _VOICES_DIR = str(_HOME / "FlowTTS/voices")          # *.npz voice-clone artifacts
 _WAV_CACHE_DIR = str(_HOME / "FlowTTS/cached_data")  # sha256(text).wav cache
@@ -46,7 +48,11 @@ class OmniVoiceSettings(BaseModel):
     """k2-fsa/OmniVoice model, generation, batching, and acceleration config."""
 
     # --- Model load ---
-    model_repo: str = "k2-fsa/OmniVoice"     # HF repo (or local snapshot path)
+    model_repo: str = "k2-fsa/OmniVoice"     # HF repo id (used only if no local weights)
+    # Local weights dir (relative to repo root, or absolute). If it exists it is used
+    # INSTEAD of downloading from HuggingFace — set to your local snapshot, e.g.
+    # "model_dir/base". Override with FLOWTTS_OMNIVOICE__MODEL_PATH.
+    model_path: str = "model_dir/base"
     device: str = "cuda:0"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"  # bf16 preferred on Hopper/H200
     # Whisper ASR auto-transcribes ref audio when ref_text is missing. Not needed
@@ -182,3 +188,26 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def resolve_model_source() -> str:
+    """Return the OmniVoice weights source to load.
+
+    Prefers a local weights directory (settings.omnivoice.model_path, resolved
+    relative to the repo root if not absolute) when it exists; otherwise falls
+    back to the HuggingFace repo id (settings.omnivoice.model_repo).
+    """
+    p = Path(settings.omnivoice.model_path)
+    if not p.is_absolute():
+        p = _REPO_ROOT / p
+    if p.is_dir():
+        return str(p)
+    return settings.omnivoice.model_repo
+
+
+def is_local_model() -> bool:
+    """True if a local weights directory will be used (no HF download needed)."""
+    p = Path(settings.omnivoice.model_path)
+    if not p.is_absolute():
+        p = _REPO_ROOT / p
+    return p.is_dir()

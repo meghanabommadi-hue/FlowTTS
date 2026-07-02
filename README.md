@@ -150,6 +150,7 @@ All settings are overridable via `FLOWTTS_*` env vars (nested with `__`). Key kn
 
 | Env var | Meaning | Default |
 |---|---|---|
+| `FLOWTTS_OMNIVOICE__MODEL_PATH` | local weights dir (used if it exists; else HF repo) | `model_dir/base` |
 | `FLOWTTS_OMNIVOICE__NUM_STEP` | diffusion steps (dominant latency knob) | `16` |
 | `FLOWTTS_OMNIVOICE__MAX_BATCH` | dynamic batch size | `32` |
 | `FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS` | batch collection window (ms) | `8` |

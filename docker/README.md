@@ -69,6 +69,10 @@ See [`docs/omnivoice_acceleration.md`](../docs/omnivoice_acceleration.md) for th
 
 ## Notes
 
+- **Local weights (skip the HF download):** place the OmniVoice snapshot at `./model_dir/base`
+  on the host. It's bind-mounted to `/root/FlowTTS/model_dir` and used automatically when present
+  (config `model_path`), so `setup`/serve won't touch HuggingFace. Override the path with
+  `FLOWTTS_OMNIVOICE__MODEL_PATH`.
 - **Multiple WS ports:** set `PORTS=8` and add `8081:8081 … 8087:8087` to the compose `ports:` list.
 - **Persistence:** the model lives in the `hf-cache` volume, the WAV cache in `wav-cache`,
   voices in `./voices/` — none are lost on `docker compose build`/`up`.

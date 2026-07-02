@@ -50,11 +50,14 @@ def _get_model():
     import torch
     from omnivoice import OmniVoice
 
+    from flowtts.core.config import resolve_model_source
+
     cfg = settings.omnivoice
     dtype = getattr(torch, cfg.dtype)
-    print(f"[clone] loading {cfg.model_repo} (load_asr=True for transcription)…", flush=True)
+    model_source = resolve_model_source()
+    print(f"[clone] loading {model_source} (load_asr=True for transcription)…", flush=True)
     _model = OmniVoice.from_pretrained(
-        cfg.model_repo,
+        model_source,
         device_map=cfg.device,
         dtype=dtype,
         load_asr=True,               # so ref_text can be auto-filled when omitted

@@ -12,6 +12,7 @@ llmc
 sample_audio/
 voices/*.npz
 cached_data*/
+model_dir/          # local model weights — bind-mounted at runtime, not baked in
 monitoring/requests/
 monitoring/prometheus-data/
 monitoring/*.jsonl

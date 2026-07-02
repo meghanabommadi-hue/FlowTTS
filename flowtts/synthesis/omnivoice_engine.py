@@ -36,7 +36,7 @@ from typing import Any, Optional
 import numpy as np
 import structlog
 
-from flowtts.core.config import settings
+from flowtts.core.config import settings, resolve_model_source
 from flowtts.voices.registry import VoiceRegistry
 
 logger = structlog.get_logger(__name__)
@@ -87,9 +87,10 @@ class OmniVoiceEngine:
         from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
 
         dtype = getattr(torch, cfg.dtype)
-        logger.info("omnivoice_loading", repo=cfg.model_repo, device=cfg.device, dtype=cfg.dtype)
+        model_source = resolve_model_source()
+        logger.info("omnivoice_loading", source=model_source, device=cfg.device, dtype=cfg.dtype)
         self.model = OmniVoice.from_pretrained(
-            cfg.model_repo,
+            model_source,
             device_map=cfg.device,
             dtype=dtype,
             load_asr=cfg.load_asr,
@@ -116,7 +117,7 @@ class OmniVoiceEngine:
         self._maybe_compile()
 
         self.engine_info = {
-            "model_repo": cfg.model_repo,
+            "model_source": model_source,
             "device": cfg.device,
             "dtype": cfg.dtype,
             "num_step": cfg.num_step,
