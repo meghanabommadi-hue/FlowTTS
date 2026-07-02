@@ -55,9 +55,8 @@ class OmniVoiceSettings(BaseModel):
     model_path: str = "model_dir/base"
     device: str = "cuda:0"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"  # bf16 preferred on Hopper/H200
-    # Whisper ASR auto-transcribes ref audio when ref_text is missing. Not needed
-    # at serve time because voice prompts are precomputed to npz — keep it off to
-    # save GPU memory. The offline voice-clone builder turns it on explicitly.
+    # ASR (Whisper) is disabled everywhere — ref_text is mandatory for voice cloning,
+    # so there is nothing to auto-transcribe. Keeps startup fast and avoids the download.
     load_asr: bool = False
     trust_remote_code: bool = True
 

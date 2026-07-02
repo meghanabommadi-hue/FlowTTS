@@ -16,8 +16,8 @@ NVIDIA GPU with compute capability ≥ 8.0 (your **RTX 6000 Ada** = 8.9, H200 = 
 ```bash
 cd ~/FlowTTS            # the repo root (contains docker-compose.yml)
 
-# 1) One-time setup: download OmniVoice (~3.3GB) + build voice npz from sample_files/.
-#    (May also pull Whisper for auto-transcription unless ref_text is in voices/manifest.json.)
+# 1) One-time setup: ensure model (local weights or HF) + build any voices with a ref_text.
+#    (No ASR — ref_text is required in voices/manifest.json to clone a voice.)
 docker compose run --rm omnivoice-tts setup
 
 # 2) Serve (foreground; Ctrl-C to stop)

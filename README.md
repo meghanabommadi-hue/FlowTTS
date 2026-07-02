@@ -134,7 +134,7 @@ its transcript + loudness). Build once, offline; the server loads them at startu
 ```bash
 # build all voices from sample_files/ (+ voices/manifest.json overrides)
 python -m flowtts.voices.clone --build-all --manifest voices/manifest.json
-# add one (ref_text auto-transcribed via Whisper if omitted)
+# add one (ref_text is required — no ASR/auto-transcribe)
 python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
     --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"
 python -m flowtts.voices.clone --list

@@ -5,23 +5,23 @@ Creates reusable ``<alias>.npz`` voice-clone artifacts that the running server
 loads at startup and addresses by alias. Run this ONCE per voice (it needs the
 GPU + the omnivoice package); the server itself never re-encodes reference audio.
 
+ref_text is MANDATORY — there is no ASR/auto-transcription. Provide the transcript
+of each reference clip (via --ref-text or the manifest). Voices without a ref_text
+are skipped.
+
 Usage:
-    # One voice (auto-transcribe the reference with Whisper if --ref-text omitted)
+    # One voice
     python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
         --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"
 
-    # Build an npz for every audio file in sample_files/ (stem = alias)
-    python -m flowtts.voices.clone --build-all
-
-    # Build from a manifest that supplies ref_text per alias
+    # Build every voice defined in a manifest (each entry needs ref_audio + ref_text)
     python -m flowtts.voices.clone --build-all --manifest voices/manifest.json
 
     # List installed voices
     python -m flowtts.voices.clone --list
 
-manifest.json format:
-    { "priya": {"ref_audio": "sample_files/priya.wav", "ref_text": "..."},
-      "tara":  {"ref_audio": "sample_files/tara.wav"} }
+manifest.json format (ref_text required for each voice):
+    { "priya": {"ref_audio": "sample_files/priya.wav", "ref_text": "..."} }
 """
 
 from __future__ import annotations
@@ -43,9 +43,8 @@ _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
 _model = None
 
 
-def _get_model(load_asr: bool):
-    """Load OmniVoice once. Whisper ASR is loaded only when transcription is needed
-    (i.e. some voice has no ref_text), so fully-specified manifests avoid that download."""
+def _get_model():
+    """Load OmniVoice once. ASR is never loaded — ref_text is mandatory for cloning."""
     global _model
     if _model is not None:
         return _model
@@ -57,12 +56,12 @@ def _get_model(load_asr: bool):
     cfg = settings.omnivoice
     dtype = getattr(torch, cfg.dtype)
     model_source = resolve_model_source()
-    print(f"[clone] loading {model_source} (load_asr={load_asr})…", flush=True)
+    print(f"[clone] loading {model_source} …", flush=True)
     _model = OmniVoice.from_pretrained(
         model_source,
         device_map=cfg.device,
         dtype=dtype,
-        load_asr=load_asr,           # only needed to auto-fill missing ref_text
+        load_asr=False,              # no Whisper — ref_text must be supplied
         trust_remote_code=cfg.trust_remote_code,
     )
     print("[clone] model ready", flush=True)
@@ -85,18 +84,16 @@ def _extract_fields(model, prompt) -> dict:
     }
 
 
-def build_one(alias: str, ref_audio: str | Path, ref_text: str | None,
-              load_asr: bool | None = None) -> Path:
-    """Create voices_dir/<alias>.npz from a reference clip.
-
-    load_asr defaults to True only when ref_text is missing (Whisper transcribes it).
-    """
-    if load_asr is None:
-        load_asr = ref_text is None
-    model = _get_model(load_asr)
+def build_one(alias: str, ref_audio: str | Path, ref_text: str | None) -> Path:
+    """Create voices_dir/<alias>.npz from a reference clip. ref_text is required."""
+    if not ref_text or not str(ref_text).strip():
+        raise ValueError(
+            f"ref_text is required to clone voice '{alias}' "
+            f"(pass --ref-text, or add \"ref_text\" to the manifest entry)."
+        )
+    model = _get_model()
     ref_audio = str(ref_audio)
-    print(f"[clone] '{alias}' ← {ref_audio}"
-          + (f"  ref_text={ref_text[:40]!r}" if ref_text else "  (auto-transcribe)"), flush=True)
+    print(f"[clone] '{alias}' ← {ref_audio}  ref_text={ref_text[:40]!r}", flush=True)
 
     prompt = model.create_voice_clone_prompt(ref_audio=ref_audio, ref_text=ref_text)
     fields = _extract_fields(model, prompt)
@@ -127,7 +124,7 @@ def build_all(manifest_path: str | None) -> None:
             jobs[alias] = (entry["ref_audio"], entry.get("ref_text"))
         print(f"[clone] {len(jobs)} voice(s) from manifest {manifest_path}", flush=True)
     else:
-        # No manifest → build one voice per clip in sample_files/ (auto-transcribed).
+        # No manifest → list sample_files/ clips (skipped below unless a manifest gives ref_text).
         sample_dir = Path.home() / "FlowTTS/sample_files"
         if sample_dir.is_dir():
             for f in sorted(sample_dir.iterdir()):
@@ -135,19 +132,20 @@ def build_all(manifest_path: str | None) -> None:
                     jobs[f.stem] = (str(f), None)
         print(f"[clone] {len(jobs)} voice(s) from {sample_dir}", flush=True)
 
-    if not jobs:
-        print("[clone] nothing to build (empty manifest, no sample_files/*)", file=sys.stderr)
-        return
+    # ref_text is mandatory — skip (don't fail) voices that don't provide it.
+    missing = [a for a, (_ra, rt) in jobs.items() if not rt]
+    if missing:
+        print(f"[clone] skipping (no ref_text — required for cloning): {missing}", flush=True)
+        jobs = {a: v for a, v in jobs.items() if v[1]}
 
-    # Load Whisper only if at least one voice needs transcription.
-    need_asr = any(rt is None for (_ra, rt) in jobs.values())
-    if need_asr:
-        print("[clone] some voices lack ref_text → loading Whisper ASR (one-time download).", flush=True)
+    if not jobs:
+        print("[clone] nothing to build — add a \"ref_text\" to each manifest entry to clone.", flush=True)
+        return
 
     ok = 0
     for alias, (ref_audio, ref_text) in jobs.items():
         try:
-            build_one(alias, ref_audio, ref_text, load_asr=need_asr)
+            build_one(alias, ref_audio, ref_text)
             ok += 1
         except Exception as e:  # noqa: BLE001
             print(f"[clone] FAILED '{alias}': {e}", file=sys.stderr, flush=True)
@@ -177,7 +175,7 @@ def main() -> None:
     g.add_argument("--build-all", action="store_true", help="Build from sample_files/ (+ optional manifest)")
     g.add_argument("--list", action="store_true", help="List installed voices")
     ap.add_argument("--ref-audio", help="Reference audio path (with --add)")
-    ap.add_argument("--ref-text", default=None, help="Reference transcript (optional; auto-transcribed if omitted)")
+    ap.add_argument("--ref-text", default=None, help="Reference transcript (REQUIRED — no ASR/auto-transcribe)")
     ap.add_argument("--manifest", default=None, help="manifest.json for --build-all")
     args = ap.parse_args()
 
@@ -188,6 +186,8 @@ def main() -> None:
     else:
         if not args.ref_audio:
             ap.error("--add requires --ref-audio")
+        if not args.ref_text:
+            ap.error("--add requires --ref-text (ref_text is mandatory for voice cloning)")
         build_one(args.add.strip().lower(), args.ref_audio, args.ref_text)
 
 

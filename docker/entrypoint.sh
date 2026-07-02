@@ -22,7 +22,7 @@ ensure_model() {
 
 ensure_voices() {
     if ! ls voices/*.npz >/dev/null 2>&1; then
-        echo "[entrypoint] no voice npz found — building from sample_files/ (one-time; may download Whisper for auto-transcription)..."
+        echo "[entrypoint] no voice npz found — building voices with a ref_text from voices/manifest.json (no ASR)..."
         python -m flowtts.voices.clone --build-all --manifest voices/manifest.json \
             || python -m flowtts.voices.clone --build-all \
             || echo "[entrypoint] voice build failed — server will fall back to OmniVoice auto-voice."

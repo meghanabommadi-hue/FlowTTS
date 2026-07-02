@@ -7,10 +7,10 @@ at startup and addresses them by alias via the WebSocket `voice_id` field.
 ## Build voices
 
 ```bash
-# From every clip in sample_files/ (stem = alias), applying voices/manifest.json overrides:
+# Build every voice defined in the manifest (each entry needs ref_audio + ref_text):
 python -m flowtts.voices.clone --build-all --manifest voices/manifest.json
 
-# A single voice (ref_text optional — auto-transcribed with Whisper if omitted):
+# A single voice — ref_text is REQUIRED (no ASR/auto-transcribe):
 python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
     --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"
 
