@@ -1,209 +1,98 @@
-# FlowTTS Commands
+# FlowTTS (OmniVoice) Commands
+
+## One-time setup (on the H200 box)
+
+```bash
+# 1. Install PyTorch CUDA build matching your box, then deps + model + voices:
+bash flowtts/setup/setup.sh
+```
+
+This installs `requirements.txt`, downloads `k2-fsa/OmniVoice`, and builds voice
+npz artifacts from `sample_files/` (+ `voices/manifest.json`).
 
 ## Launch server
+
 ```bash
-cd FlowTTS/
-source llmc/bin/activate
+cd ~/FlowTTS
 source .venv/bin/activate
-
-```
-```bash
-cd /root/FlowTTS
-bash run.sh --ctrl-port 8764
+bash run.sh --ctrl-port 8764 --ports 1
 ```
 
-## Open N ports
+- `--ports N` opens N WebSocket ports from `--port` (default 8080).
+- The model loads once and self-warms; the control API is on `--ctrl-port`.
 
-```bash
-python3 -m flowtts.test.open_ports --n 40
-```
-
-## Send N requests (1 per port)
+### Engine tuning (speed / throughput)
 
 ```bash
-# Full pipeline (LLM + decoder, returns WAV)
-
-# Streaming — audio chunks sent as they are generated (shows time-to-first-chunk)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
-
-# Streaming + save each chunk as an individual WAV file
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming --save-chunks
-
-# LLM only — no decoder, measure pure generation latency
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --skip-decoder
+bash run.sh --num-step 12 --max-batch 48 --batch-timeout-ms 8   # faster / bigger batches
+bash run.sh --compile                                           # torch.compile (+CUDA graphs); slow first run
 ```
 
-- Auto-discovers all open ports from the server
-- Assigns exactly 1 request per port (round-robin matches when requests == ports)
-- `--streaming` uses the streaming pipeline: LLM tokens → decoder → WAV in chunks; summary shows `ttff(s)` (time to first audio chunk) per request
-- `--save-chunks` (requires `--streaming`) saves each chunk WAV individually alongside the combined output
-- Streaming chunk size, crossfade, and fade-out are configured in `flowtts/core/config.py → StreamingSettings` (or via env vars)
-- `--skip-decoder` sends `skip_decoder=true` per-request to the running server (no WAV decode, tokens only)
+- `--num-step` — diffusion steps; the dominant latency knob (16 default; try 8–12).
+- `--max-batch` / `--batch-timeout-ms` — dynamic in-flight batch size / window.
+- All also settable via env: `FLOWTTS_OMNIVOICE__NUM_STEP=8`, `FLOWTTS_OMNIVOICE__MAX_BATCH=64`, etc.
+- Output rate: `FLOWTTS_OUTPUT__SAMPLE_RATE=16000` (or 8000) to resample from native 24 kHz.
 
----
-
-## Open M more ports
+## Voices (clone by alias)
 
 ```bash
-python3 -m flowtts.test.open_ports --n 50
+python -m flowtts.voices.clone --build-all --manifest voices/manifest.json   # build all
+python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
+    --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"                              # one voice
+python -m flowtts.voices.clone --list                                        # list installed
 ```
 
-- Continues from the next port after the highest already open
+Restart the server to pick up new voices. Select one per request with `voice_id`.
 
----
-
-## Send M+N requests (1 per port)
+## Smoke test
 
 ```bash
-cd /root/FlowTTS && python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 90
+bash run.sh --test --ports 1                 # against a running server
 ```
 
----
+## Send requests / benchmark
 
-## Kill server (closes all ports)
+```bash
+# streaming (measures time-to-first-chunk)
+python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
+
+# throughput sweep across ports
+python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 200 --concurrency 16 --streaming
+
+# a specific voice
+python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 20 --voice priya
+```
+
+## Unit tests (no GPU required)
+
+```bash
+python -m pytest flowtts/test/test_text_chunker.py flowtts/test/test_voice_npz.py flowtts/test/test_pcm.py -q
+```
+
+## WebSocket contract (in / out)
+
+**Client → Server**
+```json
+{ "type": "synthesize", "call_id": "c1", "text_id": "t1",
+  "text": "...", "voice_id": "priya", "speed": 1.0, "language": "hi", "streaming": true }
+```
+Also `{ "type": "cancel", "text_id": "t1" }`.
+
+**Server → Client** (streaming): repeated binary frames of
+`audio_chunk` JSON header (`{type,call_id,text_id,chunk_index,sample_rate,encoding,tokens,is_final,cache_hit}`)
+**+ raw int16 PCM bytes appended in the same frame**, then a final `audio_done` JSON,
+plus `error` / `cancelled` as applicable.
+
+## Kill server
 
 ```bash
 kill $(ss -tlnp | grep :8764 | grep -oP 'pid=\K[0-9]+')
 ```
 
-Or by PID directly:
-```bash
-kill -9 <pid>
-```
-
----
-
-## Check open ports
-
-```bash
-ss -tlnp | grep python3 | awk '{print $4}' | sort -t: -k2 -n
-```
-
----
-
-## Launch server without decoder (LLM only, faster)
-
-```bash
-cd /root/FlowTTS && bash run.sh --ctrl-port 8764 --skip-decoder
-```
-
-Returns `audio_tokens` only, no WAV. Use for LLM latency benchmarking.
-
----
-
-## Test batch decode (no server needed)
-
-Must set LD_LIBRARY_PATH so onnxruntime uses GPU (libcudnn.so.9):
-```bash
-cd /root/FlowTTS
-export LD_LIBRARY_PATH=/root/CleanTTSData/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
-python3 flowtts/test/test_concurrent_decode.py --n-requests 30 --rounds 3
-```
-
-- Codec initialised **once** (model load + ONNX session warm-up)
-- Runs R rounds of N concurrent `decode_async()` — only round 1 pays cold-start cost
-- Reports per-round: batch sizes dispatched, GPU call count, latency (p50/p95/p99), req/s
-- Without `libcudnn.so.9` on LD_LIBRARY_PATH, ONNX falls back to CPU (~15x slower!)
-- `run.sh` sets this automatically when launching the server
-
-Options:
-```bash
-# 90 requests, 5 rounds, larger GPU chunk, more ONNX workers
-export LD_LIBRARY_PATH=/root/CleanTTSData/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
-/root/CleanTTSData/.venv/bin/python3 flowtts/test/test_concurrent_decode.py \
-    --n-requests 90 --rounds 5 --gpu-chunk 100 --onnx-workers 4
-```
-
----
-
-## Enable TensorRT decoder (3-5x faster, first run ~60s compile)
-
-Set in config or via env var:
-```bash
-# Via env var (one-off)
-FLOWTTS_DECODER__USE_TRT=true cd /root/FlowTTS && bash run.sh --ports 1
-
-# Or edit flowtts/core/config.py → DecoderSettings → use_trt: bool = True
-```
-
-- Engine cached to disk as `decoder_trt_b50.ep` next to model weights
-- Subsequent starts load cache instantly (no recompile)
-- Requires: `torch-tensorrt 2.9.0` (already installed)
-
----
-
-## Use a specific voice
-
-```bash
-# Use tara voice
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice tara
-
-# Use simran voice
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice simran
-
-# Use vikram voice
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vikram
-
-# Use daya voice
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice daya
-
-# Use vanita voice  (sample_files/vanita.wav)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice vanita
-
-# Use sunita voice  (sample_files/sunita.wav)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice sunita
-
-# Use rani voice  (sample_files/rani.wav)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice rani
-
-# Use sana voice  (sample_files/sana.wav)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice sana
-
-# Use anita voice  (sample_files/anita.wav)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --voice anita
-```
-
-```bash
-# Use british_rose voice (English sentences — auto-selected)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice british_rose
-
-# Run simran with English sentences (auto-selected)
-python3 -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --voice simran
-```
-
-- Available voices: `simran`, `tara`, `vikram`, `daya`, `british_rose`, `rani`, `sana`, `anita`, `vanita`, `sunita`
-- `simran` and `british_rose` automatically use English test sentences (`_ENGLISH_AMERICAN`)
-- `tara`, `vikram`, `daya` use Hindi fallback sentences
-- Default voice (no `--voice`) is `british_rose` (set in `TtsModelSettings.ref_audio`)
-- If WAV cache exists for that voice (`~/FlowTTS/cached_data_<voice>/`), matching sentences are served instantly without hitting the LLM
-
----
-
-## Download WAV cache (for cache hits)
-
-```bash
-# Download tara cache → ~/FlowTTS/cached_data_tara
-python3 flowtts/setup/download_cache.py --voice tara
-
-# Download simran cache → ~/FlowTTS/cached_data_simran
-python3 flowtts/setup/download_cache.py --voice simran
-
-# Both at once
-python3 flowtts/setup/download_cache.py --voice tara --voice simran
-```
-
-- WAVs are sha256-named and served directly on cache hit (bypasses LLM entirely)
-- Cache dirs are auto-detected per voice by the server (`cached_data_<voice>/`)
-
----
-
 ## Notes
 
-- Server ctrl API runs on `127.0.0.1:8764`
-- WS ports start at `8080` by default
-- All requests run fully parallel (sglang batches LLM, decoder batches via TTSCodec queue)
-- WAV output saved to `/root/FlowTTS/test/pipeline_test_YYYYMMDD_HHMMSS/`
-- `--skip-decoder` skips ONNX/GPU decode — returns tokens only, no audio_base64
-- Decoder config lives in `DecoderSettings` (`max_batch`, `gpu_chunk_size`, `onnx_workers`, `use_trt`)
-- Streaming config lives in `StreamingSettings` (`chunk_tokens`, `crossfade_samples`, `fade_out_samples`)
-  - Override via env: `FLOWTTS_STREAMING__CHUNK_TOKENS=50`, `FLOWTTS_STREAMING__CROSSFADE_SAMPLES=0`, `FLOWTTS_STREAMING__FADE_OUT_SAMPLES=480`
+- `add_voice.py` is deprecated → use `python -m flowtts.voices.clone`.
+- WAV cache (`~/FlowTTS/cached_data/<sha256(text)>.wav`) still bypasses the model on hit
+  — cache files must be at the configured output sample rate.
+- 200 RPS on one H200 is a tuning target: combine large `--max-batch`, low `--num-step`,
+  short first chunks, and the WAV cache; verify empirically with the throughput sweep.

@@ -29,6 +29,7 @@ Not used by server.py:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from typing import Any
@@ -37,6 +38,7 @@ import redis.asyncio as redis
 import structlog
 
 from flowtts.core.config import settings
+from flowtts.decoder.decoder import tensor_to_wav
 from flowtts.monitoring.metrics import record_synthesis_latency
 from flowtts.synthesis.engine import synthesis_service
 
@@ -67,18 +69,24 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
             await synthesis_service.initialize()
 
         t0 = time.time()
-        audio_tokens = await synthesis_service.synthesize(text)
+        wav = await synthesis_service.synthesize(text, voice_id=job.get("voice_id"))
         synth_latency = time.time() - t0
 
         record_synthesis_latency(call_id, text_id, synth_latency)
 
+        # OmniVoice returns a decoded waveform (no intermediate token stream), so
+        # this Redis path publishes base64 WAV (non-streaming: one message/utterance).
+        sr = synthesis_service.synthesizer.sampling_rate
+        decoded = tensor_to_wav(wav, sample_rate=sr)
         payload = {
             "call_id": call_id,
             "text_id": text_id,
-            "audio_tokens": audio_tokens,
+            "audio_base64": base64.b64encode(decoded.wav_bytes).decode("ascii"),
+            "sample_rate": sr,
             "is_final": True,
             "generated_at": time.time(),
             "llm_s": round(synth_latency, 4),
+            "decode_s": 0.0,
         }
         channel = f"{settings.redis.results_channel_prefix}:{call_id}"
         await client.publish(channel, json.dumps(payload))  # type: ignore[func-returns-value]
@@ -87,7 +95,7 @@ async def _process_job(client: redis.Redis, job_data: bytes) -> None:
             "tts_job_completed",
             call_id=call_id,
             text_id=text_id,
-            token_length=len(audio_tokens),
+            wav_bytes=len(decoded.wav_bytes),
             synth_latency=round(synth_latency, 3),
         )
     except Exception as e:  # noqa: BLE001
@@ -190,19 +198,23 @@ class SynthesizerWorker:
             queueing_latency = job_received_time - published_at
 
             start_synth = time.time()
-            audio_tokens = await synthesis_service.synthesize(text)
+            wav = await synthesis_service.synthesize(text, voice_id=job.get("voice_id"))
             synth_latency_val = time.time() - start_synth
 
             record_synthesis_latency(call_id, text_id, synth_latency_val)
 
+            sr = synthesis_service.synthesizer.sampling_rate
+            decoded = tensor_to_wav(wav, sample_rate=sr)
             payload = {
                 "call_id": call_id,
                 "text_id": text_id,
-                "audio_tokens": audio_tokens,
+                "audio_base64": base64.b64encode(decoded.wav_bytes).decode("ascii"),
+                "sample_rate": sr,
                 "is_final": True,
                 "generated_at": time.time(),
                 "queueing_latency": queueing_latency,
                 "synthesis_latency": synth_latency_val,
+                "decode_s": 0.0,
             }
             channel = f"{settings.redis.results_channel_prefix}:{call_id}"
             assert self.redis_client is not None

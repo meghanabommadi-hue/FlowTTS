@@ -270,14 +270,8 @@ _TELUGU_FALLBACK: List[str] = [
     "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
 
-# Pick fallback list based on configured checkpoint.
-try:
-    from flowtts.core.config import settings as _cfg
-    _checkpoint = _cfg.tts_model.checkpoint_lg
-except Exception:
-    _checkpoint = "hindi"
-
-_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
+# OmniVoice is multilingual; default to the Hindi/English test sentences.
+_FALLBACK_TEXTS: List[str] = _HINDI_FALLBACK + _HINDI_MIXED_STRESS
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,9 @@ __pycache__/
 # cached WAV dirs
 cached_data_*/
 
+# built voice-clone artifacts (derived from reference audio; rebuild per box)
+voices/*.npz
+
 # monitoring runtime files
 monitoring/requests/
 monitoring/prometheus-data/

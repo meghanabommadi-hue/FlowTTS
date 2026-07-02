@@ -1,69 +1,56 @@
-"""Pipeline position: SYNTHESIS SERVICE — singleton wrapper around the model.
+"""Pipeline position: SYNTHESIS SERVICE — process-wide singleton.
 
 Role in pipeline:
-  Provides a process-wide singleton (synthesis_service) that both the
-  worker (worker.py) and the single-process server (server.py) call via:
+  Provides a single shared synthesizer (synthesis_service) so the model loads
+  exactly once per process, whether driven by server.py (single-process) or the
+  Redis worker (worker.py).
 
-      audio_tokens = await synthesis_service.synthesize(text)
-
-  Ensures the sglang Engine and ncodec TTSCodec are loaded exactly once per
-  process, no matter how many concurrent requests arrive.
-
-Lazy initialisation:
-  initialize() is called on first use (worker._process_job) or at server
-  startup (server._get_synthesizer). Subsequent calls are no-ops.
-
-Async safety:
-  synthesize() delegates to FlowTtsSynthesizer.synthesize() which calls
-  sgl.Engine.async_generate() — non-blocking, safe for concurrent coroutines.
-  The sglang Engine serialises GPU requests internally.
+      wav = await synthesis_service.synthesize(text, voice_id=...)
 """
 
 from __future__ import annotations
 
+import numpy as np
 import structlog
 
-from flowtts.synthesis.models import FlowTtsSynthesizer
-
+from flowtts.synthesis.models import OmniVoiceSynthesizer
 
 logger = structlog.get_logger(__name__)
 
 
 class SynthesisService:
-    """Singleton service that manages TTS synthesis."""
+    """Singleton service that manages OmniVoice synthesis."""
 
     _instance: "SynthesisService | None" = None
     _initialized: bool = False
 
     def __new__(cls) -> "SynthesisService":
         if cls._instance is None:
-            cls._instance = super(SynthesisService, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     async def initialize(self) -> None:
-        """Initialize the underlying synthesizer."""
         if self._initialized:
-            logger.info("synthesis_service_already_initialized")
             return
-
         logger.info("initializing_synthesis_service")
-        try:
-            self.synthesizer: FlowTtsSynthesizer = FlowTtsSynthesizer()
-            await self.synthesizer.initialize()
-            self._initialized = True
-            logger.info("synthesis_service_initialized")
-        except Exception as e:
-            logger.error("synthesis_service_initialization_failed", error=str(e))
-            raise
+        self.synthesizer = OmniVoiceSynthesizer()
+        await self.synthesizer.initialize()
+        self._initialized = True
+        logger.info("synthesis_service_initialized")
 
-    async def synthesize(self, text: str) -> str:
-        """Generate audio token sequence for the given text."""
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice_id: str | None = None,
+        speed: float | None = None,
+        language: str | None = None,
+    ) -> np.ndarray:
         if not self._initialized:
-            raise RuntimeError(
-                "SynthesisService not initialized. "
-                "Call initialize() first during application startup."
-            )
-        return await self.synthesizer.synthesize(text)
+            raise RuntimeError("SynthesisService not initialized. Call initialize() first.")
+        return await self.synthesizer.synthesize(
+            text, voice_id=voice_id, speed=speed, language=language
+        )
 
     @property
     def is_initialized(self) -> bool:
@@ -71,4 +58,3 @@ class SynthesisService:
 
 
 synthesis_service = SynthesisService()
-

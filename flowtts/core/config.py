@@ -4,138 +4,144 @@ Role in pipeline:
   Single source of truth for all tunable parameters. Every pipeline stage
   imports `settings` from here rather than reading env-vars directly.
 
-Key sections and their pipeline consumers:
-  TtsModelSettings  → synthesis/models.py (sglang engine init, sampling params)
-                       synthesis/engine.py (model_dir, ref_audio paths)
-  DecoderSettings   → api/websockets.py   (enabled flag, to_wav flag)
-                       decoder/decoder.py  (sample_rate)
-  RedisSettings     → api/websockets.py   (queue publish, pub/sub subscribe)
-                       worker.py           (queue consume, pub/sub publish)
-  WebSocketSettings → main.py             (uvicorn host/port)
+Model:
+  This server runs **k2-fsa/OmniVoice** — a non-autoregressive discrete-diffusion
+  TTS language model (Qwen3-0.6B backbone + Higgs-Audio-v2 neural codec, 24 kHz).
+  It replaces the previous sglang/ncodec MiraTTS stack entirely.
 
-All values can be overridden via environment variables (FLOWTTS_ prefix).
-No env-var → sensible defaults used (greedy decoding, 48 kHz, Redis localhost).
+Key sections and their pipeline consumers:
+  OmniVoiceSettings  → synthesis/omnivoice_engine.py (model load, generation, batching, accel)
+  VoiceSettings      → voices/registry.py            (npz voice-clone registry + aliases)
+  OutputSettings     → server.py, decoder/decoder.py (stream sample rate, encoding)
+  StreamingSettings  → server.py, synthesis/models.py (text-chunk streaming for low TTFB)
+  WebSocketSettings  → main.py / server.py           (host/port)
+  RedisSettings      → worker.py, api/websockets.py  (secondary Redis-backed path)
+
+All values can be overridden via environment variables (FLOWTTS_ prefix,
+nested via `__`, e.g. FLOWTTS_OMNIVOICE__NUM_STEP=8).
 """
 
+from __future__ import annotations
+
 from pathlib import Path
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Literal
+
 from pydantic import BaseModel
-from typing import ClassVar, Literal
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_MODELS_DIR      = str(Path.home() / "models")
-_SAMPLE_FILES_DIR = str(Path.home() / "FlowTTS/sample_files")
+# ---------------------------------------------------------------------------
+# Filesystem layout
+# ---------------------------------------------------------------------------
+_HOME = Path.home()
+_SAMPLE_FILES_DIR = str(_HOME / "FlowTTS/sample_files")
+_VOICES_DIR = str(_HOME / "FlowTTS/voices")          # *.npz voice-clone artifacts
+_WAV_CACHE_DIR = str(_HOME / "FlowTTS/cached_data")  # sha256(text).wav cache
 
-# Per-voice reference audio paths. Keys match voice_id values sent by clients.
-VOICE_REF_AUDIO: dict[str, str] = {
-    "simran":       f"{_SAMPLE_FILES_DIR}/simran.wav",
-    "tara":         f"{_SAMPLE_FILES_DIR}/tara.wav",
-    "vikram":       f"{_SAMPLE_FILES_DIR}/vikram.wav",
-    "daya":         f"{_SAMPLE_FILES_DIR}/daya.wav",
-    "british_rose": f"{_SAMPLE_FILES_DIR}/british_rose.wav",
-    "rani": f"{_SAMPLE_FILES_DIR}/rani.wav",
-    "sana":  f"{_SAMPLE_FILES_DIR}/sana.wav",
-    "anita":  f"{_SAMPLE_FILES_DIR}/anita.wav",
-    "vanita": f"{_SAMPLE_FILES_DIR}/vanita.wav",
-    "sunita": f"{_SAMPLE_FILES_DIR}/sunita.wav",
-    "anika":  f"{_SAMPLE_FILES_DIR}/anika_vb.mp3",
-    "anika2": f"{_SAMPLE_FILES_DIR}/anika2_vb.mp3",
-    "monika": f"{_SAMPLE_FILES_DIR}/monika_vb.mp3",
-    "saavi": f"{_SAMPLE_FILES_DIR}/saavi_vb.mp3",
-    "zara": f"{_SAMPLE_FILES_DIR}/zara_vb.mp3",
-    "gargi": f"{_SAMPLE_FILES_DIR}/gargi_vb.mp3",
-}
+# OmniVoice's native output sample rate. Read `engine.sampling_rate` at runtime
+# for the authoritative value; this constant is the documented default.
+OMNIVOICE_NATIVE_SR = 24000
 
 
-class TtsModelSettings(BaseModel):
-    """TTS model configuration."""
-    checkpoint_lg: ClassVar[str] = "hindi"
-    if checkpoint_lg == "telugu":
-        model_dir: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu"
-        warmup_sentence: str = "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది."
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/tel_male_audio.wav"
-    else:
-        model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
-        warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
-        
-    
-    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+class OmniVoiceSettings(BaseModel):
+    """k2-fsa/OmniVoice model, generation, batching, and acceleration config."""
 
-    # sglang engine parameters
-    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
-    attention_backend: str = "triton"   # triton is fastest # fastest for decode-heavy TTS
-    chunked_prefill_size: int = 16384
-    max_running_requests: int = 200         # allow all ports to run concurrently in sglang scheduler
-    schedule_policy: str = "lpm"            # longest-prefix-match: reuse KV cache across requests
-    cuda_graph_max_bs: int = 160            # pre-capture CUDA graphs up to this batch size
-    disable_radix_cache: bool = False
-    num_continuous_decode_steps: int = 4    # batch N decode steps before re-scheduling → less scheduler overhead
+    # --- Model load ---
+    model_repo: str = "k2-fsa/OmniVoice"     # HF repo (or local snapshot path)
+    device: str = "cuda:0"
+    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"  # bf16 preferred on Hopper/H200
+    # Whisper ASR auto-transcribes ref audio when ref_text is missing. Not needed
+    # at serve time because voice prompts are precomputed to npz — keep it off to
+    # save GPU memory. The offline voice-clone builder turns it on explicitly.
+    load_asr: bool = False
+    trust_remote_code: bool = True
 
-    # Generation / sampling parameters
-    # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
-    max_tokens: int = 600                 # ~5 audio tokens/char × 120 char max sentence; 700 gives EOS headroom without 1024-step worst case
-    temperature: float = 0.1               # greedy — fastest, deterministic
-    top_p: float = 0.5
-    top_k: int = 50
-    repetition_penalty: float = 1.6
-    min_p: float = 0.05
+    # --- Generation (OmniVoiceGenerationConfig knobs) ---
+    # num_step is the dominant latency lever: latency scales ~linearly with it.
+    # Default 32 (quality); 16 documented as the fast setting; try 8-12 on H200.
+    num_step: int = 16
+    guidance_scale: float = 2.0        # classifier-free guidance; note CFG ≈ 2× compute
+    t_shift: float = 0.1
+    layer_penalty_factor: float = 5.0
+    position_temperature: float = 5.0  # set 0.0 for deterministic position selection
+    class_temperature: float = 0.0     # 0.0 = greedy token values (already deterministic)
+    denoise: bool = True
+    # Long-form chunking inside generate(); we do our own streaming chunking, so
+    # keep these high to avoid double-chunking within a single (already-short) chunk.
+    audio_chunk_duration: float = 15.0
+    audio_chunk_threshold: float = 30.0
+
+    # --- Dynamic in-flight batching (request-level, length-bucketed) ---
+    # Concurrent synthesize() calls (and streamed chunks) are coalesced into one
+    # model.generate([...]) call, mirroring the proven async batch-queue pattern.
+    max_batch: int = 32
+    batch_timeout_ms: float = 8.0      # collection window before dispatch
+    # Estimated-token buckets used to group similar-length items in one batch,
+    # minimizing padding waste and keeping the set of compiled/captured shapes
+    # small (important for torch.compile + CUDA-graph reuse). Values are audio
+    # frames (≈ frame_rate * seconds); tune on the H200.
+    length_buckets: list[int] = [64, 128, 256, 400, 600]
+
+    # --- Acceleration (all opt-in + graceful fallback if unavailable) ---
+    # torch.compile the diffusion backbone (and codec) submodules. "reduce-overhead"
+    # enables CUDA graphs per captured shape; "max-autotune" tunes kernels harder.
+    compile_model: bool = False
+    compile_mode: Literal["default", "reduce-overhead", "max-autotune"] = "reduce-overhead"
+    # Run the Higgs codec decode on a dedicated CUDA stream so it can overlap the
+    # next diffusion batch (pipelining). Falls back to the default stream if unset.
+    overlap_codec_decode: bool = True
+
+    # --- Warmup ---
+    # Synthesize a few sentences per length bucket at startup to trigger
+    # compilation / CUDA-graph capture and prime caches before real traffic.
+    warmup: bool = True
+    warmup_sentence: str = (
+        "नमस्ते. मैं बजाज finance से बोल रही हूं, एक recorded line के माध्यम से. "
+        "क्या मैं customer name से बात कर रही हूं?"
+    )
 
 
-class DecoderSettings(BaseModel):
-    """Decoder / vocoder configuration."""
+class VoiceSettings(BaseModel):
+    """Voice-clone registry: precomputed npz prompts addressed by alias."""
 
-    # Logical GPU ids – in a real multi-GPU deployment these would be used
-    # to route work to distinct devices. For the simple prototype we keep
-    # them as configuration only.
-    model_gpu_id: int = 0
-    decoder_gpu_id: int = 0
+    voices_dir: str = _VOICES_DIR
+    # Alias used when a request omits voice_id (must exist in voices_dir).
+    default_voice: str = "priya"
+    # Language passed to OmniVoice when a request omits it (None = auto-detect).
+    default_language: str | None = None
 
-    sample_rate: int = 16000
 
-    # Set to False to skip ncodec decoding and forward raw LLM tokens instead.
-    # Useful for latency profiling and when decoder is not yet ready.
-    enabled: bool = False
+class OutputSettings(BaseModel):
+    """Audio output format for the WebSocket stream.
 
-    # Set to False to decode to raw PCM bytes only (skip WAV encoding).
-    # Saves ~1-5ms per request. Use when client handles raw float32 PCM.
-    to_wav: bool = True
+    OmniVoice is natively 24 kHz. If sample_rate < native, chunks are resampled
+    before encoding. The `sample_rate` value is always echoed in the audio_chunk
+    JSON header so compliant clients adapt automatically.
+    """
 
-    # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
-    max_batch: int = 256
-    batch_timeout_ms: float = 0.7
-    gpu_chunk_size: int = 150
-    onnx_workers: int = 1
-    use_trt: bool = True             # load pre-compiled TRT .ep engine for decoder
+    sample_rate: int = OMNIVOICE_NATIVE_SR   # 24000 native; set 16000/8000 to resample
+    encoding: Literal["pcm_int16"] = "pcm_int16"
 
 
 class StreamingSettings(BaseModel):
-    """Streaming audio chunk configuration."""
+    """Text-chunk streaming — the only way to stream a non-autoregressive model.
 
-    # Set to True to make streaming the default mode (no --streaming flag needed).
+    Long text is split into chunks; each chunk is generated (batched with other
+    requests) and its PCM streamed as soon as it is ready. A short first chunk
+    minimizes time-to-first-byte.
+    """
+
     enabled: bool = True
 
-    # --- Chunk size ---
-    # Tokens per chunk for the first two chunks (low latency warm-up).
-    # At ~50 tokens/sec: 20 tokens ≈ 400ms of audio.
-    chunk_tokens_early: int = 15
+    # First chunk kept short so the first audio frame streams fast (low TTFB).
+    first_chunk_max_chars: int = 60
+    # Subsequent chunks larger for smoother prosody / fewer boundaries.
+    chunk_max_chars: int = 160
+    # Never emit a chunk shorter than this unless it is the last one.
+    min_chunk_chars: int = 12
 
-    # Tokens per chunk from chunk 3 onward (larger = fewer boundaries = smoother).
-    chunk_tokens_late: int = 50
-
-    # --- Codec overlap ---
-    # Tail tokens from the previous chunk prepended to the next decode for context.
-    # Their decoded audio is discarded. Higher = smoother codec boundary quality.
-    # 12 tokens = 240ms of context.
-    overlap_tokens: int = 12
-
-    # --- Server-side crossfade ---
-    # Samples held back from each chunk's tail and blended into the next chunk's head.
-    # 1280 = 80ms at 16kHz. Set to 0 to disable crossfade entirely.
-    crossfade_samples: int = 1280
-
-    # Unused — fade-out disabled to prevent gaps.
-    fade_out_samples: int = 0
+    # Boundary smoothing between decoded chunks (samples at output rate).
+    crossfade_samples: int = 480       # 20 ms @ 24 kHz
+    fade_out_samples: int = 240        # fade the final chunk tail
 
 
 class WebSocketSettings(BaseModel):
@@ -146,20 +152,21 @@ class WebSocketSettings(BaseModel):
 
 
 class Settings(BaseSettings):
-    """Top-level FlowTTS settings."""
+    """Top-level FlowTTS/OmniVoice settings."""
 
     model_config = SettingsConfigDict(env_prefix="FLOWTTS_", env_nested_delimiter="__")
 
     ws: WebSocketSettings = WebSocketSettings()
-    tts_model: TtsModelSettings = TtsModelSettings()
-    decoder: DecoderSettings = DecoderSettings()
+    omnivoice: OmniVoiceSettings = OmniVoiceSettings()
+    voices: VoiceSettings = VoiceSettings()
+    output: OutputSettings = OutputSettings()
     streaming: StreamingSettings = StreamingSettings()
 
     # Directory of pre-generated WAV files named by SHA256 of raw transcript.
-    # Set via env var: FLOWTTS_WAV_CACHE_DIR=/path/to/wav/folder
-    wav_cache_dir: str | None = str(Path.home() / "FlowTTS/cached_data_simran")
+    # Cache hits bypass the model entirely (huge win for repeated call-centre prompts).
+    wav_cache_dir: str | None = _WAV_CACHE_DIR
 
-    # Redis queue / pubsub configuration
+    # Redis queue / pubsub configuration (secondary, Redis-backed multi-process path).
     class RedisSettings(BaseModel):
         host: str = "localhost"
         port: int = 6379

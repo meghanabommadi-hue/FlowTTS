@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
+# One-time setup for the FlowTTS OmniVoice server (run on the H200 box).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+echo "==> Install PyTorch (CUDA build for your box) BEFORE this if not already present, e.g.:"
+echo "    pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128"
+
 echo "==> Installing requirements.txt"
-uv pip install -r "$REPO_ROOT/requirements.txt"
+pip install -r "$REPO_ROOT/requirements.txt"
 
+echo "==> Downloading OmniVoice weights into the HF cache"
+python3 -m flowtts.setup.download_models
 
-echo "==> Installing FlashSR from git"
-uv pip install git+https://github.com/ysharma3501/FlashSR.git@2a69326250613c0a0f6c1c8d9f0c48cb779842b8
+echo "==> Building voice-clone npz artifacts from sample_files/ (+ optional voices/manifest.json)"
+python3 -m flowtts.voices.clone --build-all --manifest "$REPO_ROOT/voices/manifest.json" || \
+    python3 -m flowtts.voices.clone --build-all
 
-echo "==> Installing FastBiCodec from git"
-uv pip install git+https://github.com/ysharma3501/FastBiCodec.git@612ba9e29d14b9752dc3174616a6cb5bafe5af15
+echo "==> Installed voices:"
+python3 -m flowtts.voices.clone --list || true
 
-echo "==> Downloading models"
-python3 "$SCRIPT_DIR/download_models.py"
-
-
-echo "==> Setup complete."
+echo "==> Setup complete. Start with:  bash run.sh --ctrl-port 8764 --ports 1"

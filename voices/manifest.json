@@ -1,0 +1,4 @@
+{
+  "_comment": "Optional overrides for `python -m flowtts.voices.clone --build-all`. Each alias maps to a reference clip (+ optional ref_text; omitted → Whisper auto-transcribes). Aliases not listed here are still built from any matching sample_files/<alias>.{wav,mp3}. Drop a real priya.wav in sample_files/ and change ref_audio below to use it.",
+  "priya": { "ref_audio": "sample_files/simran.wav" }
+}

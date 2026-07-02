@@ -32,12 +32,20 @@ class MessageType(str, Enum):
 
 
 class SynthesizeRequest(BaseModel):
-    """Client → Server: request to synthesize speech for a text."""
+    """Client → Server: request to synthesize speech for a text.
+
+    voice_id / speed / language / streaming are optional so existing clients that
+    send only {type, call_id, text_id, text} keep working unchanged (plug-n-play).
+    """
 
     type: MessageType = Field(default=MessageType.SYNTHESIZE)
     call_id: str = Field(..., description="Logical call/session id")
     text_id: str = Field(..., description="Identifier for this text request")
     text: str = Field(..., description="Text to synthesize")
+    voice_id: Optional[str] = Field(default=None, description="Voice-clone alias (see voices/ registry)")
+    speed: Optional[float] = Field(default=None, description="Speech speed (>1 faster, <1 slower)")
+    language: Optional[str] = Field(default=None, description="Language id/name; None = auto-detect")
+    streaming: Optional[bool] = Field(default=None, description="Stream chunks (None = server default)")
 
 
 class AudioMessage(BaseModel):

@@ -15,15 +15,13 @@ Key classes:
     _listen_for_results()  — subscribe to the appropriate channel and forward
                              AudioMessage to the WebSocket client.
 
-Decoded path (settings.decoder.enabled = True):
-  Worker publishes audio_tokens → flowtts:audio:{call_id}
-  DecoderWorker (decoder/decoder.py) subscribes, runs ncodec, publishes WAV
-    → flowtts:decoded:{call_id}
-  Gateway subscribes to flowtts:decoded:{call_id}, forwards audio_base64 to client.
+Flow (OmniVoice always returns a decoded waveform — no token stream):
+  Gateway rpush {call_id, text_id, text, voice_id, ...} → flowtts:tts_queue
+  Worker (worker.py) runs OmniVoice, publishes base64 WAV → flowtts:audio:{call_id}
+  Gateway subscribes to flowtts:audio:{call_id}, forwards audio_base64 to client.
 
-No-decode path (settings.decoder.enabled = False):
-  Worker publishes audio_tokens → flowtts:audio:{call_id}
-  Gateway subscribes to flowtts:audio:{call_id}, forwards raw tokens to client.
+Note: this Redis-backed path is the SECONDARY entry point and is non-streaming
+(one message per utterance). The primary low-latency streaming path is server.py.
 
 One ConnectionManager instance (`manager`) is shared across all WebSocket
 connections in a single gateway process.
@@ -165,6 +163,9 @@ class ConnectionManager:
             "call_id": req.call_id,
             "text_id": req.text_id,
             "text": req.text,
+            "voice_id": req.voice_id,
+            "speed": req.speed,
+            "language": req.language,
             "published_at": time.time(),
         }
 
@@ -181,14 +182,8 @@ class ConnectionManager:
     async def _listen_for_results(self, call_id: str) -> None:
         """Listen for synthesis results from Redis Pub/Sub and forward to client.
 
-        Two paths depending on settings.decoder.enabled:
-
-        • enabled=True  → subscribe to flowtts:decoded:{call_id}
-                           The DecoderWorker (decoder/decoder.py) has already
-                           decoded audio_tokens → WAV; we just forward the result.
-
-        • enabled=False → subscribe to flowtts:audio:{call_id}
-                           Forward raw audio_tokens to the client (client decodes).
+        Subscribes to flowtts:audio:{call_id}; the worker publishes base64 WAV
+        there (OmniVoice returns decoded audio), which we forward as AudioMessage.
         """
         try:
             if self.redis_client is None:
@@ -197,10 +192,7 @@ class ConnectionManager:
             pubsub = self.redis_client.pubsub()  # type: ignore[assignment]
             self.redis_pubsub_clients[call_id] = pubsub
 
-            if settings.decoder.enabled:
-                channel = f"{settings.redis.decoded_channel_prefix}:{call_id}"
-            else:
-                channel = f"{settings.redis.results_channel_prefix}:{call_id}"
+            channel = f"{settings.redis.results_channel_prefix}:{call_id}"
 
             await pubsub.subscribe(channel)
             logger.info("subscribed_to_results_channel", call_id=call_id, channel=channel)
@@ -215,65 +207,35 @@ class ConnectionManager:
                     is_final = data.get("is_final", True)
                     llm_s = data.get("llm_s")
 
-                    if settings.decoder.enabled:
-                        # --- Decoded path: DecoderWorker already produced WAV ---
-                        audio_b64 = data.get("audio_base64", "")
-                        sample_rate = data.get("sample_rate", settings.decoder.sample_rate)
-                        decode_s = data.get("decode_s")
+                    # OmniVoice always returns decoded audio → base64 WAV from the worker.
+                    audio_b64 = data.get("audio_base64", "")
+                    sample_rate = data.get("sample_rate", settings.output.sample_rate)
+                    decode_s = data.get("decode_s")
 
-                        if not audio_b64:
-                            logger.warning(
-                                "empty_decoded_audio_received",
-                                call_id=call_id,
-                                text_id=text_id,
-                            )
-                            await self.send_error(call_id, text_id, "Decoder returned empty audio")
-                            continue
+                    if not audio_b64:
+                        logger.warning("empty_audio_received", call_id=call_id, text_id=text_id)
+                        await self.send_error(call_id, text_id, "Synthesis returned empty audio")
+                        continue
 
-                        if decode_s is not None:
-                            record_decode_latency(call_id, decode_s)
+                    if decode_s is not None:
+                        record_decode_latency(call_id, decode_s)
 
-                        resp = AudioMessage(
-                            call_id=call_id,
-                            text_id=text_id,
-                            audio_base64=audio_b64,
-                            sample_rate=sample_rate,
-                            is_final=is_final,
-                            llm_s=llm_s,
-                            decode_s=decode_s,
-                        )
-                        logger.debug(
-                            "result_forwarded_to_client",
-                            call_id=call_id,
-                            text_id=text_id,
-                            is_final=is_final,
-                            decode_s=decode_s,
-                        )
-                    else:
-                        # --- No-decode path: forward raw LLM tokens directly ---
-                        audio_tokens = data.get("audio_tokens", "")
-                        if not audio_tokens:
-                            logger.warning(
-                                "empty_audio_tokens_received",
-                                call_id=call_id,
-                                text_id=text_id,
-                            )
-                            await self.send_error(call_id, text_id, "Synthesis returned empty audio tokens")
-                            continue
-
-                        resp = AudioMessage(
-                            call_id=call_id,
-                            text_id=text_id,
-                            audio_tokens=audio_tokens,
-                            is_final=is_final,
-                            llm_s=llm_s,
-                        )
-                        logger.debug(
-                            "result_forwarded_to_client_no_decode",
-                            call_id=call_id,
-                            text_id=text_id,
-                            is_final=is_final,
-                        )
+                    resp = AudioMessage(
+                        call_id=call_id,
+                        text_id=text_id,
+                        audio_base64=audio_b64,
+                        sample_rate=sample_rate,
+                        is_final=is_final,
+                        llm_s=llm_s,
+                        decode_s=decode_s,
+                    )
+                    logger.debug(
+                        "result_forwarded_to_client",
+                        call_id=call_id,
+                        text_id=text_id,
+                        is_final=is_final,
+                        decode_s=decode_s,
+                    )
 
                     await self.send_audio(call_id, resp)
                 except Exception as e:  # noqa: BLE001

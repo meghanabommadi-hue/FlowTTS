@@ -1,21 +1,17 @@
-"""Pipeline position: DECODER — audio token string → PCM / WAV bytes.
+"""Pipeline position: AUDIO I/O — OmniVoice waveform (float32) → PCM / WAV bytes.
 
 Role in pipeline:
-  Final GPU stage after sglang inference. Converts the speech token string
-  produced by the LLM into playable audio using the batched TTSCodec decoder.
+  OmniVoice.generate() already returns a decoded waveform (there is no separate
+  token→PCM stage anymore — the Higgs codec decode happens inside generate()).
+  This module only converts that float32 waveform into the wire formats the
+  WebSocket stream uses:
 
-  All concurrent decode requests are coalesced by TTSCodec's internal batch
-  queue into a single GPU forward pass (ONNX serial + batched PyTorch decoder).
+    pcm_to_int16_bytes(wav)  → raw little-endian int16 bytes (streaming chunks)
+    tensor_to_wav(wav)       → a full .wav container (non-streaming / cache files)
 
-Batch decode API (primary, used by server.py):
-  wav_tensor = await codec.decode_async(speech_tokens, context_tokens)
-  wav_bytes  = tensor_to_wav(wav_tensor)
-
-Sync decode API (used by warmup / offline tools):
-  wav_tensor = codec.decode(speech_tokens, context_tokens)
-  wav_bytes  = tensor_to_wav(wav_tensor)
-
-Sample rate: 16000 Hz (batch codec output, no FASR upsampler).
+Sample rate: SAMPLE_RATE is the configured OUTPUT rate (settings.output.sample_rate),
+24000 by default. Resampling from OmniVoice's native rate (if the output rate is
+lower) is done by the caller via processing.audio_processing.resample_audio.
 """
 
 from __future__ import annotations
@@ -26,7 +22,9 @@ from dataclasses import dataclass
 import numpy as np
 import soundfile as sf
 
-SAMPLE_RATE = 16000  # batch codec outputs 16 kHz
+from flowtts.core.config import settings
+
+SAMPLE_RATE = settings.output.sample_rate  # output rate echoed to clients (default 24000)
 
 
 @dataclass
@@ -39,23 +37,24 @@ class DecodedAudio:
 
 
 def pcm_to_int16_bytes(pcm: np.ndarray) -> bytes:
-    """Convert float32 PCM array to raw int16 bytes (no WAV header).
+    """Convert float32 PCM in [-1, 1] to raw int16 little-endian bytes (no WAV header).
 
-    Use this for streaming chunks so the client can concatenate frames
-    into one continuous PCM stream without header interference.
+    Used for streaming chunks so the client concatenates frames into one
+    continuous PCM stream with no header interference.
     """
+    pcm = np.asarray(pcm, dtype=np.float32).reshape(-1)
     pcm = np.clip(pcm, -1.0, 1.0)
-    return (pcm * 32767).astype(np.int16).tobytes()
+    return (pcm * 32767.0).astype("<i2").tobytes()
 
 
-def tensor_to_wav(wav_tensor, sample_rate: int = SAMPLE_RATE) -> DecodedAudio:
-    """Convert the tensor returned by TTSCodec.decode / decode_async → DecodedAudio."""
-    wav = np.asarray(wav_tensor)
+def tensor_to_wav(wav, sample_rate: int = SAMPLE_RATE) -> DecodedAudio:
+    """Wrap a float32 waveform (np.ndarray or tensor) in a 16-bit PCM WAV container."""
+    wav = np.asarray(wav)
     if wav.dtype == np.float16:
         wav = wav.astype(np.float32)
-    wav = wav.squeeze()
+    wav = wav.reshape(-1)
 
-    pcm_bytes = wav.tobytes()
+    pcm_bytes = wav.astype(np.float32).tobytes()
 
     buf = io.BytesIO()
     sf.write(buf, wav, samplerate=sample_rate, subtype="PCM_16", format="WAV")

@@ -1,32 +1,27 @@
-"""FlowTTS — Telugu TTS pipeline.
+"""FlowTTS — OmniVoice streaming TTS server.
 
-Full pipeline (Redis-backed, multi-process):
-  Client
-    │  WebSocket (text)
-    ▼
-  Gateway  (flowtts/main.py or flowtts/server.py)
-    │  rpush → Redis TTS queue
-    ▼
-  Worker   (flowtts/worker.py)
-    │  sglang Engine → audio token string
-    │  publish → Redis Pub/Sub channel
-    ▼
-  Gateway  (flowtts/api/websockets.py)
-    │  optional ncodec decode → PCM/WAV
-    ▼
-  Client   (audio_tokens / audio_base64)
+Model: k2-fsa/OmniVoice — a non-autoregressive discrete-diffusion TTS language
+model (Qwen3-0.6B backbone + Higgs-Audio-v2 neural codec, 24 kHz). It replaced
+the previous sglang + ncodec MiraTTS stack; the serving framework (WebSocket
+gateway, dynamic batching, metrics, WAV cache, streaming protocol) was kept.
 
-Single-process shortcut (flowtts/server.py):
-  Client → server.py → sglang → audio_tokens → Client
-  (no Redis, no worker, model loaded once in-process)
+Primary path (single process, no Redis — flowtts/server.py):
+  Client ──WS(text)──▶ server.py (OmniVoice loaded once, N ports)
+    → synthesizer splits text into chunks (short first chunk = low TTFB)
+    → OmniVoiceEngine dynamic batch queue coalesces chunks/requests → generate()
+    → 24 kHz waveform → (resample) → int16 PCM ──▶ Client (audio_chunk … audio_done)
+
+Secondary path (Redis-backed multi-process — flowtts/main.py + worker.py):
+  Gateway rpush → Redis queue → worker generate() → base64 WAV → Redis pubsub → client.
 
 Package layout:
-  core/        — Pydantic settings (env-vars, model paths, Redis config)
-  api/         — WebSocket gateway: connection manager + message models
-  synthesis/   — Text → audio tokens (sglang Engine + ncodec TTSCodec)
-  worker.py    — Redis queue consumer, one job at a time or concurrent
-  decoder/     — Audio tokens → PCM/WAV (ncodec TTSCodec.decode)
-  processing/  — Post-decode audio: resample, crossfade
-  monitoring/  — Structured logging (structlog) + in-process latency metrics
-  test/        — Benchmark, load, and integration test scripts
+  core/        — Pydantic settings (model, output, streaming, batching, accel)
+  synthesis/   — OmniVoice engine + dynamic batcher, synthesizer facade, text chunker
+  voices/      — voice-clone npz registry + offline builder (alias → VoiceClonePrompt)
+  decoder/     — waveform → PCM/WAV helpers (+ Redis-path lifecycle bookkeeping)
+  processing/  — post-decode audio: resample, crossfade, fades
+  api/         — WebSocket gateway (Redis path) + request/response models
+  worker.py    — Redis queue consumer (secondary path)
+  monitoring/  — structlog logging + in-process + Prometheus metrics
+  test/        — benchmark, load, and unit test scripts
 """

@@ -1,5 +1,6 @@
-"""Synthesis: text → audio tokens (TTS model)."""
+"""Synthesis: text → 24 kHz waveform (OmniVoice engine + dynamic batcher).
 
-from flowtts.synthesis.engine import synthesis_service
-
-__all__ = ["synthesis_service"]
+Import submodules directly to avoid pulling torch/omnivoice at package import:
+  from flowtts.synthesis.engine import synthesis_service          # heavy (GPU)
+  from flowtts.synthesis.text_chunker import split_for_streaming  # light (stdlib)
+"""
