@@ -18,7 +18,8 @@ accelerate>=1.0
 safetensors>=0.4
 tokenizers>=0.20
 huggingface-hub>=0.30
-hf-transfer>=0.1.9
+hf-xet>=1.1              # fast parallel (Xet) downloads — engages HF_XET_HIGH_PERFORMANCE
+hf-transfer>=0.1.9      # fallback fast transfer for non-Xet repos
 
 # ── Audio ────────────────────────────────────────────────────────────────────
 librosa>=0.10
