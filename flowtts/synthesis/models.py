@@ -206,14 +206,7 @@ class FlowTtsSynthesizer:
 
     @staticmethod
     def _normalize_text(text: str) -> str:
-        """Remove characters outside English (ASCII) and Hindi (Devanagari) scripts.
-
-        Keeps: ASCII printable (English letters, digits, punctuation, spaces)
-               and Devanagari block (U+0900–U+097F) used for Hindi.
-        Removes: Urdu/Arabic, Chinese, Japanese, Korean, emoji, and all other scripts.
-        """
-        import re
-        return re.sub(r'[^\x00-\x7F\u0900-\u097F]', '', text).strip()
+        return text.strip()
 
     async def synthesize(self, text: str, voice_id: str | None = None) -> str:
         """Return full audio token string for the given text."""
