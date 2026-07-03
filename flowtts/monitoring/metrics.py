@@ -351,6 +351,36 @@ def record_ws_done(
     })
 
 
+def record_db_cache_hit(
+    *,
+    call_id: str,
+    text_id: str,
+    port: int,
+    voice_id: str | None = None,
+    hit: bool = True,
+) -> None:
+    """Record a DB/KV cache hit or miss — mirrors the server WAV cache counters."""
+    global _db_cache_hits, _db_cache_misses
+    _v = voice_id or ""
+    if hit:
+        TTS_DB_CACHE_HITS.labels(gpu_id=_gpu_id, voice=_v).inc()
+        with _lock:
+            _db_cache_hits += 1
+        _ws_log_append({
+            "event":    "db_cache_hit",
+            "source":   "kv_store",
+            "call_id":  call_id,
+            "text_id":  text_id,
+            "port":     port,
+            "voice_id": voice_id,
+            "gpu_id":   _gpu_id,
+        })
+    else:
+        TTS_DB_CACHE_MISSES.labels(gpu_id=_gpu_id, voice=_v).inc()
+        with _lock:
+            _db_cache_misses += 1
+
+
 def record_ws_error(call_id: str, *, port: int = 0, text_id: str = "", error: str = "",
                     voice_id: str | None = None) -> None:
     """Record a WS request that ended in an error."""
