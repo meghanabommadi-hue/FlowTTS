@@ -102,6 +102,15 @@ See [`docs/fish_s2pro_acceleration.md`](../docs/fish_s2pro_acceleration.md) for 
 
 ## Notes
 
+- **Backend image:** `docker/fish_s2pro.Dockerfile` bases on the **official
+  `lmsysorg/sglang-omni:dev`** image (built with `uv`), which already has `sgl-omni` +
+  torch/flash-attn/CUDA and the fishaudio deps with their conflicts (protobuf:
+  `descript-audiotools` vs `s3prl`/`onnxruntime`) resolved. Do **not** `pip install -e .`
+  sglang-omni from source on a bare CUDA image — that re-triggers `ResolutionImpossible`.
+  Need CUDA 12? set `--build-arg BASE_IMAGE=lmsysorg/sglang-omni:dev-cu12` (or `-cu129`).
+- **No custom build at all (optional):** you can skip our thin Dockerfile and run the
+  official image directly — `docker pull lmsysorg/sglang-omni:dev` then `sgl-omni serve
+  --model-path fishaudio/s2-pro --config examples/configs/s2pro_tts.yaml --port 8000`.
 - **Local / licensed weights:** set `FISH_MODEL=/models/s2-pro` and mount your weights
   into the backend to skip the HF download and pin the version.
 - **Multiple WS ports:** set `PORTS=8` on the gateway and add `8081:8081 … 8087:8087`

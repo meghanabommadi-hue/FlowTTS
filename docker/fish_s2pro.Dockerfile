@@ -4,6 +4,12 @@
 # `POST /v1/audio/speech` endpoint with continuous batching, paged KV cache, CUDA-graph
 # replay and RadixAttention prefix caching. Target: single NVIDIA H200 (Hopper, CC 9.0).
 #
+# We base on the OFFICIAL sglang-omni image (built with uv), which already ships the
+# `sgl-omni` CLI + torch/flash-attn/CUDA + the fishaudio_s2_pro model deps with their
+# dependency conflicts (e.g. protobuf: descript-audiotools vs s3prl/onnxruntime) already
+# resolved. Building sglang-omni from source on a bare CUDA image re-triggers those
+# conflicts — don't. If you need CUDA 12, use a `-cu12`/`-cu129` tag instead of :dev.
+#
 # ⚠ LICENSE: fishaudio/s2-pro weights are under the **Fish Audio Research License**
 #   (non-commercial). Commercial use requires a separate license from Fish Audio
 #   (business@fish.audio). You are responsible for obtaining it.
@@ -11,30 +17,23 @@
 # Build:  docker build -f docker/fish_s2pro.Dockerfile -t fish-s2pro:latest .
 # (usually via docker-compose.yml at the repo root)
 
-ARG BASE_IMAGE=nvidia/cuda:12.8.0-cudnn-devel-ubuntu24.04
+ARG BASE_IMAGE=lmsysorg/sglang-omni:dev
 FROM ${BASE_IMAGE}
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-venv python3-dev \
-        build-essential git curl ca-certificates \
-        ffmpeg libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
+# Small additions only — the heavy stack is already in the base image.
+#   curl      → container healthcheck + fetching the S2 Pro pipeline config
+#   soundfile → lets the backend decode base64 (data-URI) reference audio
+# Use uv (present in the base image, per sglang-omni's install docs); fall back to pip.
+RUN (command -v curl >/dev/null 2>&1) || (apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*)
+RUN uv pip install --system --no-cache soundfile || pip install --no-cache-dir soundfile
 
-RUN python3 -m venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# sglang-omni provides the `sgl-omni` CLI and the fishaudio_s2_pro model plugin.
-# Pin SGLANG_OMNI_REF to a known-good tag/commit before production (main tracks HEAD).
-# Cloning the repo (not just pip-installing the wheel) gives us examples/configs/.
-ARG SGLANG_OMNI_REPO=https://github.com/sgl-project/sglang-omni.git
-ARG SGLANG_OMNI_REF=main
-RUN git clone --depth 1 --branch ${SGLANG_OMNI_REF} ${SGLANG_OMNI_REPO} /opt/sglang-omni
-WORKDIR /opt/sglang-omni
-# Installs sglang-omni + its sglang/torch CUDA deps. soundfile decodes base64
-# (data-URI) reference audio when the gateway uses reference_mode=base64.
-RUN pip install --no-cache-dir -e . && pip install --no-cache-dir soundfile
+# The S2 Pro pipeline config lives in the sglang-omni repo. Fetch just that one file so
+# we don't depend on the image's internal layout. Pin S2PRO_CONFIG_REF to the tag/commit
+# that matches your base image for reproducibility.
+ARG S2PRO_CONFIG_REF=main
+ARG S2PRO_CONFIG_URL=https://raw.githubusercontent.com/sgl-project/sglang-omni/${S2PRO_CONFIG_REF}/examples/configs/s2pro_tts.yaml
+RUN mkdir -p /opt/fish && curl -fsSL "${S2PRO_CONFIG_URL}" -o /opt/fish/s2pro_tts.yaml \
+    && echo "[build] fetched s2pro_tts.yaml:" && head -n 40 /opt/fish/s2pro_tts.yaml
 
 ENV HF_HOME=/root/.cache/huggingface \
     HF_XET_HIGH_PERFORMANCE=1 \
@@ -47,16 +46,16 @@ ENV HF_HOME=/root/.cache/huggingface \
 #   MEM_FRACTION           static GPU memory fraction for the KV cache (e.g. 0.85)
 #   PORT                   HTTP port
 ENV FISH_MODEL=fishaudio/s2-pro \
-    FISH_CONFIG=/opt/sglang-omni/examples/configs/s2pro_tts.yaml \
+    FISH_CONFIG=/opt/fish/s2pro_tts.yaml \
     TTS_BATCH_MAX_ITEMS=32 \
     MEM_FRACTION= \
     PORT=8000
 
 EXPOSE 8000
 
-# Auto-downloads the weights into HF_HOME (mounted volume) on first run.
-# `sgl-omni serve` reads local reference audio paths directly; the huggingface.co
-# domains are allowlisted so http(s) reference URLs also work.
+# Auto-downloads the weights into HF_HOME (mounted volume) on first run. `sgl-omni serve`
+# reads local reference audio paths directly; the huggingface.co domains are allowlisted
+# so http(s) reference URLs also work.
 CMD sgl-omni serve \
       --model-path "${FISH_MODEL}" \
       --config "${FISH_CONFIG}" \

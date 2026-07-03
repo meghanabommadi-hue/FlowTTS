@@ -8,7 +8,11 @@
 # ⚠ LICENSE: fishaudio/s2-pro is under the Fish Audio Research License (non-commercial).
 #   Commercial use needs a separate license from Fish Audio (business@fish.audio).
 #
-# First run (downloads ~10GB weights into the hf-cache volume, warms CUDA graphs):
+# The backend image is based on the OFFICIAL lmsysorg/sglang-omni image (built with uv),
+# so `docker compose build` is fast — it does NOT compile sglang-omni from source (which
+# hits a protobuf dependency conflict). First RUN still downloads ~10GB weights + warms
+# CUDA graphs.
+#   docker compose build fish-s2pro          # thin layer on top of the official image
 #   docker compose up -d fish-s2pro          # wait until healthy (docker compose ps)
 #   docker compose up -d flowtts-gateway
 # Build (after code changes):
@@ -24,6 +28,11 @@ services:
     build:
       context: .
       dockerfile: docker/fish_s2pro.Dockerfile
+      args:
+        # Official sglang-omni image (built with uv; deps + protobuf conflict pre-resolved).
+        # Use a -cu12 / -cu129 tag if your driver needs CUDA 12 instead of the default.
+        BASE_IMAGE: "lmsysorg/sglang-omni:dev"
+        S2PRO_CONFIG_REF: "main"   # pin to the tag/commit matching BASE_IMAGE
     image: fish-s2pro:latest
     container_name: fish-s2pro
     environment:

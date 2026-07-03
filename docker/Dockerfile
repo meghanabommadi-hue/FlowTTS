@@ -17,11 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg libsndfile1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# uv — fast, compact Python installer (same tool sglang-omni's image uses). Pulled as a
+# static binary from the official distroless image; no pip bootstrap needed.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1
 
-# Python deps (CPU-only set).
+# Python deps (CPU-only set) installed into the system interpreter with uv.
 COPY requirements.txt /root/FlowTTS/requirements.txt
-RUN pip install --no-cache-dir -r /root/FlowTTS/requirements.txt
+RUN uv pip install --system -r /root/FlowTTS/requirements.txt
 
 # App code.
 ENV HOME=/root

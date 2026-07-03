@@ -102,8 +102,9 @@ hf download fishaudio/s2-pro
 sgl-omni serve --model-path fishaudio/s2-pro \
   --config examples/configs/s2pro_tts.yaml --tts-batch-max-items 32 --port 8000
 
-# Gateway (CPU): install deps and run, pointing at the backend.
-pip install -r requirements.txt
+# Gateway (CPU): install deps with uv and run, pointing at the backend.
+uv venv .venv -p 3.12 && source .venv/bin/activate
+uv pip install -r requirements.txt          # or: bash flowtts/setup/setup.sh
 bash run.sh --ctrl-port 8764 --ports 1 --backend-url http://127.0.0.1:8000
 ```
 
