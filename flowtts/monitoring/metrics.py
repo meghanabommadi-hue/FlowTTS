@@ -57,8 +57,10 @@ TTS_DECODE_MS = Counter('tts_decode_ms_total',  'Total sum of decoder time in ms
 TTS_E2E_MS    = Counter('tts_e2e_ms_total',     'Total sum of end-to-end time in ms',    _LABELS)
 TTS_TOKENS    = Counter('tts_tokens_total',     'Total sum of generated speech tokens',  _LABELS)
 TTS_ERRORS    = Counter('tts_errors_total',     'Total failed TTS requests',             _LABELS)
-TTS_CACHE_HITS   = Counter('tts_cache_hits_total',   'Total TTS requests served from WAV cache', _LABELS)
-TTS_CACHE_MISSES = Counter('tts_cache_misses_total', 'Total TTS requests that bypassed cache',   _LABELS)
+TTS_CACHE_HITS      = Counter('tts_cache_hits_total',      'Total TTS requests served from server WAV cache', _LABELS)
+TTS_CACHE_MISSES    = Counter('tts_cache_misses_total',    'Total TTS requests that bypassed cache',          _LABELS)
+TTS_DB_CACHE_HITS   = Counter('tts_db_cache_hits_total',   'Total TTS requests served from DB/KV cache',      _LABELS)
+TTS_DB_CACHE_MISSES = Counter('tts_db_cache_misses_total', 'Total TTS requests that missed DB/KV cache',      _LABELS)
 
 # Short-audio alarm: fired when generated audio is suspiciously brief relative to input text.
 # Labels: gpu_id, voice, reason  (reason = "truncated" | "short_text_ok" not fired for the latter)
@@ -209,6 +211,8 @@ _ws_connections_closed: int = 0
 _active_ws_ids: set = set()  # tracks open conn_ids; gauge derived from len()
 _cache_hits: int = 0
 _cache_misses: int = 0
+_db_cache_hits: int = 0
+_db_cache_misses: int = 0
 
 # Active GPU id — set at startup by register_gpu_info(); used as default label value
 _gpu_id: str = "0"
@@ -362,6 +366,36 @@ def record_ws_error(call_id: str, *, port: int = 0, text_id: str = "", error: st
     })
 
 
+def record_db_cache_hit(
+    *,
+    call_id: str,
+    text_id: str,
+    port: int,
+    voice_id: str | None = None,
+    hit: bool = True,
+) -> None:
+    """Record a DB/KV cache hit or miss — mirrors the server WAV cache counters."""
+    global _db_cache_hits, _db_cache_misses
+    _v = voice_id or ""
+    if hit:
+        TTS_DB_CACHE_HITS.labels(gpu_id=_gpu_id, voice=_v).inc()
+        with _lock:
+            _db_cache_hits += 1
+        _ws_log_append({
+            "event":    "db_cache_hit",
+            "source":   "kv_store",
+            "call_id":  call_id,
+            "text_id":  text_id,
+            "port":     port,
+            "voice_id": voice_id,
+            "gpu_id":   _gpu_id,
+        })
+    else:
+        TTS_DB_CACHE_MISSES.labels(gpu_id=_gpu_id, voice=_v).inc()
+        with _lock:
+            _db_cache_misses += 1
+
+
 def record_call(
     *,
     call_id: str,
@@ -472,6 +506,12 @@ def snapshot_metrics() -> dict:
             "misses":    _cache_misses,
             "hit_rate":  round(_cache_hits / total_calls, 4) if total_calls else 0.0,
         }
+        db_total = _db_cache_hits + _db_cache_misses
+        db_cache = {
+            "hits":      _db_cache_hits,
+            "misses":    _db_cache_misses,
+            "hit_rate":  round(_db_cache_hits / db_total, 4) if db_total else 0.0,
+        }
 
     return {
         "ts": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3],
@@ -479,5 +519,6 @@ def snapshot_metrics() -> dict:
         "decode_latency": decode,
         "ws": ws,
         "cache": cache,
+        "db_cache": db_cache,
     }
 

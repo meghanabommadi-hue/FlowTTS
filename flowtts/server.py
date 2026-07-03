@@ -69,7 +69,7 @@ from websockets.http11 import Response as WsResponse, Headers as WsHeaders
 from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RATE
 from flowtts.monitoring.metrics import (
-    record_call, record_ws_connection_open, record_ws_connection_close,
+    record_call, record_db_cache_hit, record_ws_connection_open, record_ws_connection_close,
     record_ws_error, record_ws_done, ws_log_snapshot, record_port_change,
     register_gpu_info, snapshot_metrics,
 )
@@ -491,6 +491,19 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 if cancel_ev:
                     cancel_ev.set()
                 print(f"[{_ts()}] :{port} {conn_id}  cancel  text_id={data.get('text_id')}", flush=True)
+                continue
+
+            if data.get("type") == "cache_hit" and data.get("source") == "kv_store":
+                _call_id  = data.get("call_id") or f"{peer[0]}:{peer[1]}"
+                _text_id  = data.get("text_id") or str(uuid.uuid4())
+                _voice_id = data.get("voice_id") or None
+                record_db_cache_hit(
+                    call_id=_call_id,
+                    text_id=_text_id,
+                    port=port,
+                    voice_id=_voice_id,
+                )
+                print(f"[{_ts()}] :{port} {_call_id}  db_cache_hit  voice:{_voice_id or 'default'}", flush=True)
                 continue
 
             text = (data.get("text") or "").strip()
