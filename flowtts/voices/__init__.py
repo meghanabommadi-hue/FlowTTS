@@ -1,8 +1,9 @@
-"""Voice-clone system: precomputed npz prompts addressed by alias.
+"""Voice-clone system: reference clips + transcripts addressed by alias.
 
-  npz_io.py   — pure-NumPy save/load of the .npz voice-clone format (no torch)
-  registry.py — VoiceRegistry: alias → VoiceClonePrompt, loaded at startup
-  clone.py    — offline CLI to build <alias>.npz from reference audio
+  store.py    — stdlib JSON manifest save/load for the reference-voice format (no torch)
+  registry.py — VoiceRegistry: alias → (reference clip path, ref_text), loaded at startup
+  clone.py    — offline CLI to build <alias>.wav + <alias>.json from reference audio
+  npz_io.py   — DEPRECATED: legacy OmniVoice codec-token .npz format (unused)
 """
 
 from flowtts.voices.registry import VoiceRegistry

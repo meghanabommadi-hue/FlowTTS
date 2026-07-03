@@ -7,6 +7,10 @@ cached_data_*/
 
 # built voice-clone artifacts (derived from reference audio; rebuild per box)
 voices/*.npz
+# Fish S2 Pro reference-voice artifacts written by the cloner (keep manifest.json)
+voices/*.wav
+voices/*.json
+!voices/manifest.json
 
 # monitoring runtime files
 monitoring/requests/

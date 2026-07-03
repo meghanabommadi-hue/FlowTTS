@@ -1,55 +1,79 @@
-# FlowTTS (OmniVoice) — dev container for a single-GPU VM (RTX 6000 Ada / H200 / any CC>=8.0).
+# FlowTTS + Fish Audio S2 Pro — two-service stack for a single-GPU VM (H200 recommended).
 #
-# Prereqs on the host VM: NVIDIA driver + nvidia-container-toolkit
-#   (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+# Prereqs on the host VM: NVIDIA driver + nvidia-container-toolkit + Docker Compose v2.
 #
-# First run (one-time; downloads ~3.3GB model + builds voices):
-#   docker compose run --rm omnivoice-tts setup
-# Serve:
-#   docker compose up          # foreground
-#   docker compose up -d       # background
-# Smoke test / clone a voice:
-#   docker compose exec omnivoice-tts python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --streaming
-#   docker compose run --rm omnivoice-tts clone --add priya --ref-audio sample_files/priya.wav
+#   fish-s2pro       GPU: sglang-omni serving fishaudio/s2-pro (all model/codec work)
+#   flowtts-gateway  CPU: WebSocket + control API proxy (protocol, voices, WAV cache, metrics)
+#
+# ⚠ LICENSE: fishaudio/s2-pro is under the Fish Audio Research License (non-commercial).
+#   Commercial use needs a separate license from Fish Audio (business@fish.audio).
+#
+# First run (downloads ~10GB weights into the hf-cache volume, warms CUDA graphs):
+#   docker compose up -d fish-s2pro          # wait until healthy (docker compose ps)
+#   docker compose up -d flowtts-gateway
+# Build (after code changes):
+#   docker compose build && docker compose up -d
+# Clone a voice (live, no restart):
+#   curl -i -X POST localhost:8764/voices -F voice_id=priya -F preferred_lang=hi \
+#        -F ref_text="…" -F audio=@sample_files/vikram.wav
+# Smoke test:
+#   docker compose exec flowtts-gateway python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 5 --streaming
 
 services:
-  omnivoice-tts:
+  fish-s2pro:
     build:
       context: .
-      dockerfile: docker/Dockerfile
-    image: omnivoice-tts:latest
-    container_name: omnivoice-tts
+      dockerfile: docker/fish_s2pro.Dockerfile
+    image: fish-s2pro:latest
+    container_name: fish-s2pro
     environment:
-      # Server shape
-      PORTS: "1"
-      BASE_PORT: "8080"
-      CTRL_PORT: "8764"
-      HF_TOKEN: "${HF_TOKEN:-}"           # only needed for gated repos
-      # RTX 6000 Ada tuning (48GB, CC 8.9). Bump MAX_BATCH further on an H200 (141GB).
-      FLOWTTS_OMNIVOICE__DTYPE: "bfloat16"
-      FLOWTTS_OMNIVOICE__NUM_STEP: "16"            # ↓ to 10–12 for lower latency (test quality)
-      FLOWTTS_OMNIVOICE__MAX_BATCH: "48"           # bigger batch = higher throughput (watch VRAM in nvidia-smi)
-      FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS: "20"    # wider window lets batches fill under load
-      FLOWTTS_OMNIVOICE__COMPILE_MODEL: "true"     # torch.compile — big per-step speedup; first start compiles (warmup absorbs it)
-      TORCHINDUCTOR_CACHE_DIR: "/root/FlowTTS/cached_data/torchinductor"  # persist compile cache across restarts
-      # FLOWTTS_OUTPUT__SAMPLE_RATE: "16000"       # resample from native 24k for telephony
-    ports:
-      - "8080:8080"    # WebSocket (add 8081:8081 … if PORTS>1)
-      - "8764:8764"    # control API + /metrics
+      FISH_MODEL: "fishaudio/s2-pro"      # HF repo id or a local/licensed weights path
+      TTS_BATCH_MAX_ITEMS: "32"           # server-side batch cap (throughput; sweep 32/48/64)
+      MEM_FRACTION: ""                    # e.g. "0.85" to bound the KV cache on the H200
+      PORT: "8000"
+      HF_TOKEN: "${HF_TOKEN:-}"           # required to pull the (gated) weights
     volumes:
-      - ./model_dir:/root/FlowTTS/model_dir      # local OmniVoice weights (model_dir/base) — used if present
-      - hf-cache:/root/.cache/huggingface        # HF cache fallback (if no local weights)
-      - ./voices:/root/FlowTTS/voices            # persist built npz (visible on host)
-      - wav-cache:/root/FlowTTS/cached_data      # persist WAV cache
-    shm_size: "8gb"
+      - hf-cache:/root/.cache/huggingface           # model weights cache (persist across restarts)
+      - ./voices:/root/FlowTTS/voices:ro            # read reference clips (SAME path as gateway)
+    shm_size: "16gb"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 600s                  # first run downloads weights + captures CUDA graphs
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all       # or: device_ids: ["0"]
+              count: all                  # or: device_ids: ["0"]
               capabilities: [gpu]
+
+  flowtts-gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: flowtts-gateway:latest
+    container_name: flowtts-gateway
+    depends_on:
+      fish-s2pro:
+        condition: service_healthy
+    environment:
+      PORTS: "1"
+      BASE_PORT: "8080"
+      CTRL_PORT: "8764"
+      FLOWTTS_FISH__BACKEND_URL: "http://fish-s2pro:8000"
+      FLOWTTS_FISH__REFERENCE_MODE: "local"   # "base64" if the backend can't read the shared volume
+      # FLOWTTS_OUTPUT__SAMPLE_RATE: "16000"    # resample from native 24k for telephony (8000/16000)
+    ports:
+      - "8080:8080"    # WebSocket (add 8081:8081 … if PORTS>1)
+      - "8764:8764"    # control API + /metrics
+    volumes:
+      - ./voices:/root/FlowTTS/voices               # write + persist cloned voices (shared, rw)
+      - wav-cache:/root/FlowTTS/cached_data         # persist WAV cache
+    restart: unless-stopped
 
 volumes:
   hf-cache:

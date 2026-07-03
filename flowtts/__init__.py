@@ -1,23 +1,26 @@
-"""FlowTTS — OmniVoice streaming TTS server.
+"""FlowTTS — Fish Audio S2 Pro streaming TTS gateway.
 
-Model: k2-fsa/OmniVoice — a non-autoregressive discrete-diffusion TTS language
-model (Qwen3-0.6B backbone + Higgs-Audio-v2 neural codec, 24 kHz). It replaced
-the previous sglang + ncodec MiraTTS stack; the serving framework (WebSocket
-gateway, dynamic batching, metrics, WAV cache, streaming protocol) was kept.
+Model / serving: **Fish Audio S2 Pro** (`fishaudio/s2-pro`) — a Dual-AR (Qwen3-4B
+slow-AR + 400M fast-AR) TTS model with an EVA-GAN / RVQ codec (24 kHz), served
+out-of-process by **sglang-omni** (`sgl-omni serve`, OpenAI-compatible
+`POST /v1/audio/speech`). All GPU work — AR decoding, codec decode, continuous
+batching, RadixAttention prefix caching — lives in the sglang backend. This gateway
+is a CPU-only WebSocket proxy that preserves FlowTTS's streaming protocol, voice
+registry, WAV cache, metrics, and control API. It replaced the previous in-process
+k2-fsa/OmniVoice diffusion stack.
 
-Primary path (single process, no Redis — flowtts/server.py):
-  Client ──WS(text)──▶ server.py (OmniVoice loaded once, N ports)
-    → synthesizer splits text into chunks (short first chunk = low TTFB)
-    → OmniVoiceEngine dynamic batch queue coalesces chunks/requests → generate()
-    → 24 kHz waveform → (resample) → int16 PCM ──▶ Client (audio_chunk … audio_done)
+Primary path (single process — flowtts/server.py):
+  Client ──WS(text)──▶ server.py (N ports, one asyncio loop)
+    → FishSpeechEngine.synthesize_stream() → POST sglang /v1/audio/speech (pcm)
+    → contiguous 24 kHz PCM → (resample) → int16 PCM ──▶ Client (audio_chunk … audio_done)
 
 Secondary path (Redis-backed multi-process — flowtts/main.py + worker.py):
-  Gateway rpush → Redis queue → worker generate() → base64 WAV → Redis pubsub → client.
+  Gateway rpush → Redis queue → worker synth → base64 WAV → Redis pubsub → client.
 
 Package layout:
-  core/        — Pydantic settings (model, output, streaming, batching, accel)
-  synthesis/   — OmniVoice engine + dynamic batcher, synthesizer facade, text chunker
-  voices/      — voice-clone npz registry + offline builder (alias → VoiceClonePrompt)
+  core/        — Pydantic settings (backend URL, generation, output, streaming)
+  synthesis/   — Fish backend client (fish_engine), synthesizer facade, text chunker
+  voices/      — reference-clip registry + manifest store + offline builder (alias → reference)
   decoder/     — waveform → PCM/WAV helpers (+ Redis-path lifecycle bookkeeping)
   processing/  — post-decode audio: resample, crossfade, fades
   api/         — WebSocket gateway (Redis path) + request/response models

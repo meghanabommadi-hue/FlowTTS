@@ -1,5 +1,14 @@
 # FlowTTS — Full Design & Data Flow
 
+> **Note (current architecture):** the primary production path is the single-process
+> gateway ([`flowtts/server.py`](flowtts/server.py)) proxying to a **Fish Audio S2 Pro**
+> model served by **sglang-omni** — see [README.md](README.md). The Redis-backed,
+> decoder-split flow documented below is the **secondary** multi-process path; where it
+> says "Worker runs the TTS model / audio tokens", read it as "gateway/worker calls the
+> sglang backend, which returns decoded PCM" (S2 Pro streams decoded audio — there is no
+> separate token→PCM decoder stage to run).
+
+
 **High-level flow:**  
 **Client** → **Gateway (FastAPI + WebSocket)** → **Redis** → **Speech Synthesizer Worker** → **Redis** (same instance) → **Decoder (per-call, GPU-bound)** → **Gateway** → **Client**
 

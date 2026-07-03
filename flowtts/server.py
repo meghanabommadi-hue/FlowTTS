@@ -3,34 +3,34 @@
 Pipeline position: SINGLE-PROCESS GATEWAY (primary production entry point via run.sh).
 
 Role in pipeline:
-  Self-contained TTS server — no Redis, no worker process, no uvicorn per port.
-  Loads k2-fsa/OmniVoice once, then handles all WebSocket ports in one asyncio
-  event loop. This is the recommended way to run FlowTTS in production.
+  CPU-only WebSocket gateway — no Redis, no worker process, no uvicorn per port.
+  Connects once to the Fish Audio S2 Pro backend (sglang-omni), then handles all
+  WebSocket ports in one asyncio event loop. This is the recommended way to run
+  FlowTTS in production. All GPU work lives in the separate backend.
 
   Client
     │  WebSocket (text) on port 8080…8080+N
     ▼
-  server.py  (one process, one GPU load)
-    │  synthesizer.synthesize_stream(text, voice_id)  [OmniVoice, dynamic batching]
-    │  → 24 kHz waveform chunks → int16 PCM
+  server.py  (one process, no GPU)
+    │  synthesizer.synthesize_stream(text, voice_id)  [HTTP → sglang backend]
+    │  → contiguous 24 kHz PCM chunks → int16 PCM
     ▼
   Client  (audio_chunk binary frames … audio_done JSON)
 
 Compared to main.py (Redis-backed):
   Simpler:   no Redis, no worker, no inter-process coordination.
-  Faster:    no queue latency, inference starts immediately.
-  Less flexible: all ports share one sglang Engine, no horizontal scaling
-                 across machines without running multiple server.py instances.
+  Faster:    no queue latency, synthesis starts immediately.
+  Less flexible: single backend endpoint; scale by adding backend replicas.
 
 Port model:
   --ports N opens N consecutive ports starting at --base-port.
-  All ports share the same synthesis_service singleton (one model load).
-  Concurrent requests from different ports are handled by asyncio concurrency
-  — sglang's async_generate serialises GPU work internally.
+  All ports share the same backend client singleton (one connection pool).
+  Concurrent requests issue concurrent HTTP calls; the sglang backend coalesces
+  them via continuous batching.
 
 Warmup:
-  On startup, one warmup sentence is synthesized to prime the GPU and JIT
-  caches before real traffic arrives.
+  On startup, one warmup sentence is synthesized to prime the backend (CUDA
+  graphs) and the default voice's prefix cache before real traffic arrives.
 
 Usage (preferred):
     ./run.sh --ports 100              # 100 ports: 8080…8864
@@ -76,13 +76,13 @@ from flowtts.monitoring.metrics import (
 )
 from flowtts.processing.audio_processing import crossfade, fade_in, fade_out, resample_audio
 
-from flowtts.synthesis.models import OmniVoiceSynthesizer
+from flowtts.synthesis.models import FishSpeechSynthesizer
 
 # Silence websockets' own logger — we do our own prints
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
-_synthesizer: OmniVoiceSynthesizer | None = None
+_synthesizer: FishSpeechSynthesizer | None = None
 _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
 
 # OOM recovery state
@@ -178,22 +178,22 @@ def _log(line: str) -> None:
         _llm_log_file.flush()
 
 
-async def _get_synthesizer() -> OmniVoiceSynthesizer:
+async def _get_synthesizer() -> FishSpeechSynthesizer:
     global _synthesizer, _NATIVE_SR
     if _synthesizer is None:
-        _synthesizer = OmniVoiceSynthesizer()
-        print(f"[{_ts()}] loading OmniVoice...", flush=True)
+        _synthesizer = FishSpeechSynthesizer()
+        print(f"[{_ts()}] connecting to Fish S2 Pro backend...", flush=True)
         await _synthesizer.initialize()
         _NATIVE_SR = _synthesizer.sampling_rate
-        print(f"[{_ts()}] model ready  native_sr={_NATIVE_SR}  out_sr={_OUTPUT_SR}", flush=True)
-        # Register engine metadata in Prometheus once model is loaded
+        print(f"[{_ts()}] backend ready  native_sr={_NATIVE_SR}  out_sr={_OUTPUT_SR}", flush=True)
+        # Register engine metadata in Prometheus once the backend client is up.
         ei = _synthesizer.engine_info
         register_gpu_info(
             model_gpu_id=0,
             decoder_gpu_id=0,
             tp_size=1,
-            attention_backend=f"omnivoice(num_step={ei.get('num_step')},gs={ei.get('guidance_scale')})",
-            mem_weight_gb=str(ei.get("frame_rate", "n/a")),
+            attention_backend=f"fish-s2pro-sglang({ei.get('model')})",
+            mem_weight_gb=str(ei.get("backend_url", "n/a")),
             mem_kvcache_gb="n/a",
         )
     return _synthesizer
@@ -241,7 +241,7 @@ async def _handle_oom(exc: BaseException) -> None:
 
 async def _handle_streaming_request(
     ws: websockets.ServerConnection,
-    synth: "OmniVoiceSynthesizer",
+    synth: "FishSpeechSynthesizer",
     text: str,
     call_id: str,
     text_id: str,
@@ -252,16 +252,18 @@ async def _handle_streaming_request(
     language: str | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> None:
-    """Stream audio chunks to the client as OmniVoice completes each text chunk.
+    """Stream audio chunks to the client as the Fish S2 Pro backend emits PCM.
 
-    OmniVoice is non-autoregressive so it cannot emit audio token-by-token. The
-    synthesizer splits the text into chunks (short first chunk for low TTFB),
-    dispatches them all to the dynamic batch queue at once, and yields each
-    chunk's waveform IN ORDER as it finishes. We resample to the output rate,
-    smooth the boundary, and send each as one binary frame:
+    Fish S2 Pro is autoregressive, so the sglang backend streams one CONTIGUOUS
+    16-bit PCM stream token-by-token (TTFB ~100 ms). The synthesizer forwards each
+    PCM fragment IN ORDER as a float32 waveform chunk; we resample to the output
+    rate and send each as one binary frame:
       - JSON header { type:"audio_chunk", chunk_index, call_id, text_id, is_final }
       - raw int16 PCM bytes appended to the same frame
     A final { type:"audio_done", ... } JSON frame follows.
+
+    Because the stream is contiguous (synth.continuous_stream), we do NOT crossfade
+    or DC-adjust between chunks — only the true tail gets a fade-out.
     """
     t0           = time.perf_counter()
     ts_gen_start = _tsms()
@@ -277,13 +279,16 @@ async def _handle_streaming_request(
     gen_ttft_ms: int | None = None      # ms from t0 to first audio chunk sent
 
     loop = asyncio.get_event_loop()
+    # AR backends stream one contiguous PCM stream → per-chunk crossfade / DC-shift
+    # would create audible dips at fragment boundaries. Gate that smoothing off.
+    _continuous = getattr(synth, "continuous_stream", False)
 
     def _prep_pcm(wav: np.ndarray, is_final: bool, first: bool) -> bytes:
         """Fade the boundary (native rate), resample to output rate, encode int16."""
         wav = np.asarray(wav, dtype=np.float32).reshape(-1)
-        if wav.size:
-            wav = wav - wav.mean()  # DC-offset removal avoids boundary clicks
-        if (not first) and _XFADE > 0 and wav.size:
+        if wav.size and not _continuous:
+            wav = wav - wav.mean()  # DC-offset removal avoids boundary clicks (chunked path)
+        if (not first) and not _continuous and _XFADE > 0 and wav.size:
             wav = fade_in(wav.copy(), min(_XFADE, len(wav)))
         if is_final and _FADEOUT > 0 and len(wav) > _FADEOUT:
             wav = fade_out(wav.copy(), _FADEOUT)
@@ -739,10 +744,10 @@ async def _warmup_port(port: int, sentence: str) -> None:
 async def _warmup_all_ports(ports: list[int]) -> None:
     """Warm up every bound WS port concurrently.
 
-    All warmup requests are coalesced by the OmniVoice engine's batch queue,
+    All warmup requests are coalesced by the sglang backend's continuous batcher,
     so firing all ports simultaneously is safe.
     """
-    sentence = settings.omnivoice.warmup_sentence
+    sentence = settings.fish.warmup_sentence
     if not sentence or not ports:
         return
     print(f"[{_ts()}] warming up {len(ports)} port(s) concurrently...", flush=True)

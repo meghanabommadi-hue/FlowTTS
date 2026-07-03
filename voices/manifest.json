@@ -1,3 +1,9 @@
 {
-  "priya": { "ref_audio": "sample_files/simran.wav" }
+  "_comment": "Fish S2 Pro voices = reference clip + EXACT transcript (+ optional language). ref_text MUST match the words spoken in ref_audio, in the clip's script/language, or cloning quality suffers. Add one entry per voice, then: python -m flowtts.voices.clone --build-all --manifest voices/manifest.json",
+  "_example": { "ref_audio": "sample_files/<clip>.wav", "ref_text": "<exact transcript>", "language": "hi" },
+  "priya": {
+    "ref_audio": "sample_files/simran.wav",
+    "ref_text": "<replace with the EXACT transcript of simran.wav>",
+    "language": "hi"
+  }
 }

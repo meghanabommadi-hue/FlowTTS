@@ -1,35 +1,17 @@
-# FlowTTS (OmniVoice) requirements
+# FlowTTS gateway requirements (CPU-only).
 #
-# Target: single NVIDIA H200 (Hopper), Linux, Python 3.10–3.12.
-# The sglang + ncodec + vllm MiraTTS stack was removed; this serves
-# k2-fsa/OmniVoice via the native `omnivoice` package.
-#
-# NOTE: torch / CUDA wheels are platform-specific — install the CUDA build that
-# matches the H200 image FIRST (e.g. `pip install torch==2.8.0 --index-url
-# https://download.pytorch.org/whl/cu128`), THEN `pip install -r requirements.txt`.
-# Pin exact versions against your box before production (see plan verification).
+# The GPU TTS model (Fish Audio S2 Pro) runs in the SEPARATE sglang-omni backend
+# container (see docker/fish_s2pro.Dockerfile) — it brings its own torch/sglang/CUDA
+# stack. This gateway is a lightweight async WebSocket proxy: no torch, no CUDA.
 
-# ── OmniVoice model + core inference ─────────────────────────────────────────
-omnivoice==0.1.5
-transformers>=5.3.0          # ships HiggsAudioV2TokenizerModel (OmniVoice codec)
-torch>=2.4
-torchaudio>=2.4
-accelerate>=1.0
-safetensors>=0.4
-tokenizers>=0.20
-huggingface-hub>=0.30
-hf-xet>=1.1              # fast parallel (Xet) downloads — engages HF_XET_HIGH_PERFORMANCE
-hf-transfer>=0.1.9      # fallback fast transfer for non-Xet repos
-
-# ── Audio ────────────────────────────────────────────────────────────────────
-librosa>=0.10
-soundfile>=0.12
-soxr>=0.5
-pydub>=0.25
-
-# ── WebSocket server + HTTP control API ──────────────────────────────────────
-websockets>=13.0
+# ── HTTP client to the sglang backend + WebSocket server + control API ───────
 aiohttp>=3.10
+websockets>=13.0
+
+# ── Audio I/O / conversion ───────────────────────────────────────────────────
+numpy>=1.26
+soundfile>=0.12          # WAV encode (decoder.py) + cache files
+pydub>=0.25              # reference-clip → mono WAV conversion (via ffmpeg)
 
 # ── FastAPI / HTTP (Redis-backed secondary path: main.py) ────────────────────
 fastapi>=0.110
@@ -47,7 +29,3 @@ python-dotenv>=1.0
 # ── Logging / monitoring ─────────────────────────────────────────────────────
 structlog>=24.1
 prometheus-client>=0.20
-
-# ── Numerics ─────────────────────────────────────────────────────────────────
-numpy>=1.26
-scipy>=1.11

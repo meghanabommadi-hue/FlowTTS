@@ -1,18 +1,20 @@
-"""Pipeline position: VOICE REGISTRY — alias → cloned voice, loaded at startup.
+"""Pipeline position: VOICE REGISTRY — alias → reference clip, loaded at startup.
 
 Role in pipeline:
-  On startup the OmniVoice engine builds one VoiceRegistry over the voices_dir.
-  Every WebSocket request's ``voice_id`` is an alias resolved here to a
-  ``VoiceClonePrompt`` that is passed to ``model.generate(voice_clone_prompt=...)``,
-  which skips the codec encoder + Whisper ASR entirely.
+  On startup the Fish engine builds one VoiceRegistry over the voices_dir. Every
+  WebSocket request's ``voice_id`` is an alias resolved here to a reference
+  ``(audio_path, ref_text)`` pair that is sent to the sglang backend as
+  ``references=[{"audio_path": ..., "text": ...}]`` for zero-shot voice cloning.
+  SGLang encodes the clip into VQ codes and caches the KV via RadixAttention, so
+  repeated same-voice requests largely skip the reference prefill.
 
-  server.py / engine → registry.prompt(voice_id) → VoiceClonePrompt → generate()
+  server.py / engine → registry.reference(voice_id) → (audio_path, ref_text) → backend
 
-Adding a voice at deploy time = drop `<alias>.npz` into voices_dir (see
-voices/clone.py). No code change, no re-encoding on boot.
+Adding a voice at deploy time = drop `<alias>.json` + its clip into voices_dir
+(see voices/clone.py or the live POST /voices endpoint). No code change, no
+GPU work, no restart.
 
-torch and the omnivoice package are imported lazily inside prompt-building so this
-module (and the npz format) stay importable/testable without a GPU.
+This module is torch-free — a voice is just a clip + transcript on disk.
 """
 
 from __future__ import annotations
@@ -22,19 +24,18 @@ from typing import Any
 
 import structlog
 
-from flowtts.voices.npz_io import load_voice_npz
+from flowtts.voices.store import load_voice
 
 logger = structlog.get_logger(__name__)
 
 
 class VoiceRegistry:
-    """Loads voice-clone npz files and hands out VoiceClonePrompt objects by alias."""
+    """Loads voice manifests and resolves aliases to reference (audio_path, ref_text)."""
 
     def __init__(self, voices_dir: str | Path, default_voice: str | None = None) -> None:
         self.voices_dir = Path(voices_dir)
         self.default_voice = default_voice
-        self._raw: dict[str, dict[str, Any]] = {}     # alias → npz dict
-        self._prompts: dict[str, Any] = {}            # alias → VoiceClonePrompt (built lazily)
+        self._raw: dict[str, dict[str, Any]] = {}   # alias → manifest dict (+ resolved audio_path)
         self._load_all()
 
     # ------------------------------------------------------------------ loading
@@ -42,19 +43,11 @@ class VoiceRegistry:
         if not self.voices_dir.is_dir():
             logger.warning("voices_dir_missing", voices_dir=str(self.voices_dir))
             return
-        for npz_path in sorted(self.voices_dir.glob("*.npz")):
+        for manifest in sorted(self.voices_dir.glob("*.json")):
             try:
-                data = load_voice_npz(npz_path)
-                alias = data.get("alias") or npz_path.stem
-                self._raw[alias] = data
-                logger.info(
-                    "voice_loaded",
-                    alias=alias,
-                    tokens=tuple(data["ref_audio_tokens"].shape),
-                    ref_text_preview=data["ref_text"][:40],
-                )
+                self._register_manifest(manifest)
             except Exception as e:  # noqa: BLE001
-                logger.error("voice_load_failed", path=str(npz_path), error=str(e))
+                logger.error("voice_load_failed", path=str(manifest), error=str(e))
 
         if self.default_voice and self.default_voice not in self._raw:
             logger.warning(
@@ -63,28 +56,29 @@ class VoiceRegistry:
                 available=sorted(self._raw),
             )
 
+    def _register_manifest(self, manifest_path: str | Path) -> str:
+        data = load_voice(manifest_path)
+        alias = data["alias"]
+        audio_path = self.voices_dir / data["audio_file"]
+        if not audio_path.is_file():
+            raise FileNotFoundError(f"reference clip missing: {audio_path}")
+        data["audio_path"] = str(audio_path)
+        self._raw[alias] = data
+        logger.info(
+            "voice_loaded",
+            alias=alias,
+            audio=data["audio_file"],
+            language=data["language"] or None,
+            ref_text_preview=data["ref_text"][:40],
+        )
+        return alias
+
     # ------------------------------------------------------------------ public
     def aliases(self) -> list[str]:
         return sorted(self._raw)
 
     def has(self, alias: str | None) -> bool:
         return bool(alias) and alias in self._raw
-
-    def language(self, voice_id: str | None) -> str | None:
-        """Return the resolved voice's preferred language, or None if unset."""
-        alias = self.resolve(voice_id)
-        if alias is None:
-            return None
-        lang = self._raw[alias].get("language")
-        return lang or None
-
-    def add(self, alias: str, npz_path: str | Path) -> dict[str, Any]:
-        """Hot-register a voice from an npz (used by the live clone REST endpoint)."""
-        data = load_voice_npz(npz_path)
-        self._raw[alias] = data
-        self._prompts.pop(alias, None)  # drop any stale cached prompt
-        logger.info("voice_registered", alias=alias, tokens=tuple(data["ref_audio_tokens"].shape))
-        return data
 
     def resolve(self, voice_id: str | None) -> str | None:
         """Return the alias to use: the requested one if known, else the default."""
@@ -94,31 +88,23 @@ class VoiceRegistry:
             return self.default_voice
         return None
 
-    def prompt(self, voice_id: str | None):
-        """Return a VoiceClonePrompt for the resolved alias, or None if unavailable.
-
-        Builds the torch-backed prompt on first use and caches it.
-        """
+    def language(self, voice_id: str | None) -> str | None:
+        """Return the resolved voice's preferred language, or None if unset."""
         alias = self.resolve(voice_id)
         if alias is None:
             return None
-        if alias in self._prompts:
-            return self._prompts[alias]
+        return self._raw[alias].get("language") or None
 
-        prompt = self._build_prompt(self._raw[alias])
-        self._prompts[alias] = prompt
-        return prompt
+    def reference(self, voice_id: str | None) -> tuple[str, str] | None:
+        """Return (audio_path, ref_text) for the resolved alias, or None if unavailable."""
+        alias = self.resolve(voice_id)
+        if alias is None:
+            return None
+        data = self._raw[alias]
+        return data["audio_path"], data["ref_text"]
 
-    # ------------------------------------------------------------------ internal
-    @staticmethod
-    def _build_prompt(data: dict[str, Any]):
-        """Reconstruct a VoiceClonePrompt from npz data (imports torch + omnivoice)."""
-        import torch
-        from omnivoice.models.omnivoice import VoiceClonePrompt
-
-        tokens = torch.from_numpy(data["ref_audio_tokens"].astype("int64"))
-        return VoiceClonePrompt(
-            ref_audio_tokens=tokens,
-            ref_text=data["ref_text"],
-            ref_rms=float(data["ref_rms"]),
-        )
+    def add(self, alias: str, manifest_path: str | Path) -> dict[str, Any]:
+        """Hot-register a voice from a manifest (used by the live clone REST endpoint)."""
+        self._register_manifest(manifest_path)
+        logger.info("voice_registered", alias=alias)
+        return self._raw[alias]

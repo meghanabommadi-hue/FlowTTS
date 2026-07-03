@@ -1,19 +1,22 @@
-"""Model download for FlowTTS (OmniVoice).
+"""Model download helper for FlowTTS + Fish Audio S2 Pro.
 
-Pre-fetches the k2-fsa/OmniVoice weights into the HuggingFace cache so the first
-server start doesn't pay the download cost. `OmniVoice.from_pretrained(repo_id)`
-then loads straight from the cache.
+The TTS model weights (`fishaudio/s2-pro`) live in the **sglang backend** container,
+not in this gateway — the sglang-omni image runs `hf download fishaudio/s2-pro` at
+build/first-run. This gateway is CPU-only and needs no model weights.
+
+This script is kept as a convenience to pre-fetch the S2 Pro weights into a shared
+HuggingFace cache (e.g. when priming a volume before starting the backend).
 
 Usage:
-    python -m flowtts.setup.download_models
-    python -m flowtts.setup.download_models --repo k2-fsa/OmniVoice
+    python -m flowtts.setup.download_models                 # fishaudio/s2-pro
+    python -m flowtts.setup.download_models --repo fishaudio/s2-pro
 """
 
 import argparse
 import os
 import sys
 
-from flowtts.core.config import is_local_model, resolve_model_source, settings
+DEFAULT_REPO = "fishaudio/s2-pro"
 
 
 def download(repo: str) -> None:
@@ -34,19 +37,10 @@ def download(repo: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Download OmniVoice weights from HuggingFace")
-    ap.add_argument("--repo", default=None,
-                    help=f"HF repo id (default: {settings.omnivoice.model_repo})")
-    ap.add_argument("--force", action="store_true",
-                    help="Download from HF even if local weights are present")
+    ap = argparse.ArgumentParser(description="Pre-fetch Fish S2 Pro weights into the HF cache")
+    ap.add_argument("--repo", default=DEFAULT_REPO, help=f"HF repo id (default: {DEFAULT_REPO})")
     args = ap.parse_args()
-
-    # Skip the HF download entirely when local weights already exist.
-    if args.repo is None and not args.force and is_local_model():
-        print(f"[download] local weights present at {resolve_model_source()} — skipping HF download.")
-        return
-
-    download(args.repo or settings.omnivoice.model_repo)
+    download(args.repo)
     print("\nDownload complete.")
 
 

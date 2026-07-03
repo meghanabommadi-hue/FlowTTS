@@ -1,9 +1,9 @@
 """Pipeline position: SYNTHESIS SERVICE — process-wide singleton.
 
 Role in pipeline:
-  Provides a single shared synthesizer (synthesis_service) so the model loads
-  exactly once per process, whether driven by server.py (single-process) or the
-  Redis worker (worker.py).
+  Provides a single shared synthesizer (synthesis_service) so the backend client
+  is built exactly once per process, whether driven by server.py (single-process)
+  or the Redis worker (worker.py).
 
       wav = await synthesis_service.synthesize(text, voice_id=...)
 """
@@ -13,13 +13,13 @@ from __future__ import annotations
 import numpy as np
 import structlog
 
-from flowtts.synthesis.models import OmniVoiceSynthesizer
+from flowtts.synthesis.models import FishSpeechSynthesizer
 
 logger = structlog.get_logger(__name__)
 
 
 class SynthesisService:
-    """Singleton service that manages OmniVoice synthesis."""
+    """Singleton service that manages Fish S2 Pro synthesis."""
 
     _instance: "SynthesisService | None" = None
     _initialized: bool = False
@@ -33,7 +33,7 @@ class SynthesisService:
         if self._initialized:
             return
         logger.info("initializing_synthesis_service")
-        self.synthesizer = OmniVoiceSynthesizer()
+        self.synthesizer = FishSpeechSynthesizer()
         await self.synthesizer.initialize()
         self._initialized = True
         logger.info("synthesis_service_initialized")

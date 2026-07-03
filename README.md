@@ -1,63 +1,75 @@
-# FlowTTS — OmniVoice streaming TTS server
+# FlowTTS — Fish Audio S2 Pro streaming TTS gateway
 
-A production-grade, low-latency **text-to-speech WebSocket server** built around
-[**k2-fsa/OmniVoice**](https://github.com/k2-fsa/OmniVoice) — a massively multilingual
-(600+ languages) zero-shot TTS model. Designed for high-throughput voice-bot / IVR
-workloads (Hindi + English), with **realtime chunk-wise streaming**, **dynamic in-flight
-batching**, and **reusable voice clones**.
+A production-grade, low-latency **text-to-speech WebSocket gateway** for
+[**Fish Audio S2 Pro**](https://huggingface.co/fishaudio/s2-pro), served by
+[**sglang-omni**](https://github.com/sgl-project/sglang-omni) for high throughput and
+ultra-low streaming latency. Built for voice-bot / IVR workloads (Hindi + English, 80+
+languages), with **realtime AR streaming**, **reusable voice clones**, and a stable WS
+protocol.
 
-> OmniVoice is a non-autoregressive **discrete-diffusion language model** (Qwen3-0.6B
-> backbone + Higgs-Audio-v2 neural codec, **24 kHz**). It replaced this repo's previous
-> sglang + ncodec stack; the serving framework (WebSocket gateway, batching, metrics,
-> WAV cache, streaming protocol) was kept.
-
----
-
-## Features
-
-- 🎙️ **Realtime streaming** — text is split into chunks (short first chunk); each is
-  synthesized and streamed as raw int16 PCM, targeting **TTFB < 200 ms**.
-- ⚡ **Dynamic in-flight batching** — concurrent requests *and* streamed chunks are
-  coalesced into single batched `generate()` calls, length-bucketed to minimize padding.
-- 🗣️ **Voice cloning by alias** — reference voices are precomputed once into tiny `.npz`
-  artifacts and loaded at startup; requests pick one via `voice_id`.
-- 🚀 **Acceleration levers** — fewer denoise steps, `torch.compile` + CUDA graphs, bf16/FP8
-  on Hopper/Ada, plus a SHA-256 **WAV cache** that bypasses the model on repeated prompts.
-- 🔌 **Plug-n-play protocol** — a stable WebSocket in/out contract (binary PCM frames).
-- 📊 **Ops built-in** — `/health`, `/ready`, `/metrics` (Prometheus), OOM recovery,
-  on-demand port binding, idle-connection reaping.
-- 🐳 **Containerized** — one `docker compose` command; keeps the host VM clean.
+> **S2 Pro** is a Dual-AR TTS model (Qwen3-4B slow-AR + 400M fast-AR) with an
+> EVA-GAN / RVQ codec (10 codebooks, ~21 Hz, 24 kHz). Because the slow-AR is a
+> standard decoder-only LLM, sglang gives it **continuous batching, paged KV cache,
+> CUDA-graph replay, and RadixAttention prefix caching** — inheriting all LLM-native
+> optimizations. Published single-H200 figures: **RTF ≈ 0.195, TTFA < 100 ms,
+> 3000+ acoustic tok/s**.
+>
+> ⚠ **License:** `fishaudio/s2-pro` is under the **Fish Audio Research License**
+> (non-commercial). **Commercial use requires a separate license** from Fish Audio
+> (`business@fish.audio`). `FISH_MODEL` is configurable so you can point at a licensed
+> or self-hosted checkpoint.
 
 ---
 
 ## Architecture
 
+Two services on one H200:
+
 ```
-Client ──WS(text)──▶ server.py  (OmniVoice loaded once, N ports, one asyncio loop)
-                        │  normalize + split into streaming chunks (short first chunk)
-                        │  WAV-cache lookup (sha256(text)) ─hit─▶ send cached PCM ▶ done
-                        ▼
-                     OmniVoiceEngine.synthesize(chunk, voice_id, speed, language)
-                        │  enqueue (text, VoiceClonePrompt, gen_cfg, future)
-                        ▼
-                     dynamic batch queue  (length-bucketed, ~8 ms window)
-                        │  model.generate([...])  → 24 kHz waveforms   [GPU worker thread]
-                        ▼
-                     resample (optional) → int16 PCM → boundary crossfade
-                        ▼
+Client ─WS(text, voice_id)─▶ flowtts-gateway  (CPU-only, no model)
+                               │ normalize + WAV-cache lookup ─hit─▶ send cached PCM ▶ done
+                               │ FishSpeechEngine.synthesize_stream(...)
+                               │   → POST http://fish-s2pro:8000/v1/audio/speech
+                               │     {input, references:[{audio_path,text}], language,
+                               │      speed, stream:true, response_format:"pcm"}
+                               ▼
+                            fish-s2pro : sgl-omni serve fishaudio/s2-pro   (GPU)
+                               │ Dual-AR + EVA-GAN codec, continuous batch, prefix cache
+                               │ streams 16-bit mono PCM @ 24 kHz
+                               ▼
+                            gateway: PCM → float32 → (resample) → int16 → WS audio_chunk
 Client ◀── audio_chunk (JSON header + PCM bytes) … audio_done ──
 ```
 
-A secondary Redis-backed multi-process path (`main.py` + `worker.py`) exists for
-cross-machine scaling; the single-process `server.py` above is the primary, lowest-latency path.
+All GPU work lives in the **sglang backend**; the **gateway** is a lightweight async
+proxy that keeps FlowTTS's WebSocket protocol, voice registry, WAV cache, metrics, and
+control API. A secondary Redis-backed multi-process path (`main.py` + `worker.py`) still
+exists for cross-machine scaling.
+
+---
+
+## Features
+
+- 🎙️ **Realtime AR streaming** — the backend streams contiguous 16-bit PCM token-by-token,
+  forwarded as int16 frames, targeting **TTFB < 200 ms** (backend TTFA ~100 ms).
+- ⚡ **Throughput from sglang** — continuous batching + paged KV cache + CUDA graphs; no
+  gateway-side batching needed.
+- 🗣️ **Voice cloning by alias** — a voice is a reference clip + transcript; clone live via
+  `POST /voices` (no restart) or the offline CLI. Reused voices hit the **prefix cache**.
+- 🚀 **WAV cache** — a SHA-256 cache that bypasses the backend on repeated prompts.
+- 🔌 **Stable protocol** — the same WebSocket in/out contract (binary PCM frames).
+- 📊 **Ops built-in** — `/health`, `/ready`, `/metrics` (Prometheus), on-demand port
+  binding, idle-connection reaping.
+- 🐳 **Containerized** — one `docker compose` stack (backend + gateway).
 
 ---
 
 ## Requirements
 
-- NVIDIA GPU, compute capability **≥ 8.0** (Ada RTX 6000 = 8.9, Hopper H200 = 9.0).
-- Linux, Python **3.10–3.12**, PyTorch ≥ 2.4 (CUDA build), `transformers ≥ 5.3`.
-- For Docker: NVIDIA driver + **nvidia-container-toolkit** + Docker Compose v2.
+- NVIDIA GPU, compute capability ≥ 9.0 recommended (**H200**); the backend needs enough
+  VRAM for a ~10 GB model + KV cache.
+- Linux, NVIDIA driver + **nvidia-container-toolkit** + Docker Compose v2.
+- Gateway is CPU-only (Python 3.12).
 
 ---
 
@@ -66,32 +78,38 @@ cross-machine scaling; the single-process `server.py` above is the primary, lowe
 ```bash
 git clone <your-repo-url> FlowTTS && cd FlowTTS
 
-# one-time: build image, download OmniVoice (~3.3 GB), build voice npz from sample_files/
-docker compose run --rm omnivoice-tts setup
+# 1) Start the GPU backend (first run downloads ~10GB weights; wait until healthy).
+export HF_TOKEN=hf_...                # needed to pull the gated weights
+docker compose up -d fish-s2pro
+docker compose ps                     # wait for fish-s2pro: healthy
 
-# serve on :8080 (WebSocket) + :8764 (control API / Prometheus)
-docker compose up -d
-docker compose logs -f omnivoice-tts
+# 2) Start the gateway (:8080 WebSocket, :8764 control API / Prometheus).
+docker compose up -d flowtts-gateway
+docker compose logs -f flowtts-gateway
 
-# smoke test
-docker compose exec omnivoice-tts python -m flowtts.test.test_pipeline \
+# 3) Smoke test.
+docker compose exec flowtts-gateway python -m flowtts.test.test_pipeline \
     --ctrl-port 8764 --requests 5 --streaming
 ```
 
-Full container guide + tuning: [`docker/README.md`](docker/README.md).
+Full container guide + tuning: [`docs/fish_s2pro_acceleration.md`](docs/fish_s2pro_acceleration.md).
 
 ## Quick start (bare metal)
 
 ```bash
-# install a CUDA build of torch first, e.g.:
-pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
-bash flowtts/setup/setup.sh            # deps + model + voices
-bash run.sh --ctrl-port 8764 --ports 1 # serve
+# Backend (GPU box): install sglang-omni, then:
+hf download fishaudio/s2-pro
+sgl-omni serve --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml --tts-batch-max-items 32 --port 8000
+
+# Gateway (CPU): install deps and run, pointing at the backend.
+pip install -r requirements.txt
+bash run.sh --ctrl-port 8764 --ports 1 --backend-url http://127.0.0.1:8000
 ```
 
 ---
 
-## WebSocket API
+## WebSocket API  (unchanged)
 
 Connect to `ws://<host>:8080/ws/<call_id>` and send JSON messages.
 
@@ -102,10 +120,10 @@ Connect to `ws://<host>:8080/ws/<call_id>` and send JSON messages.
   "call_id": "call-123",
   "text_id": "utt-1",
   "text": "नमस्ते, मैं प्रिया बोल रही हूँ बजाज फाइनेंस से।",
-  "voice_id": "priya",        // optional — alias of a built voice; omit for default
-  "speed": 1.0,                // optional — >1 faster, <1 slower
-  "language": "hi",            // optional — omit to auto-detect
-  "streaming": true            // optional — defaults to server setting
+  "voice_id": "priya",         // optional — alias of a cloned voice; omit for default
+  "speed": 1.0,                 // optional — >1 faster, <1 slower
+  "language": "hi",             // optional — omit to auto-detect
+  "streaming": true             // optional — defaults to server setting
 }
 ```
 Cancel an in-flight utterance: `{ "type": "cancel", "text_id": "utt-1" }`
@@ -128,65 +146,61 @@ Concatenate the PCM from each `audio_chunk` (same `sample_rate`) for the full ut
 
 ## Voices (clone by alias)
 
-A voice is a precomputed `voices/<alias>.npz` (Higgs-codec tokens of a reference clip +
-its transcript + loudness). Clone it two ways:
+A voice is a reference clip + its transcript stored in `voices/` (`<alias>.wav` +
+`<alias>.json`). No codec tokens are precomputed — the backend encodes the clip on first
+use and caches it. `ref_text` is **mandatory** (no ASR) and must be the exact transcript
+in the clip's language/script.
 
-**REST (easiest — on the running server, no restart, no extra GPU load):**
+**REST (easiest — live, no restart):**
 ```bash
 curl -sf -X POST http://localhost:8764/voices \
   -F voice_id=priya -F preferred_lang=hi \
   -F ref_text="नमस्ते, मैं प्रिया बोल रही हूँ।" \
-  -F audio=@sample_files/priya.wav
-# → {"status":"ok","voice_id":"priya","tokens":[8,NNN], ...}   → usable immediately
+  -F audio=@sample_files/simran.wav
+# → {"status":"ok","voice_id":"priya", ...}   → usable immediately
 ```
-`POST /voices` inputs: `audio` (file), `voice_id`, `ref_text` (**required** — no ASR),
+`POST /voices` inputs: `audio` (file), `voice_id`, `ref_text` (**required**),
 `preferred_lang` (optional). `GET /voices` lists loaded voices.
 
-**Offline CLI (build ahead of time):**
+**Offline CLI (no GPU):**
 ```bash
-# build all voices from sample_files/ (+ voices/manifest.json overrides)
 python -m flowtts.voices.clone --build-all --manifest voices/manifest.json
-# add one (ref_text is required — no ASR/auto-transcribe)
-python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
-    --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"
+python -m flowtts.voices.clone --add priya --ref-audio sample_files/simran.wav \
+    --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।" --lang hi
 python -m flowtts.voices.clone --list
 ```
-Restart the server to pick up new voices. In Docker, prefix with
-`docker compose run --rm omnivoice-tts clone …`. See [`voices/README.md`](voices/README.md).
+`voices/` is a shared volume the backend mounts (read-only), so cloned references
+resolve on both sides. See [`voices/README.md`](voices/README.md).
 
 ---
 
 ## Configuration & tuning
 
-All settings are overridable via `FLOWTTS_*` env vars (nested with `__`). Key knobs:
+All settings are overridable via `FLOWTTS_*` env vars (nested with `__`). Key gateway knobs:
 
 | Env var | Meaning | Default |
 |---|---|---|
-| `FLOWTTS_OMNIVOICE__MODEL_PATH` | local weights dir (used if it exists; else HF repo) | `model_dir/base` |
-| `FLOWTTS_OMNIVOICE__NUM_STEP` | diffusion steps (dominant latency knob) | `16` |
-| `FLOWTTS_OMNIVOICE__MAX_BATCH` | dynamic batch size | `32` |
-| `FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS` | batch collection window (ms) | `8` |
-| `FLOWTTS_OMNIVOICE__GUIDANCE_SCALE` | classifier-free guidance strength | `2.0` |
-| `FLOWTTS_OMNIVOICE__COMPILE_MODEL` | `torch.compile` (+ CUDA graphs) | `false` |
-| `FLOWTTS_OMNIVOICE__DTYPE` | `bfloat16` / `float16` | `bfloat16` |
+| `FLOWTTS_FISH__BACKEND_URL` | sglang backend base URL | `http://fish-s2pro:8000` |
+| `FLOWTTS_FISH__MODEL` | model id echoed in metrics / OpenAI `model` field | `fishaudio/s2-pro` |
+| `FLOWTTS_FISH__REFERENCE_MODE` | `local` (shared volume) or `base64` (inline clip) | `local` |
+| `FLOWTTS_FISH__BACKEND_VOICES_DIR` | backend's voices mount path (if it differs) | `null` |
+| `FLOWTTS_FISH__INITIAL_CODEC_CHUNK_FRAMES` | frames before first decode (↓ = lower TTFB) | `null` |
 | `FLOWTTS_OUTPUT__SAMPLE_RATE` | resample from native 24 kHz (e.g. `16000`, `8000`) | `24000` |
 | `FLOWTTS_VOICES__DEFAULT_VOICE` | alias used when `voice_id` omitted | `priya` |
-| `FLOWTTS_STREAMING__FIRST_CHUNK_MAX_CHARS` | size of the low-TTFB first chunk | `60` |
 
-`run.sh` exposes the common ones as flags (`--num-step`, `--max-batch`, `--compile`, …).
-The full speedup playbook (fewer-step distillation, CFG-cost reduction, FP8, codec
-overlap, TensorRT, …) with per-technique tradeoffs is in
-[`docs/omnivoice_acceleration.md`](docs/omnivoice_acceleration.md).
+Backend knobs (in `docker-compose.yml`): `TTS_BATCH_MAX_ITEMS`, `MEM_FRACTION`,
+`FISH_MODEL`, `HF_TOKEN`. The full speedup playbook is in
+[`docs/fish_s2pro_acceleration.md`](docs/fish_s2pro_acceleration.md).
 
 ---
 
 ## Performance targets
 
-Aiming for **~200 RPS** and **TTFB < 200 ms** on a single H200. This is a **tuning
-target**, not a guarantee — reach it by combining a large `MAX_BATCH`, low `NUM_STEP`,
-short first chunks, `torch.compile`, and the WAV cache (call-centre prompts repeat
-heavily). No absolute RPS numbers are published upstream for OmniVoice; **benchmark on
-your hardware** with the throughput sweep and tune from there.
+Aiming for **~200 RPS** and **TTFB < 200 ms** on a single H200. Throughput comes from
+sglang's continuous batching + KV cache and from **voice reuse** (RadixAttention prefix
+cache, ~86–90% hit); latency comes from AR streaming. This is a **tuning target** — reach
+it by raising `TTS_BATCH_MAX_ITEMS` / `MEM_FRACTION`, reusing voices, and leaning on the
+WAV cache. **Benchmark on your hardware.**
 
 ---
 
@@ -194,21 +208,21 @@ your hardware** with the throughput sweep and tune from there.
 
 ```
 flowtts/
-├── server.py            # primary single-process WS server (production entry point)
+├── server.py            # primary single-process WS gateway (production entry point)
 ├── main.py, worker.py   # secondary Redis-backed multi-process path
-├── core/config.py       # all settings (model, output, streaming, batching, accel)
+├── core/config.py       # all settings (backend URL, generation, output, streaming)
 ├── synthesis/
-│   ├── omnivoice_engine.py  # model load + dynamic batcher + accel hooks
-│   ├── models.py            # OmniVoiceSynthesizer (whole + streaming)
+│   ├── fish_engine.py       # sglang backend client + live voice cloning (no GPU)
+│   ├── models.py            # FishSpeechSynthesizer (whole + streaming facade)
 │   ├── engine.py            # process-wide singleton
-│   └── text_chunker.py      # streaming text splitter (pure stdlib)
-├── voices/              # npz voice-clone registry + offline builder CLI
+│   └── text_chunker.py      # normalize + (secondary-path) text splitter
+├── voices/              # reference-clip registry + manifest store + offline builder
 ├── decoder/             # waveform → PCM/WAV helpers
 ├── processing/          # resample, crossfade, fades
 ├── api/                 # WebSocket gateway (Redis path) + message models
 ├── monitoring/          # structlog + Prometheus metrics
 └── test/                # unit tests + benchmark client
-docker/                  # Dockerfile, entrypoint, container README
+docker/                  # gateway Dockerfile + fish_s2pro.Dockerfile + entrypoint
 docs/                    # acceleration playbook
 ```
 
@@ -219,10 +233,10 @@ docs/                    # acceleration playbook
 ```bash
 # unit tests (no GPU required)
 python -m pytest flowtts/test/test_text_chunker.py \
-                 flowtts/test/test_voice_npz.py \
+                 flowtts/test/test_voice_store.py \
                  flowtts/test/test_pcm.py -q
 
-# end-to-end streaming benchmark against a running server
+# end-to-end streaming benchmark against a running gateway
 python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
 ```
 
@@ -230,11 +244,12 @@ python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
 
 ## License
 
-The serving code in this repository is provided as-is. **k2-fsa/OmniVoice** and its
-weights are governed by their own upstream license (Apache-2.0) — review it before
-production or commercial use.
+The serving code in this repository is provided as-is. **Fish Audio S2 Pro** and its
+weights are governed by the **Fish Audio Research License** (non-commercial; commercial
+use requires a separate license — `business@fish.audio`). **sglang-omni** and **SGLang**
+have their own licenses. Review all of them before production or commercial use.
 
 ## Acknowledgements
 
-- [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice) — the TTS model.
-- [Higgs-Audio-v2](https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base) — the neural audio codec used by OmniVoice.
+- [Fish Audio S2 Pro](https://huggingface.co/fishaudio/s2-pro) — the TTS model.
+- [sglang-omni](https://github.com/sgl-project/sglang-omni) / [SGLang](https://github.com/sgl-project/sglang) — the serving engine.
