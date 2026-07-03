@@ -14,8 +14,8 @@ fi
 # Build the NODES array string from the IPs file (skip comments and blank lines)
 NODES="const NODES = [\n"
 while IFS= read -r line; do
-  # stop before the ext2 cluster section
-  [[ "$line" == "# cluster:ext2" ]] && break
+  # stop before any secondary cluster section
+  [[ "$line" == "# cluster:ext2" || "$line" == "# cluster:multilingual" ]] && break
   line="${line%%#*}"   # strip inline comments
   line="${line// /}"   # strip spaces
   [ -z "$line" ] && continue

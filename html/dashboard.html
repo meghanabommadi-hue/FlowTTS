@@ -135,11 +135,11 @@
     .summary-stat {
       background: #0f1117;
       border-radius: 8px;
-      padding: 12px 20px;
-      min-width: 160px;
+      padding: 9px 14px;
+      min-width: 130px;
     }
-    .summary-stat .metric-label { font-size: 0.68rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
-    .summary-stat .metric-value { font-size: 1.6rem; font-weight: 700; }
+    .summary-stat .metric-label { font-size: 0.65rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px; }
+    .summary-stat .metric-value { font-size: 1.3rem; font-weight: 700; }
     .summary-stat .metric-sub   { font-size: 0.7rem; color: #475569; margin-top: 2px; }
     .ws-grid-label {
       font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
@@ -242,7 +242,8 @@
 <!-- Summary panels row -->
 <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:20px">
 <div id="summary-panel" style="display:none;flex:1;min-width:0">
-  <div class="summary-top">
+  <div style="font-size:0.7rem;font-weight:700;color:#4f6ef7;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">BucketX</div>
+  <div class="summary-top" style="gap:16px">
     <div class="summary-stat">
       <div class="metric-label">Active WebSockets</div>
       <div class="metric-value" style="color:#4ade80;font-size:1.6rem;font-weight:700" id="sum-ws-active">0</div>
@@ -264,21 +265,14 @@
       <div class="metric-sub" id="sum-req-rate-sub">new requests in last 3 min</div>
     </div>
     <div class="summary-stat">
-      <div class="metric-label">New Requests
-        <select id="new-req-window" style="margin-left:6px;background:#1a1d2e;color:#94a3b8;border:1px solid #2d3148;border-radius:4px;font-size:0.7rem;padding:1px 4px">
-          <option value="15">15s</option>
-          <option value="30" selected>30s</option>
-          <option value="60">60s</option>
-          <option value="120">2m</option>
-        </select>
-      </div>
-      <div class="metric-value" style="color:#38bdf8;font-size:1.6rem;font-weight:700" id="sum-new-reqs">—</div>
-      <div class="metric-sub" id="sum-new-reqs-sub">across all nodes</div>
-    </div>
-    <div class="summary-stat">
       <div class="metric-label">Avg E2E Latency</div>
       <div class="metric-value highlight" id="sum-avg-ttft">—</div>
       <div class="metric-sub" id="sum-avg-ttft-sub">across all nodes</div>
+    </div>
+    <div class="summary-stat">
+      <div class="metric-label">Max E2E Latency</div>
+      <div class="metric-value" style="color:#f59e0b" id="sum-max-ttft">—</div>
+      <div class="metric-sub">worst node avg</div>
     </div>
     <div class="summary-stat">
       <div class="metric-label">Avg Total Requests</div>
@@ -302,8 +296,13 @@
     </div>
     <div class="summary-stat">
       <div class="metric-label">Cache Hits</div>
-      <div class="metric-value" id="sum-cache-hits" style="color:#4ade80;font-size:1.6rem;font-weight:700">—</div>
+      <div class="metric-value" id="sum-cache-hits" style="color:#4ade80">—</div>
       <div class="metric-sub" id="sum-cache-misses-sub"></div>
+    </div>
+    <div class="summary-stat">
+      <div class="metric-label">Concurrent Requests</div>
+      <div class="metric-value" id="sum-vllm-running" style="color:#4ade80">—</div>
+      <div class="metric-sub" id="sum-vllm-waiting-sub">running in vLLM</div>
     </div>
   </div>
   <div style="margin-top:16px">
@@ -339,9 +338,70 @@
     <div class="ws-grid-label">Total Requests by Voice (all nodes)</div>
     <canvas id="chart-voice-reqs" style="background:#0f1117;border-radius:8px;padding:8px;max-height:200px"></canvas>
   </div>
+  <div style="margin-top:16px;background:#0f1117;border-radius:8px;padding:10px">
+    <div style="font-size:0.62rem;color:#4f6ef7;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;display:flex;justify-content:space-between">
+      <span>Avg Concurrent Requests</span>
+      <span style="color:#94a3b8" id="conc-bucketx-now">—</span>
+    </div>
+    <canvas id="chart-concurrent-bucketx" style="max-height:120px"></canvas>
+  </div>
 </div>
 
-<!-- H200 nginx cluster panel -->
+<!-- Today's cumulative stats panel -->
+<div id="daily-panel" style="flex:0 0 auto;width:300px;position:sticky;top:16px;align-self:flex-start;display:flex;flex-direction:column;gap:12px">
+  <div style="background:#1e2130;border:1px solid #38bdf8;border-radius:10px;padding:14px">
+    <div style="font-size:0.65rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
+      <span>Today's Stats</span>
+      <span id="daily-date" style="font-size:0.62rem;color:#64748b">—</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+      <div style="background:#0f1117;border-radius:8px;padding:9px;grid-column:1/-1">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Cache Hit Rate</div>
+        <div style="font-size:1.3rem;font-weight:700" id="daily-cache-rate">—</div>
+        <div style="font-size:0.62rem;color:#475569" id="daily-cache-sub">since midnight IST</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Cache Hits</div>
+        <div style="font-size:1rem;font-weight:700;color:#4ade80" id="daily-cache-hits">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Cache Misses</div>
+        <div style="font-size:1rem;font-weight:700;color:#f87171" id="daily-cache-misses">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Total Requests</div>
+        <div style="font-size:1rem;font-weight:700;color:#94a3b8" id="daily-total-reqs">—</div>
+        <div style="font-size:0.6rem;color:#475569" id="daily-nodes-sub">across all nodes</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Avg E2E</div>
+        <div style="font-size:1rem;font-weight:700;color:#a78bfa" id="daily-avg-e2e">—</div>
+        <div style="font-size:0.6rem;color:#475569">named voices</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Last 1 Hour E2E panel -->
+  <div style="background:#1e2130;border:1px solid #f59e0b;border-radius:10px;padding:14px">
+    <div style="font-size:0.65rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">
+      Last 1 Hour
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+      <div style="background:#0f1117;border-radius:8px;padding:9px;grid-column:1/-1">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Avg E2E Latency</div>
+        <div style="font-size:1.3rem;font-weight:700;color:#f59e0b" id="hourly-avg-e2e">—</div>
+        <div style="font-size:0.62rem;color:#475569" id="hourly-e2e-sub">across all nodes · last 60 min</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px;grid-column:1/-1">
+        <div style="font-size:0.62rem;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Requests (last hour)</div>
+        <div style="font-size:1rem;font-weight:700;color:#94a3b8" id="hourly-total-reqs">—</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- H200 nginx cluster panel (commented out)
 <div id="ext-summary-panel" style="display:none;flex:1;min-width:0;position:sticky;top:16px;align-self:flex-start">
   <div style="background:#1e2130;border:1px solid #a78bfa;border-radius:12px;padding:16px">
     <div style="font-size:0.65rem;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
@@ -376,7 +436,6 @@
       </div>
     </div>
 
-    <!-- Per-node chip panels -->
     <div class="node-panel" style="margin-bottom:8px">
       <div class="node-panel-header" style="color:#4ade80">
         Active <span class="node-panel-count" style="color:#4ade80;border:1px solid #4ade8044" id="ext-count-active">0</span>
@@ -403,6 +462,69 @@
     </div>
   </div>
 </div>
+-->
+
+<!-- Multilingual cluster panel -->
+<div id="multi-summary-panel" style="flex:0 0 auto;width:320px;position:sticky;top:16px;align-self:flex-start">
+  <div style="background:#1e2130;border:1px solid #34d399;border-radius:12px;padding:14px">
+    <div style="font-size:0.65rem;font-weight:700;color:#34d399;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+      <span>Multilingual</span>
+      <span id="multi-status" style="font-size:0.7rem;font-weight:700">—</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:12px">
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div class="metric-label">Active WS</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#4ade80" id="multi-ws-active">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div class="metric-label">Avg WS / Node</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#34d399" id="multi-avg-ws">—</div>
+        <div class="metric-sub" id="multi-avg-ws-sub"></div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div class="metric-label">Avg E2E</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#a78bfa" id="multi-avg-e2e">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div class="metric-label">Max E2E</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#f59e0b" id="multi-max-e2e">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div class="metric-label">Cache Hit Rate</div>
+        <div style="font-size:1.2rem;font-weight:700" id="multi-cache-rate">—</div>
+      </div>
+      <div style="background:#0f1117;border-radius:8px;padding:9px">
+        <div class="metric-label">Total Requests</div>
+        <div style="font-size:1.2rem;font-weight:700;color:#94a3b8" id="multi-total-reqs">—</div>
+      </div>
+    </div>
+    <div class="node-panel" style="margin-bottom:8px">
+      <div class="node-panel-header" style="color:#4ade80">
+        Active <span class="node-panel-count" style="color:#4ade80;border:1px solid #4ade8044" id="multi-count-active">0</span>
+      </div>
+      <div class="ext-chip-grid" id="multi-node-grid-active"><div class="node-panel-empty">No active nodes</div></div>
+    </div>
+    <div class="node-panel" style="margin-bottom:8px">
+      <div class="node-panel-header" style="color:#f59e0b">
+        Idle <span class="node-panel-count" style="color:#f59e0b;border:1px solid #f59e0b44" id="multi-count-idle">0</span>
+      </div>
+      <div class="ext-chip-grid" id="multi-node-grid-idle"><div class="node-panel-empty">None</div></div>
+    </div>
+    <div class="node-panel">
+      <div class="node-panel-header" style="color:#f87171">
+        Down <span class="node-panel-count" style="color:#f87171;border:1px solid #f8717144" id="multi-count-down">0</span>
+      </div>
+      <div class="ext-chip-grid" id="multi-node-grid-down"><div class="node-panel-empty">None</div></div>
+    </div>
+    <div style="margin-top:10px;background:#0f1117;border-radius:8px;padding:10px">
+      <div style="font-size:0.62rem;color:#34d399;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;display:flex;justify-content:space-between">
+        <span>Avg Concurrent Requests</span>
+        <span style="color:#94a3b8" id="conc-multi-now">—</span>
+      </div>
+      <canvas id="chart-concurrent-multi" style="max-height:120px"></canvas>
+    </div>
+  </div>
+</div>
 </div><!-- end panels row -->
 
 <div id="tab-cards" class="tab-content active">
@@ -410,14 +532,18 @@
 </div>
 
 <div id="tab-charts" class="tab-content">
-  <div class="charts-grid" id="charts-grid">
-    <div class="chart-card"><h3>Requests by Voice (Bar)</h3><canvas id="chart-requests"></canvas></div>
-    <div class="chart-card"><h3>Avg E2E Latency by Voice (Bar)</h3><canvas id="chart-latency"></canvas></div>
-    <div class="chart-card"><h3>Avg LLM vs Decode Latency (Bar)</h3><canvas id="chart-llm-decode"></canvas></div>
-    <div class="chart-card"><h3>Short Audio Alerts by Voice (Bar)</h3><canvas id="chart-short"></canvas></div>
-    <div class="chart-card"><h3>Active WebSockets per Node (Bar)</h3><canvas id="chart-ws"></canvas></div>
-    <div class="chart-card"><h3>Active WebSockets Over Time (Line)</h3><canvas id="chart-ws-time"></canvas></div>
-    <div class="chart-card"><h3>E2E Latency Over Time (Line)</h3><canvas id="chart-e2e-time"></canvas></div>
+  <div style="font-size:0.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px">Per GPU — Since Server Start</div>
+  <div class="charts-grid" id="charts-grid" style="margin-bottom:28px">
+    <div class="chart-card" style="grid-column:1/-1"><h3>Avg E2E Latency per GPU — 5-hour buckets (ms)</h3><canvas id="chart-e2e-history" style="max-height:280px"></canvas></div>
+    <div class="chart-card" style="grid-column:1/-1"><h3>Avg Decode Latency per GPU — 5-hour buckets (ms)</h3><canvas id="chart-decode-history" style="max-height:280px"></canvas></div>
+    <div class="chart-card" style="grid-column:1/-1"><h3>Cache Hits per GPU — 5-hour buckets (avg)</h3><canvas id="chart-cache-history" style="max-height:280px"></canvas></div>
+  </div>
+  <div style="font-size:0.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:12px">Cross-Node Snapshot</div>
+  <div class="charts-grid">
+    <div class="chart-card"><h3>Requests by Voice</h3><canvas id="chart-requests"></canvas></div>
+    <div class="chart-card"><h3>Avg E2E Latency by Voice (ms)</h3><canvas id="chart-latency"></canvas></div>
+    <div class="chart-card"><h3>Avg LLM vs Decode Latency (ms)</h3><canvas id="chart-llm-decode"></canvas></div>
+    <div class="chart-card"><h3>Active WebSockets per Node</h3><canvas id="chart-ws"></canvas></div>
   </div>
 </div>
 
@@ -429,24 +555,26 @@ const EXT_NODES = [
 const EXT_NODES_COUNT = 1; // nginx returns single-node metrics (round-robin)
 
 const NODES = [
-  "136.110.47.167:8764",
-  "34.21.177.115:8764",
-  "136.110.56.115:8764",
-  "34.126.83.81:8764",
-  "136.110.16.177:8764",
-  "34.143.168.67:8764",
-  "34.21.236.70:8764",
-  "35.240.210.93:8764",
-  "136.110.10.215:8764",
-  "136.110.38.15:8764",
+  "47.29.24.102:8080",
+  "47.29.24.102:8081",
+  "47.29.24.8:8080",
+  "47.29.24.8:8081",
+  "47.29.24.181:8080",
+  "47.29.24.146:8080",
+  "47.29.24.148:8080",
+  "47.29.24.183:8080",
+  "47.29.24.152:8080",
+  "47.29.24.179:8080",
+  "47.29.24.167:8080",
+  "47.29.24.136:8080",
+  "47.29.24.151:8080",
+  "47.29.24.186:8080",
 ];
 const METRICS_PATH = "/metrics";
 const REFRESH_MS   = 10_000;
 const MAX_HISTORY  = 20; // points kept for time-series
 // ─────────────────────────────────────────────────────────────────────────────
 
-// History buffer for time-series chart
-const history = { labels: [], e2e: {}, ws: {} };
 let prevTotalReqs = null;
 let activityData = {};  // ip -> { active, ws, idle_since_ms } from /activity
 
@@ -584,131 +712,115 @@ const lineOpts = () => ({
   }
 });
 
-// ── Build Charts ─────────────────────────────────────────────────────────────
+// ── Build Charts (history from server) ───────────────────────────────────────
 
-function updateCharts(dataMap, upNodes) {
-  const voices = getVoices(dataMap);
-  const nodeLabels = upNodes;
+function namedSum(metrics, name) {
+  return (metrics[name] || [])
+    .filter(e => e.labels.voice && e.labels.voice !== "")
+    .reduce((s, e) => s + e.value, 0);
+}
 
-  // 1. Requests by voice (stacked per node)
-  const reqDatasets = voices.map((v, i) => ({
-    label: v || "(none)",
-    data: nodeLabels.map(h => getVal(dataMap[h], "tts_requests_total", e => e.labels.voice === v)),
-    backgroundColor: PALETTE[i % PALETTE.length],
-  }));
-  makeOrUpdate("chart-requests", "bar",
-    { labels: nodeLabels, datasets: reqDatasets },
-    { ...barOpts("Requests"), plugins: { ...barOpts("Requests").plugins }, scales: { ...barOpts("Requests").scales, x: { stacked: true, grid: { color: "#1e2130" } }, y: { stacked: true, grid: { color: "#1e2130" } } } }
-  );
+function snapE2E(m) {
+  const reqs = namedSum(m, "tts_requests_total");
+  const e2e  = namedSum(m, "tts_e2e_ms_total");
+  return reqs > 0 ? e2e / reqs : 0;
+}
 
-  // 2. Avg E2E latency by voice
-  const e2eDatasets = voices.map((v, i) => ({
-    label: v || "(none)",
-    data: nodeLabels.map(h => {
-      const m = dataMap[h];
-      return avgLatency(m, "tts_e2e_ms_total", "tts_requests_total", e => e.labels.voice === v);
-    }),
-    backgroundColor: PALETTE[i % PALETTE.length],
-  }));
-  makeOrUpdate("chart-latency", "bar",
-    { labels: nodeLabels, datasets: e2eDatasets },
-    barOpts("Avg E2E Latency", "ms")
-  );
+function snapDecode(m) {
+  const reqs = namedSum(m, "tts_requests_total");
+  const dec  = namedSum(m, "tts_decode_ms_total");
+  return reqs > 0 ? dec / reqs : 0;
+}
 
-  // 3. LLM vs Decode latency (grouped, all voices combined)
-  makeOrUpdate("chart-llm-decode", "bar", {
-    labels: nodeLabels,
-    datasets: [
-      {
-        label: "Avg LLM / TTFT (ms)",
-        data: nodeLabels.map(h => extractLatency(dataMap[h]).llm_ttft_ms),
-        backgroundColor: "#4f6ef7",
-      },
-      {
-        label: "Avg Decode / TTFC (ms)",
-        data: nodeLabels.map(h => extractLatency(dataMap[h]).dec_ttft_ms),
-        backgroundColor: "#34d399",
-      }
-    ]
-  }, barOpts("LLM vs Decode", "ms"));
+function snapCacheHits(m) {
+  return (m["tts_cache_hits_total"] || []).reduce((s, e) => s + e.value, 0);
+}
 
-  // 4. Short audio by voice
-  const shortDatasets = voices.map((v, i) => ({
-    label: v || "(none)",
-    data: nodeLabels.map(h => getVal(dataMap[h], "tts_short_audio_total", e => e.labels.voice === v)),
-    backgroundColor: PALETTE[i % PALETTE.length],
-  }));
-  makeOrUpdate("chart-short", "bar",
-    { labels: nodeLabels, datasets: shortDatasets },
-    barOpts("Short Audio Count")
-  );
+async function updateCharts(dataMap, upNodes) {
+  if (!document.getElementById("tab-charts").classList.contains("active")) return;
 
-  // 5. Active WebSockets per node (with numbers on bars)
-  const wsData = nodeLabels.map(h => getVal(dataMap[h], "tts_active_websockets"));
-  const avgWS = wsData.length ? (wsData.reduce((a,b) => a+b, 0) / wsData.length).toFixed(1) : 0;
-  makeOrUpdate("chart-ws", "bar", {
-    labels: nodeLabels,
-    datasets: [{
-      label: "Active WebSockets",
-      data: wsData,
-      backgroundColor: "#a78bfa",
-    }]
-  }, {
-    ...barOpts("Active WebSockets"),
-    plugins: {
-      ...barOpts("Active WebSockets").plugins,
-      annotation: {},
-      datalabels: { display: false },
-      title: {
-        display: true,
-        text: `Avg across nodes: ${avgWS}`,
-        color: "#94a3b8",
-        font: { size: 11 },
-        padding: { bottom: 8 }
-      }
+  let bucketed = {};
+  try {
+    const resp = await fetch("/history-bucketed?bucket_h=5");
+    if (resp.ok) bucketed = await resp.json();
+  } catch(_) {}
+
+  // Collect all unique labels across nodes (sorted by time)
+  const allLabels = [...new Set(
+    Object.values(bucketed).flat().map(p => p.label)
+  )].sort((a, b) => a < b ? -1 : 1);
+
+  const e2eDatasets    = [];
+  const decodeDatasets = [];
+  const cacheDatasets  = [];
+
+  upNodes.forEach((h, i) => {
+    const points = bucketed[h];
+    if (!points || !points.length) return;
+    const labelIdx = Object.fromEntries(points.map(p => [p.label, p]));
+    const color = PALETTE[i % PALETTE.length];
+    e2eDatasets.push({
+      label: h, borderColor: color, backgroundColor: "transparent",
+      data: allLabels.map(l => labelIdx[l]?.e2e_ms ?? null),
+      tension: 0.3, pointRadius: 3, spanGaps: true,
+    });
+    decodeDatasets.push({
+      label: h, borderColor: color, backgroundColor: "transparent",
+      data: allLabels.map(l => labelIdx[l]?.decode_ms ?? null),
+      tension: 0.3, pointRadius: 3, spanGaps: true,
+    });
+    cacheDatasets.push({
+      label: h, borderColor: color, backgroundColor: color + "22",
+      data: allLabels.map(l => labelIdx[l]?.cache_hits ?? null),
+      tension: 0.3, pointRadius: 3, fill: true, spanGaps: true,
+    });
+  });
+
+  const histLineOpts = (yLabel) => ({
+    responsive: true, animation: false,
+    plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 10 } } } },
+    scales: {
+      x: { ticks: { font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 }, grid: { color: "#1e2130" } },
+      y: { ticks: { font: { size: 10 } }, grid: { color: "#1e2130" }, title: { display: true, text: yLabel, color: "#64748b", font: { size: 10 } } },
     }
   });
 
-  // 5b. WebSocket history time-series
-  nodeLabels.forEach((h, i) => {
-    if (!history.ws[h]) history.ws[h] = [];
-    history.ws[h].push(getVal(dataMap[h], "tts_active_websockets"));
-    if (history.ws[h].length > MAX_HISTORY) history.ws[h].shift();
-  });
-  makeOrUpdate("chart-ws-time", "line", {
-    labels: history.labels,
-    datasets: nodeLabels.map((h, i) => ({
-      label: h,
-      data: history.ws[h],
-      borderColor: PALETTE[i % PALETTE.length],
-      backgroundColor: "transparent",
-      tension: 0.3,
-      pointRadius: 3,
-    }))
-  }, lineOpts());
+  makeOrUpdate("chart-e2e-history",    "line", { labels: allLabels, datasets: e2eDatasets    }, histLineOpts("ms"));
+  makeOrUpdate("chart-decode-history", "line", { labels: allLabels, datasets: decodeDatasets }, histLineOpts("ms"));
+  makeOrUpdate("chart-cache-history",  "line", { labels: allLabels, datasets: cacheDatasets  }, histLineOpts("hits"));
 
-  // 6. E2E Latency time-series
-  const now = new Date().toLocaleTimeString();
-  history.labels.push(now);
-  if (history.labels.length > MAX_HISTORY) history.labels.shift();
+  // ── Cross-node bar charts ─────────────────────────────────────────────────
+  const voices = getVoices(dataMap);
 
-  nodeLabels.forEach(h => {
-    if (!history.e2e[h]) history.e2e[h] = [];
-    history.e2e[h].push(extractLatency(dataMap[h]).total_ms);
-    if (history.e2e[h].length > MAX_HISTORY) history.e2e[h].shift();
-  });
+  const reqDatasets = voices.map((v, i) => ({
+    label: v || "(none)",
+    data: upNodes.map(h => getVal(dataMap[h], "tts_requests_total", e => e.labels.voice === v)),
+    backgroundColor: PALETTE[i % PALETTE.length],
+  }));
+  makeOrUpdate("chart-requests", "bar",
+    { labels: upNodes, datasets: reqDatasets },
+    { ...barOpts("Requests"), scales: { ...barOpts("Requests").scales, x: { stacked: true, grid: { color: "#1e2130" } }, y: { stacked: true, grid: { color: "#1e2130" } } } }
+  );
 
-  makeOrUpdate("chart-e2e-time", "line", {
-    labels: history.labels,
-    datasets: nodeLabels.map((h, i) => ({
-      label: h,
-      data: history.e2e[h],
-      borderColor: PALETTE[i % PALETTE.length],
-      backgroundColor: "transparent",
-      tension: 0.3,
-      pointRadius: 3,
-    }))
-  }, lineOpts());
+  const e2eBarDatasets = voices.map((v, i) => ({
+    label: v || "(none)",
+    data: upNodes.map(h => avgLatency(dataMap[h], "tts_e2e_ms_total", "tts_requests_total", e => e.labels.voice === v)),
+    backgroundColor: PALETTE[i % PALETTE.length],
+  }));
+  makeOrUpdate("chart-latency", "bar", { labels: upNodes, datasets: e2eBarDatasets }, barOpts("Avg E2E Latency", "ms"));
+
+  makeOrUpdate("chart-llm-decode", "bar", {
+    labels: upNodes,
+    datasets: [
+      { label: "Avg LLM ms", data: upNodes.map(h => extractLatency(dataMap[h]).llm_ttft_ms), backgroundColor: "#4f6ef7" },
+      { label: "Avg Decode ms", data: upNodes.map(h => extractLatency(dataMap[h]).dec_ttft_ms), backgroundColor: "#34d399" },
+    ]
+  }, barOpts("LLM vs Decode", "ms"));
+
+  makeOrUpdate("chart-ws", "bar", {
+    labels: upNodes,
+    datasets: [{ label: "Active WebSockets", data: upNodes.map(h => getVal(dataMap[h], "tts_active_websockets")), backgroundColor: "#a78bfa" }]
+  }, barOpts("Active WebSockets"));
 }
 
 // ── Build Node Cards ──────────────────────────────────────────────────────────
@@ -718,13 +830,16 @@ function hostId(host) {
 }
 
 function buildCard(host, m) {
-  const totalReqs  = getVal(m, "tts_requests_total");
-  const totalErrors= getVal(m, "tts_errors_total");
-  const activeWS   = getVal(m, "tts_active_websockets");
-  const maxPorts   = getVal(m, "tts_max_ports");
-  const openPorts  = getVal(m, "tts_open_ports");
-  const wsOpened   = getVal(m, "tts_ws_connections_opened_total");
-  const wsClosed   = getVal(m, "tts_ws_connections_closed_total");
+  const totalReqs    = getVal(m, "tts_requests_total");
+  const totalErrors  = getVal(m, "tts_errors_total");
+  const activeWS     = getVal(m, "tts_active_websockets");
+  const maxPorts     = getVal(m, "tts_max_ports");
+  const openPorts    = getVal(m, "tts_open_ports");
+  const wsOpened     = getVal(m, "tts_ws_connections_opened_total");
+  const wsClosed     = getVal(m, "tts_ws_connections_closed_total");
+  const vllmRunning  = getVal(m, "vllm:num_requests_running");
+  const vllmWaiting  = getVal(m, "vllm:num_requests_waiting");
+  const runColor     = vllmWaiting > 0 ? "#f59e0b" : vllmRunning > 0 ? "#4ade80" : "#475569";
   const lat        = extractLatency(m);
   const avgE2E     = lat.total_ms;
   const avgLLM     = lat.llm_ttft_ms;
@@ -819,6 +934,19 @@ function buildCard(host, m) {
           <div class="metric-sub">${avgLLM === null ? "awaiting restart" : "time to first token"}</div>
         </div>
       </div>
+      <div class="section-label">Concurrent Requests (vLLM)</div>
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-label">Running</div>
+          <div class="metric-value" style="color:${runColor}">${vllmRunning}</div>
+          <div class="metric-sub">active generations</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Waiting / Queued</div>
+          <div class="metric-value" style="color:${vllmWaiting > 0 ? '#f87171' : '#475569'}">${vllmWaiting}</div>
+          <div class="metric-sub">${vllmWaiting > 0 ? "queue building up" : "no queue"}</div>
+        </div>
+      </div>
       <div class="section-label">WebSocket Connections</div>
       <div class="metrics-grid">
         <div class="metric">
@@ -894,9 +1022,11 @@ async function updateSummary(dataMap, upNodes, results) {
   // Avg E2E latency across all nodes
   const e2eVals = upNodes.map(h => extractLatency(dataMap[h]).total_ms).filter(v => v > 0);
   const avgE2EAll = e2eVals.length ? e2eVals.reduce((a, b) => a + b, 0) / e2eVals.length : null;
+  const maxE2EAll = e2eVals.length ? Math.max(...e2eVals) : null;
   const hasGauges = upNodes.length > 0 && extractLatency(dataMap[upNodes[0]]).source === "gauge";
   setIfChanged("sum-avg-ttft", avgE2EAll !== null ? fmtMs(avgE2EAll) : "N/A");
   setIfChanged("sum-avg-ttft-sub", hasGauges ? "e2e · gauge" : "e2e · counter avg");
+  setIfChanged("sum-max-ttft", maxE2EAll !== null ? fmtMs(maxE2EAll) : "N/A");
 
   // Avg total requests per node
   const reqsPerNode = upNodes.map(h => getVal(dataMap[h], "tts_requests_total"));
@@ -923,6 +1053,17 @@ async function updateSummary(dataMap, upNodes, results) {
 
   setIfChanged("sum-nodes-up", upNodes.length);
   setIfChanged("sum-nodes-total", `of ${NODES.length} total`);
+
+  // vLLM concurrent requests across all nodes
+  let totalVllmRunning = 0, totalVllmWaiting = 0;
+  for (const h of upNodes) {
+    totalVllmRunning += getVal(dataMap[h], "vllm:num_requests_running");
+    totalVllmWaiting += getVal(dataMap[h], "vllm:num_requests_waiting");
+  }
+  const runCol = totalVllmWaiting > 0 ? "#f59e0b" : totalVllmRunning > 0 ? "#4ade80" : "#475569";
+  setIfChanged("sum-vllm-running", totalVllmRunning);
+  setStyleIfChanged("sum-vllm-running", "color", runCol);
+  setIfChanged("sum-vllm-waiting-sub", totalVllmWaiting > 0 ? `${totalVllmWaiting} queued` : "active generations");
 
   // Traffic status — use activity data if available, else fallback to req delta
   const currentTotalReqs = upNodes.reduce((sum, h) => sum + getVal(dataMap[h], "tts_requests_total", namedFilter), 0);
@@ -1105,11 +1246,15 @@ async function refresh() {
   setIfChanged("refresh-info", `Last updated: ${new Date().toLocaleTimeString()} · every ${REFRESH_MS/1000}s`);
 
   await updateSummary(dataMap, upNodes, results);
-  if (upNodes.length) updateCharts(dataMap, upNodes);
+  if (upNodes.length) await updateCharts(dataMap, upNodes);
   refreshTraffic();
   refreshReqRate();
   refreshNewReqs();
   refreshExt();
+  refreshMulti();
+  refreshConcurrent();
+  refreshDaily();
+  refreshHourlyE2E();
 }
 
 function switchTab(name) {
@@ -1202,6 +1347,116 @@ async function refreshNewReqs() {
 }
 
 document.getElementById("new-req-window")?.addEventListener("change", refreshNewReqs);
+
+async function refreshConcurrent() {
+  try {
+    const resp = await fetch("/concurrent-history", { signal: AbortSignal.timeout(4000) });
+    if (!resp.ok) return;
+    const snaps = await resp.json();
+    if (!snaps.length) return;
+
+    const labels      = snaps.map(s => new Date(s.ts).toLocaleTimeString());
+    const bucketxData = snaps.map(s => s.bucketx);
+    const multiData   = snaps.map(s => s.multi);
+    const latest      = snaps[snaps.length - 1];
+
+    setIfChanged("conc-bucketx-now", latest.bucketx.toFixed(1));
+    setIfChanged("conc-multi-now",   latest.multi.toFixed(1));
+
+    const miniOpts = (color) => ({
+      responsive: true, animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { size: 8 }, maxTicksLimit: 5, maxRotation: 0 }, grid: { color: "#1e2130" } },
+        y: { ticks: { font: { size: 9 } }, grid: { color: "#1e2130" }, min: 0 },
+      }
+    });
+
+    makeOrUpdate("chart-concurrent-bucketx", "line", {
+      labels,
+      datasets: [{ data: bucketxData, borderColor: "#4f6ef7", backgroundColor: "#4f6ef722", tension: 0.3, pointRadius: 0, fill: true }]
+    }, miniOpts("#4f6ef7"));
+
+    makeOrUpdate("chart-concurrent-multi", "line", {
+      labels,
+      datasets: [{ data: multiData, borderColor: "#34d399", backgroundColor: "#34d39922", tension: 0.3, pointRadius: 0, fill: true }]
+    }, miniOpts("#34d399"));
+  } catch(_) {}
+}
+
+async function refreshMulti() {
+  try {
+    const resp = await fetch("/multi-summary", { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const d = await resp.json();
+    const rate = d.cache_rate;
+
+    setIfChanged("multi-ws-active",  d.total_ws);
+    setIfChanged("multi-avg-ws",     d.avg_ws_per_active > 0 ? d.avg_ws_per_active : "—");
+    setIfChanged("multi-avg-ws-sub", `${d.up}/${d.total} up`);
+    setIfChanged("multi-avg-e2e",    d.avg_e2e_ms > 0 ? fmtMs(d.avg_e2e_ms) : "N/A");
+    setIfChanged("multi-max-e2e",    d.max_e2e_ms > 0 ? fmtMs(d.max_e2e_ms) : "N/A");
+    setIfChanged("multi-cache-rate", rate > 0 ? `${rate}%` : "N/A");
+    document.getElementById("multi-cache-rate").style.color =
+      rate <= 0 ? "#475569" : rate >= 70 ? "#4ade80" : rate >= 30 ? "#f59e0b" : "#f87171";
+    setIfChanged("multi-total-reqs", fmt(d.total_reqs));
+
+    const statusEl = document.getElementById("multi-status");
+    statusEl.textContent = d.up === 0 ? "DOWN" : d.total_ws > 0 ? "ACTIVE" : "IDLE";
+    statusEl.style.color  = d.up === 0 ? "#f87171" : d.total_ws > 0 ? "#4ade80" : "#f59e0b";
+
+    const activeChips = [], idleChips = [], downChips = [];
+    for (const n of (d.nodes || [])) {
+      const ip = n.node;
+      if (!n.up) {
+        downChips.push(`<div class="ext-chip chip-down"><span class="chip-ip">${ip}</span><span class="chip-ws">—</span><span class="chip-lbl">down</span></div>`);
+      } else if (n.ws > 0) {
+        activeChips.push(`<div class="ext-chip chip-active"><span class="chip-ip">${ip}</span><span class="chip-ws">${n.ws}</span><span class="chip-lbl">active</span></div>`);
+      } else {
+        idleChips.push(`<div class="ext-chip chip-idle"><span class="chip-ip">${ip}</span><span class="chip-ws">0</span><span class="chip-lbl">idle</span></div>`);
+      }
+    }
+    setHTMLIfChanged("multi-node-grid-active", activeChips.join("") || '<div class="node-panel-empty">No active nodes</div>');
+    setHTMLIfChanged("multi-node-grid-idle",   idleChips.join("")   || '<div class="node-panel-empty">None</div>');
+    setHTMLIfChanged("multi-node-grid-down",   downChips.join("")   || '<div class="node-panel-empty">None</div>');
+    setIfChanged("multi-count-active", activeChips.length);
+    setIfChanged("multi-count-idle",   idleChips.length);
+    setIfChanged("multi-count-down",   downChips.length);
+  } catch(e) {
+    document.getElementById("multi-status").textContent = "—";
+    document.getElementById("multi-status").style.color = "#475569";
+  }
+}
+
+async function refreshDaily() {
+  try {
+    const resp = await fetch("/daily", { signal: AbortSignal.timeout(4000) });
+    if (!resp.ok) return;
+    const d = await resp.json();
+    const rate = d.cache_rate;
+    const color = rate <= 0 ? "#475569" : rate >= 70 ? "#4ade80" : rate >= 30 ? "#f59e0b" : "#f87171";
+    setIfChanged("daily-date", d.date || "—");
+    setIfChanged("daily-cache-rate", rate > 0 ? `${rate}%` : "N/A");
+    document.getElementById("daily-cache-rate").style.color = color;
+    setIfChanged("daily-cache-hits", fmt(d.cache_hits));
+    setIfChanged("daily-cache-misses", fmt(d.cache_misses));
+    setIfChanged("daily-total-reqs", fmt(d.total_reqs));
+    setIfChanged("daily-nodes-sub", `${d.nodes} nodes`);
+    setIfChanged("daily-cache-sub", `${fmt(d.cache_hits + d.cache_misses)} total calls since midnight IST`);
+    setIfChanged("daily-avg-e2e", d.avg_e2e_ms > 0 ? fmtMs(d.avg_e2e_ms) : "N/A");
+  } catch(_) {}
+}
+
+async function refreshHourlyE2E() {
+  try {
+    const resp = await fetch("/hourly-e2e", { signal: AbortSignal.timeout(4000) });
+    if (!resp.ok) return;
+    const d = await resp.json();
+    setIfChanged("hourly-avg-e2e", d.avg_e2e_ms > 0 ? fmtMs(d.avg_e2e_ms) : "N/A");
+    setIfChanged("hourly-total-reqs", d.total_reqs > 0 ? fmt(d.total_reqs) : "—");
+    setIfChanged("hourly-e2e-sub", `across all nodes · last ${d.window_min} min`);
+  } catch(_) {}
+}
 
 async function refreshReqRate() {
   try {
