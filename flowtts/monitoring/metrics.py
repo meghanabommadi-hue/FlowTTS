@@ -86,6 +86,8 @@ WS_CONNECTIONS_CLOSED = Counter('tts_ws_connections_closed_total', 'Total WebSoc
 OPEN_PORTS = Gauge('tts_open_ports', 'Currently open WebSocket ports')
 MAX_PORTS  = Gauge('tts_max_ports',  'Maximum WebSocket ports ever open simultaneously')
 
+ACTIVE_REQUESTS = Gauge('tts_active_requests', 'Currently in-flight synthesis requests')
+
 # Clean disconnect counter (WebSocket close code 1000 = normal closure)
 WS_CLEAN_DISCONNECT = Counter('tts_ws_clean_disconnect_total',
                               'WebSocket disconnects via ERROR 1000 (OK) clean close')
@@ -394,6 +396,10 @@ def record_db_cache_hit(
         TTS_DB_CACHE_MISSES.labels(gpu_id=_gpu_id, voice=_v).inc()
         with _lock:
             _db_cache_misses += 1
+
+
+def set_active_requests(n: int) -> None:
+    ACTIVE_REQUESTS.set(n)
 
 
 def record_call(

@@ -71,7 +71,7 @@ from flowtts.decoder.decoder import tensor_to_wav, pcm_to_int16_bytes, SAMPLE_RA
 from flowtts.monitoring.metrics import (
     record_call, record_db_cache_hit, record_ws_connection_open, record_ws_connection_close,
     record_ws_error, record_ws_done, ws_log_snapshot, record_port_change,
-    register_gpu_info, snapshot_metrics,
+    register_gpu_info, snapshot_metrics, set_active_requests,
 )
 from flowtts.processing.audio_processing import crossfade, fade_in, fade_out
 
@@ -594,6 +594,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 if queue_depth >= _MAX_ACTIVE_REQUESTS:
                     print(f"[{_tsms()}] :{port} {call_id}  queued (active={queue_depth})", flush=True)
                 await _request_semaphore.acquire()
+                set_active_requests(_MAX_ACTIVE_REQUESTS - _request_semaphore._value)
 
             if streaming:
                 try:
@@ -601,6 +602,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
                 finally:
                     if _request_semaphore is not None:
                         _request_semaphore.release()
+                        set_active_requests(_MAX_ACTIVE_REQUESTS - _request_semaphore._value)
                 continue
 
             try:
@@ -755,6 +757,7 @@ async def handle_connection(ws: websockets.ServerConnection, port: int) -> None:
             finally:
                 if _request_semaphore is not None:
                     _request_semaphore.release()
+                    set_active_requests(_MAX_ACTIVE_REQUESTS - _request_semaphore._value)
 
     except WebSocketException as e:
         print(f"[{_ts()}] :{port} {conn_id}  ws closed: {e}", flush=True)
