@@ -82,6 +82,16 @@ from flowtts.synthesis.engine import get_synthesizer as _get_synthesizer_legacy
 logging.getLogger("websockets").setLevel(logging.CRITICAL)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
+# Model types that speak the generic BaseSynthesizer streaming protocol
+# (single/whole-response SynthChunk yields) rather than Mira's dedicated
+# speech-token-buffer streaming path.
+_GENERIC_SYNTHESIZER_MODEL_TYPES = frozenset({"voxcpm", "omnivoice"})
+
+
+def _uses_generic_synthesizer() -> bool:
+    return settings.model_type in _GENERIC_SYNTHESIZER_MODEL_TYPES
+
+
 _synthesizer: FlowTtsSynthesizer | None = None
 _wav_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="wav_enc")
 
@@ -177,7 +187,7 @@ async def _get_synthesizer():
     global _synthesizer
     if _synthesizer is None:
         print(f"[{_ts()}] model_type={settings.model_type} loading model...", flush=True)
-        if settings.model_type == "voxcpm":
+        if _uses_generic_synthesizer():
             _synthesizer = await _get_synthesizer_legacy()
         else:
             _synthesizer = FlowTtsSynthesizer()
@@ -252,6 +262,7 @@ async def _handle_voxcpm_streaming_request(
     chunk_index = 0
     total_wav_b = 0
     first_chunk_sent = False
+    sr = synth.sample_rate  # fallback if the stream yields zero chunks
 
     try:
         async for chunk in synth.synthesize_stream(text, voice_id=voice_id):
@@ -291,7 +302,7 @@ async def _handle_voxcpm_streaming_request(
             "chunks":          chunk_index,
             "total_tokens":    0,
             "total_wav_bytes": total_wav_b,
-            "sample_rate":     48000,
+            "sample_rate":     sr,
             "llm_s":           total_s,
             "decode_s":        0.0,
         }))
@@ -327,9 +338,10 @@ async def _handle_streaming_request(
       - bytes  raw WAV for that chunk
     A final { type:"audio_done", ... } JSON frame is sent after all chunks.
     """
-    # VoxCPM path: synthesize_stream yields SynthChunk(wav_bytes, sample_rate, ...)
+    # Generic BaseSynthesizer path (VoxCPM, OmniVoice): synthesize_stream
+    # yields SynthChunk(wav_bytes, sample_rate, ...)
     from flowtts.synthesis.base import SynthChunk  # noqa: PLC0415
-    if settings.model_type == "voxcpm":
+    if _uses_generic_synthesizer():
         await _handle_voxcpm_streaming_request(
             ws, synth, text, call_id, text_id, port, ts_text_recv,
             voice_id=voice_id, cancel_event=cancel_event,
@@ -918,9 +930,10 @@ async def _warmup(synth: FlowTtsSynthesizer) -> None:
 
 async def _warmup_port(port: int, sentence: str) -> None:
     """Send one synthesize request through the WS handler on *port* to prime it."""
-    # VoxCPM already warms up internally in initialize() — skip WS warmup to avoid
-    # closing the connection mid-generation which crashes the scheduler.
-    if settings.model_type == "voxcpm":
+    # VoxCPM/OmniVoice already warm up internally in initialize() — skip WS
+    # warmup to avoid closing the connection mid-generation which crashes the
+    # scheduler.
+    if _uses_generic_synthesizer():
         return
 
     url = f"ws://127.0.0.1:{port}/ws/warmup"
@@ -955,8 +968,8 @@ async def _warmup_port(port: int, sentence: str) -> None:
 
 async def _warmup_all_ports(ports: list[int]) -> None:
     """Warm up every bound WS port concurrently."""
-    # VoxCPM warms up in initialize() — skip WS-level warmup entirely
-    if settings.model_type == "voxcpm":
+    # VoxCPM/OmniVoice warm up in initialize() — skip WS-level warmup entirely
+    if _uses_generic_synthesizer():
         print(f"[{_ts()}] warming up {len(ports)} port(s) concurrently...", flush=True)
         print(f"[{_ts()}] all ports warmed up  (0ms)", flush=True)
         return

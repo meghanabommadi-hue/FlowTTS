@@ -28,11 +28,13 @@ logger = structlog.get_logger(__name__)
 # ── Registry: model_type → synthesizer class ──────────────────────────────
 # To add a new model: import its class and add one entry here.
 def _build_registry() -> dict:
-    from flowtts.synthesis.mira   import MiraSynthesizer    # noqa: PLC0415
-    from flowtts.synthesis.voxcpm import VoxCpmSynthesizer  # noqa: PLC0415
+    from flowtts.synthesis.mira      import MiraSynthesizer      # noqa: PLC0415
+    from flowtts.synthesis.voxcpm    import VoxCpmSynthesizer    # noqa: PLC0415
+    from flowtts.synthesis.omnivoice import OmniVoiceSynthesizer # noqa: PLC0415
     return {
-        "mira":   MiraSynthesizer,
-        "voxcpm": VoxCpmSynthesizer,
+        "mira":      MiraSynthesizer,
+        "voxcpm":    VoxCpmSynthesizer,
+        "omnivoice": OmniVoiceSynthesizer,
     }
 
 # Process-level singleton

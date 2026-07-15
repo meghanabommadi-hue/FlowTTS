@@ -8,6 +8,7 @@ Key sections and their pipeline consumers:
   TtsModelSettings  → synthesis/models.py (sglang engine init, sampling params)
                        synthesis/engine.py (model_dir, ref_audio paths)
   VoxCpmSettings    → synthesis/voxcpm_synthesizer.py (VoxCPM2 engine init)
+  OmniVoiceSettings → synthesis/omnivoice.py (child-process spawn + HTTP proxy)
   DecoderSettings   → api/websockets.py   (enabled flag, to_wav flag)
                        decoder/decoder.py  (sample_rate)
   RedisSettings     → api/websockets.py   (queue publish, pub/sub subscribe)
@@ -18,8 +19,10 @@ All values can be overridden via environment variables (FLOWTTS_ prefix).
 No env-var → sensible defaults used (greedy decoding, 48 kHz, Redis localhost).
 
 Model selection:
-  Set FLOWTTS_MODEL_TYPE=voxcpm  to use VoxCPM2 instead of Mira.
-  Set FLOWTTS_MODEL_TYPE=mira    (default) to use the MiraITS / sglang path.
+  Set FLOWTTS_MODEL_TYPE=voxcpm     to use VoxCPM2.
+  Set FLOWTTS_MODEL_TYPE=omnivoice  to use OmniVoice (runs in a child process
+                                    under its own venv — see setup_omni.sh).
+  Set FLOWTTS_MODEL_TYPE=mira       to use the MiraITS / sglang path.
 """
 
 from pathlib import Path
@@ -189,6 +192,46 @@ class VoxCpmSettings(BaseModel):
     max_generate_length: int = 2000
 
 
+class OmniVoiceSettings(BaseModel):
+    """OmniVoice model configuration.
+
+    Used when Settings.model_type == "omnivoice". OmniVoice's own deps
+    (transformers>=5.3.0) conflict with the transformers==4.57.3 pin sglang
+    needs in this venv, so the model runs in a child process under its own
+    venv (created by setup_omni.sh) and is proxied over loopback HTTP —
+    see synthesis/omnivoice.py for details.
+    """
+
+    # Location of the omnivoice_scaled checkout and its own venv interpreter.
+    repo_dir: str = str(Path.home() / "omnivoice_scaled")
+    venv_python: str = str(Path.home() / "omnivoice_scaled" / ".venv" / "bin" / "python")
+
+    # Loopback port the child process's FastAPI server binds to.
+    port: int = 8090
+    startup_timeout_s: float = 300.0
+    request_timeout_s: float = 60.0
+
+    # Passed straight through as OMNIVOICE_* env vars to the child process.
+    model_id: str = "k2-fsa/OmniVoice"
+    device: str = "cuda:0"
+    num_step: int = 16
+    max_batch_size: int = 24
+
+    language: str | None = None
+
+    # Default reference voice.
+    ref_audio: str | None = f"{_SAMPLE_FILES_DIR}/saavi_vb.mp3"
+    ref_audio_text: str | None = (
+        "hello sir, i hope sab theek chal raha hoga, batayiye mein aapki kis tarah se madad kar sakti hun"
+    )
+
+    # Named voices — voice_id -> (ref_audio_path, ref_text).
+    voices: dict[str, tuple[str, str]] = {}
+
+    # Warmup sentence — synthesized once at startup to prime the child process.
+    warmup_sentence: str = "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?"
+
+
 class WebSocketSettings(BaseModel):
     """Gateway WebSocket server settings."""
 
@@ -202,14 +245,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FLOWTTS_", env_nested_delimiter="__")
 
     # ── Model selector ──────────────────────────────────────────────────────
-    # "mira"   → use MiraITS / sglang path  (synthesis/models.py)
-    # "voxcpm" → use VoxCPM2 path           (synthesis/voxcpm_synthesizer.py)
+    # "mira"      → use MiraITS / sglang path  (synthesis/models.py)
+    # "voxcpm"    → use VoxCPM2 path           (synthesis/voxcpm_synthesizer.py)
+    # "omnivoice" → use OmniVoice path         (synthesis/omnivoice.py)
     # model_type: Literal["mira", "voxcpm"] = "mira"
-    model_type: Literal["mira", "voxcpm"] = "voxcpm"
+    model_type: Literal["mira", "voxcpm", "omnivoice"] = "voxcpm"
 
     ws: WebSocketSettings = WebSocketSettings()
     tts_model: TtsModelSettings = TtsModelSettings()
     voxcpm: VoxCpmSettings = VoxCpmSettings()
+    omnivoice: OmniVoiceSettings = OmniVoiceSettings()
     decoder: DecoderSettings = DecoderSettings()
     streaming: StreamingSettings = StreamingSettings()
 
