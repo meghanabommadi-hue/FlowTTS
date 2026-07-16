@@ -731,9 +731,16 @@ async def run_test(
                     print(f"[server] reusing existing port(s): {already}", flush=True)
                 active_ports = needed
             else:
-                # No explicit ports — use only the base port
-                active_ports = [base_port]
-                print(f"[server] using single port: {active_ports}", flush=True)
+                # No explicit ports — ask the control API which ports are
+                # actually bound rather than assuming --base-port's default,
+                # which is wrong whenever the server was started on a
+                # different port (e.g. --base-port 80).
+                try:
+                    data = _ctrl_get(ctrl_port, "/ready", timeout=2.0)
+                    active_ports = data.get("ports") or [base_port]
+                except Exception:
+                    active_ports = [base_port]
+                print(f"[server] using port(s) from ctrl API: {active_ports}", flush=True)
         else:
             # No ctrl port — just use whatever is already live
             if ports is None:

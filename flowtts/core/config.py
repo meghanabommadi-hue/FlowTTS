@@ -65,20 +65,22 @@ class TtsModelSettings(BaseModel):
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
         # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
+        ref_audio: str = f"{_SAMPLE_FILES_DIR}/angry_tara_slow_17.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     # sglang engine parameters
-    mem_fraction_static: float = 0.83      # proven A100/H200 baseline — 0.70 caused KV cache evictions
+    # Values below match origin/neysa_h200, the config this box previously hit
+    # <1s TTFT at 60 concurrent requests with.
+    mem_fraction_static: float = 0.70      # more KV cache for concurrent requests
     attention_backend: str = "triton"      # fastest for decode-heavy TTS
     chunked_prefill_size: int = 16384
     max_running_requests: int = 200        # allow all ports to run concurrently in sglang scheduler
     schedule_policy: str = "lpm"           # longest-prefix-match: reuse KV cache across requests
     cuda_graph_max_bs: int = 160           # pre-capture CUDA graphs up to this batch size
     disable_radix_cache: bool = False
-    num_continuous_decode_steps: int = 10
+    num_continuous_decode_steps: int = 4   # batch N decode steps before re-scheduling → less scheduler overhead
 
     # Generation / sampling parameters
     # temperature=0.0 → greedy decode (top_p/top_k/min_p are ignored in greedy mode)
@@ -111,10 +113,13 @@ class DecoderSettings(BaseModel):
 
     # TTSCodec batch queue settings — scaled up for H200's larger memory bandwidth
     max_batch: int = 256
-    batch_timeout_ms: float = 0.7
+    batch_timeout_ms: float = 25  # ONNX Phase-1 cost is ~fixed per call (~280ms, barely
+                                   # scales with batch size) — a longer collection window
+                                   # lets concurrent requests consolidate into fewer, larger
+                                   # sequential batches instead of many near-singleton ones
     gpu_chunk_size: int = 150
     onnx_workers: int = 1
-    use_trt: bool = False            # no compiled TRT engine present; use ONNX
+    use_trt: bool = True             # compiled TRT engine present at decoder_trt_b150.ep
 
 
 class StreamingSettings(BaseModel):
