@@ -16,5 +16,11 @@ uv pip install git+https://github.com/ysharma3501/FastBiCodec.git@612ba9e29d14b9
 echo "==> Downloading models"
 python3 "$SCRIPT_DIR/download_models.py"
 
+echo "==> Installing TensorRT / torch-tensorrt for the TRT decoder"
+uv pip install tensorrt torch-tensorrt
+
+echo "==> Compiling TRT decoder engine"
+python3 "$SCRIPT_DIR/compile_trt.py"
+
 
 echo "==> Setup complete."
