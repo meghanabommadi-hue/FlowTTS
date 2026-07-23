@@ -22,7 +22,7 @@ in-process.
 | `mira` | In-process (sglang engine + ncodec) | `.venv_mira` | *(part of original setup)* | `requirements-mira.txt` | Original/default path; FlowTTS's Mira-specific pins live here (`transformers==4.57.3`, `sglang`, `flashinfer`, etc.) |
 | `voxcpm` | In-process (`nanovllm_voxcpm` diffusion engine) | external `flow_voxcpm` checkout's own venv (path hardcoded in `synthesis/voxcpm.py:21`, not present on every host) | — | `requirements-voxcpm.txt` (placeholder — see file) | Diffusion (Continuous Flow Matching) engine with its own dependency set; not verified installable alongside Mira's pins in this environment |
 | `omnivoice` | Child process, HTTP-proxied | `~/omnivoice_scaled/.venv` | `./setup_omni.sh` | `requirements-omnivoice.txt` | OmniVoice needs `transformers>=5.3.0`, which directly conflicts with the `transformers==4.57.3` pin Mira/sglang need in FlowTTS's own venv |
-| `miotts` | Two child processes (vLLM server + codec server), both HTTP-proxied | `.venv_mio` | `./setup_mio.sh` | `requirements-miotts.txt` | See below |
+| `miotts` | Two child processes (vLLM server + codec server), both HTTP-proxied | `.venv_mio` | `./flowtts/setup/setup_mio.sh` | `requirements-miotts.txt` | See below |
 
 ### Why miotts needs its own venv (but only one, not two)
 
@@ -43,7 +43,7 @@ should be excluded — ABI mismatch), and all four imported together in the same
 process successfully (`torch.cuda.is_available()` returns `True`, `vllm`,
 `transformers`, and `miocodec` all load with matching pinned versions).
 
-So `model_type=miotts` uses exactly one venv (`.venv_mio`, via `setup_mio.sh`).
+So `model_type=miotts` uses exactly one venv (`.venv_mio`, via `flowtts/setup/setup_mio.sh`).
 `synthesis/miotts.py` still launches **two separate child processes** from
 that one interpreter — a vLLM server and a codec server — matching miotts's
 own `run.sh` design (independent GPU residency, restart isolation, and
@@ -91,6 +91,6 @@ deployment with `FLOWTTS_MIOTTS__SMOOTH_GLITCHES=false`.
 Setup:
 ```bash
 cd ~/FlowTTS
-./setup_mio.sh                      # creates .venv_mio, installs requirements-miotts.txt
+./flowtts/setup/setup_mio.sh        # creates .venv_mio, installs requirements-miotts.txt
 FLOWTTS_MODEL_TYPE=miotts ./run.sh
 ```

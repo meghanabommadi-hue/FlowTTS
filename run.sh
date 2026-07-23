@@ -90,7 +90,7 @@ if [[ "${FLOWTTS_MODEL_TYPE:-}" == "miotts" ]]; then
     MIO_VENV_PYTHON="${FLOWTTS_MIOTTS__VENV_PYTHON:-${SCRIPT_DIR}/.venv_mio/bin/python}"
     if [[ ! -f "${MIO_VENV_PYTHON}" ]]; then
         echo "[FlowTTS] error: model-type=miotts but ${MIO_VENV_PYTHON} not found." >&2
-        echo "          Run ./setup_mio.sh first (see README.md)." >&2
+        echo "          Run ./flowtts/setup/setup_mio.sh first (see README.md)." >&2
         exit 1
     fi
 fi
