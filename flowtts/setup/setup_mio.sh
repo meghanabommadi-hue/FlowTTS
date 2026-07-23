@@ -15,13 +15,12 @@ VENV_DIR="${REPO_ROOT}/.venv_mio"
 
 if [ ! -f "${VENV_DIR}/bin/activate" ]; then
     echo "Creating miotts virtualenv at ${VENV_DIR}"
-    python3 -m venv "${VENV_DIR}"
+    uv venv "${VENV_DIR}"
 fi
 
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
-pip install --upgrade pip
 uv pip install -r "$REPO_ROOT/requirements-miotts.txt"
 
 deactivate
