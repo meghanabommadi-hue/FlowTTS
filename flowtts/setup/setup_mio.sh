@@ -21,7 +21,15 @@ fi
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
-uv pip install -r "$REPO_ROOT/requirements-miotts.txt"
+# A bare torch==2.6.0 isn't resolvable from PyPI under uv (no matching wheel
+# there) -- install it from PyTorch's own cu124 wheel index first, matching
+# setup_omni.sh's approach, then install the rest from
+# requirements-miotts-no-torch.txt (torch/torchaudio/torchvision already
+# pinned above, excluded there so they aren't re-resolved against the wrong
+# index).
+uv pip install --index-url https://download.pytorch.org/whl/cu124 \
+    "torch==2.6.0" "torchaudio==2.6.0" "torchvision==0.21.0"
+uv pip install -r "$REPO_ROOT/requirements-miotts-no-torch.txt"
 
 deactivate
 
