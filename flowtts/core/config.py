@@ -22,6 +22,9 @@ Model selection:
   Set FLOWTTS_MODEL_TYPE=voxcpm     to use VoxCPM2.
   Set FLOWTTS_MODEL_TYPE=omnivoice  to use OmniVoice (runs in a child process
                                     under its own venv — see setup_omni.sh).
+  Set FLOWTTS_MODEL_TYPE=miotts     to use miotts (Indic-Mio + MioCodec; runs
+                                    in two child processes under their own
+                                    venvs — see ~/miotts/commands.md).
   Set FLOWTTS_MODEL_TYPE=mira       to use the MiraITS / sglang path.
 """
 
@@ -224,6 +227,18 @@ class OmniVoiceSettings(BaseModel):
 
     language: str | None = None
 
+    # Playback speed multiplier (1.0 = normal, <1.0 = slower, >1.0 = faster).
+    # None → let the model use its own default.
+    speed: float | None = None
+
+    # Target duration in seconds for the generated audio. None → model
+    # decides length naturally from the text/generation config.
+    duration: float | None = None
+
+    # Free-text style/emotion instruction (e.g. "speak angrily", "whisper").
+    # None → no instruction, model uses its default delivery.
+    instruct: str | None = None
+
     # Default reference voice.
     ref_audio: str | None = f"{_SAMPLE_FILES_DIR}/saavi_vb.mp3"
     ref_audio_text: str | None = (
@@ -235,6 +250,70 @@ class OmniVoiceSettings(BaseModel):
 
     # Warmup sentence — synthesized once at startup to prime the child process.
     warmup_sentence: str = "नमस्ते, मैं आपकी कैसे मदद कर सकती हूं?"
+
+
+class MiottsSettings(BaseModel):
+    """miotts model configuration (SPRINGLab/Indic-Mio LLM + MioCodec decoder).
+
+    Used when Settings.model_type == "miotts". miotts's own checkout splits
+    into two venvs (.venv_vllm for vllm==0.8.5+transformers==4.51.3 on
+    Python 3.10, .venv for miocodec on Python >=3.12) because miocodec's
+    package metadata declares Requires-Python >=3.12, which is simply
+    incompatible with .venv_vllm's 3.10 interpreter in that checkout.
+
+    FlowTTS does NOT reuse either of those -- it has its own single venv,
+    .venv_mio (Python 3.12, see setup_mio.sh), with vllm==0.8.5,
+    transformers==4.51.3, AND miocodec all installed together. This was
+    verified to actually work (not just resolve without pip conflicts):
+    torch/transformers/vllm/miocodec all import successfully in the same
+    process, with matching pinned versions and no flashinfer pulled in.
+    So unlike OmniVoice (two genuinely incompatible dependency sets), miotts's
+    vLLM server and codec server here are still two separate child processes
+    (for the same reason miotts's own run.sh keeps them separate -- one
+    holds the LLM, one holds the codec, and running two GPU-resident
+    processes at all is a deliberate memory/latency choice, not a Python-
+    version workaround) -- but both launch from the SAME .venv_mio
+    interpreter. See synthesis/miotts.py for details, and README.md's
+    "Model dependency matrix" section for why each FlowTTS backend needs
+    the venv it needs.
+    """
+
+    # Location of the miotts checkout (for its postprocess.py + codec_server.py
+    # source, loaded/launched from there) and FlowTTS's own unified venv.
+    repo_dir: str = str(Path.home() / "miotts")
+    venv_python: str = str(Path("/home/jovyan/FlowTTS") / ".venv_mio" / "bin" / "python")
+
+    # Loopback ports the two child processes bind to.
+    vllm_port: int = 8100
+    codec_port: int = 8101
+    startup_timeout_s: float = 300.0
+    request_timeout_s: float = 60.0
+
+    # vLLM server launch params (mirrors miotts/run.sh defaults).
+    model_name: str = "SPRINGLab/Indic-Mio"
+    max_model_len: int = 2560
+    gpu_memory_utilization: float = 0.6
+
+    # Generation params (mirrors miotts/config.py's MioConfig defaults).
+    max_new_tokens: int = 2048
+    temperature: float = 0.2
+    top_p: float = 0.85
+    repetition_penalty: float = 1.1
+
+    # Default voice (priority: reference_audio > voice_preset).
+    voice_preset: str | None = "en_female"
+    reference_audio: str | None = None
+
+    # Named voices -- voice_id -> (voice_preset, reference_audio); either may
+    # be None. Resolution follows miotts's own VoiceResolver.resolve() order.
+    voices: dict[str, tuple[str | None, str | None]] = {}
+
+    # Post-decode glitch smoothing (miotts/postprocess.py:smooth_glitches).
+    # Only applies to this backend -- no other model's audio is touched.
+    smooth_glitches: bool = True
+
+    # Warmup sentence -- synthesized once at startup to prime both servers.
+    warmup_sentence: str = "Hello, how are you today?"
 
 
 class WebSocketSettings(BaseModel):
@@ -254,12 +333,13 @@ class Settings(BaseSettings):
     # "voxcpm"    → use VoxCPM2 path           (synthesis/voxcpm_synthesizer.py)
     # "omnivoice" → use OmniVoice path         (synthesis/omnivoice.py)
     # model_type: Literal["mira", "voxcpm"] = "mira"
-    model_type: Literal["mira", "voxcpm", "omnivoice"] = "voxcpm"
+    model_type: Literal["mira", "voxcpm", "omnivoice", "miotts"] = "voxcpm"
 
     ws: WebSocketSettings = WebSocketSettings()
     tts_model: TtsModelSettings = TtsModelSettings()
     voxcpm: VoxCpmSettings = VoxCpmSettings()
     omnivoice: OmniVoiceSettings = OmniVoiceSettings()
+    miotts: MiottsSettings = MiottsSettings()
     decoder: DecoderSettings = DecoderSettings()
     streaming: StreamingSettings = StreamingSettings()
 

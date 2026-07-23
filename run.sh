@@ -37,6 +37,7 @@ TEST=0
 TEST_HOST="localhost"
 SAVE_AUDIO=""
 CTRL_PORT=""
+MODEL_TYPE=""
 # Decoder overrides — empty means "use config.py default"
 DECODER_MAX_BATCH=""
 DECODER_BATCH_TIMEOUT_MS=""
@@ -57,6 +58,8 @@ while [[ $# -gt 0 ]]; do
             SAVE_AUDIO="$2"; shift 2 ;;
         --ctrl-port)
             CTRL_PORT="$2"; shift 2 ;;
+        --model-type|--model-name|--model)
+            MODEL_TYPE="$2"; shift 2 ;;
         --max-batch)
             DECODER_MAX_BATCH="$2"; shift 2 ;;
         --batch-timeout-ms)
@@ -68,11 +71,29 @@ while [[ $# -gt 0 ]]; do
         *)
             echo "Unknown argument: $1"
             echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR]"
+            echo "          [--model-type mira|voxcpm|omnivoice|miotts]"
             echo "          [--max-batch N] [--batch-timeout-ms N] [--gpu-chunk-size N] [--onnx-workers N]"
             echo "          [--test [--host H]]"
             exit 1 ;;
     esac
 done
+
+# --model-type (or FLOWTTS_MODEL_TYPE already in the environment) selects which
+# BaseSynthesizer backend flowtts.server loads — see flowtts/core/config.py's
+# Settings.model_type and flowtts/synthesis/engine.py's registry. The flag
+# takes precedence over any pre-set env var so `--model-type miotts` is never
+# silently ignored by a stale exported FLOWTTS_MODEL_TYPE.
+if [[ -n "${MODEL_TYPE}" ]]; then
+    export FLOWTTS_MODEL_TYPE="${MODEL_TYPE}"
+fi
+if [[ "${FLOWTTS_MODEL_TYPE:-}" == "miotts" ]]; then
+    MIO_VENV_PYTHON="${FLOWTTS_MIOTTS__VENV_PYTHON:-${SCRIPT_DIR}/.venv_mio/bin/python}"
+    if [[ ! -f "${MIO_VENV_PYTHON}" ]]; then
+        echo "[FlowTTS] error: model-type=miotts but ${MIO_VENV_PYTHON} not found." >&2
+        echo "          Run ./setup_mio.sh first (see README.md)." >&2
+        exit 1
+    fi
+fi
 
 # ── Test mode — quick smoke test against a running server ─────────────────────
 if [[ $TEST -eq 1 ]]; then

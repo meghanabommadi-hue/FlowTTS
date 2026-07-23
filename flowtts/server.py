@@ -85,7 +85,7 @@ logging.getLogger("aiohttp").setLevel(logging.WARNING)
 # Model types that speak the generic BaseSynthesizer streaming protocol
 # (single/whole-response SynthChunk yields) rather than Mira's dedicated
 # speech-token-buffer streaming path.
-_GENERIC_SYNTHESIZER_MODEL_TYPES = frozenset({"voxcpm", "omnivoice"})
+_GENERIC_SYNTHESIZER_MODEL_TYPES = frozenset({"voxcpm", "omnivoice", "miotts"})
 
 
 def _uses_generic_synthesizer() -> bool:
@@ -257,15 +257,27 @@ async def _handle_voxcpm_streaming_request(
     voice_id: str | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> None:
-    """Streaming handler for VoxCPM — yields SynthChunk(wav_bytes, sample_rate, ...)."""
+    """Streaming handler for VoxCPM/OmniVoice/miotts — yields
+    SynthChunk(wav_bytes, sample_rate, ...).
+
+    recv_to_send_ms tracks, per chunk, the gap between the instant this
+    function receives the finished audio bytes from synthesize_stream() and
+    the instant ws.send() for that chunk actually returns -- i.e. purely the
+    gateway's own hand-off overhead (JSON serialization + the socket write),
+    excluding all model/decode time, which already ends the moment the
+    `async for` yields the chunk.
+    """
     t0 = time.perf_counter()
     chunk_index = 0
     total_wav_b = 0
     first_chunk_sent = False
     sr = synth.sample_rate  # fallback if the stream yields zero chunks
+    recv_to_send_ms: list[float] = []
 
     try:
         async for chunk in synth.synthesize_stream(text, voice_id=voice_id):
+            t_recv = time.perf_counter()  # audio bytes just received from the model
+
             if cancel_event and cancel_event.is_set():
                 await ws.send(json.dumps({"type": "cancelled", "call_id": call_id, "text_id": text_id}))
                 break
@@ -291,22 +303,32 @@ async def _handle_voxcpm_streaming_request(
                     "cache_hit":   False,
                 }).encode() + wav
             )
+            recv_to_send_ms.append((time.perf_counter() - t_recv) * 1000)
             chunk_index += 1
 
         total_s = round(time.perf_counter() - t0, 4)
+        avg_recv_to_send_ms = round(sum(recv_to_send_ms) / len(recv_to_send_ms), 3) if recv_to_send_ms else None
+        max_recv_to_send_ms = round(max(recv_to_send_ms), 3) if recv_to_send_ms else None
         await ws.send(json.dumps({
-            "type":            "audio_done",
-            "call_id":         call_id,
-            "text_id":         text_id,
-            "text":            text,
-            "chunks":          chunk_index,
-            "total_tokens":    0,
-            "total_wav_bytes": total_wav_b,
-            "sample_rate":     sr,
-            "llm_s":           total_s,
-            "decode_s":        0.0,
+            "type":                 "audio_done",
+            "call_id":              call_id,
+            "text_id":              text_id,
+            "text":                 text,
+            "chunks":               chunk_index,
+            "total_tokens":         0,
+            "total_wav_bytes":      total_wav_b,
+            "sample_rate":          sr,
+            "llm_s":                total_s,
+            "decode_s":             0.0,
+            "avg_recv_to_send_ms":  avg_recv_to_send_ms,
+            "max_recv_to_send_ms":  max_recv_to_send_ms,
         }))
-        print(f"[{_tsms()}] :{port} {call_id}  done  chunks={chunk_index}  wav={total_wav_b}B  total={round(total_s*1000)}ms", flush=True)
+        print(
+            f"[{_tsms()}] :{port} {call_id}  done  chunks={chunk_index}  wav={total_wav_b}B"
+            f"  total={round(total_s*1000)}ms  avg_recv_to_send={avg_recv_to_send_ms}ms"
+            f"  max_recv_to_send={max_recv_to_send_ms}ms",
+            flush=True,
+        )
 
     except websockets.exceptions.ConnectionClosed:
         # Client disconnected mid-stream (e.g. warmup WS closed) — not an error
@@ -368,6 +390,7 @@ async def _handle_streaming_request(
     first_chunk_sent = False
     llm_ttft_ms:     int | None = None   # ms from t0 to first speech token from LLM
     decoder_ttft_ms: int | None = None   # ms from t0 to first decode_async completion
+    recv_to_send_ms: list = []   # per-chunk: audio_bytes finished -> ws.send() returned
 
     loop = asyncio.get_event_loop()
 
@@ -427,6 +450,7 @@ async def _handle_streaming_request(
         # byte stream with no headers causing gaps or parse overhead.
         audio_bytes = await loop.run_in_executor(_wav_executor, pcm_to_int16_bytes, pcm)
         wav_total += time.perf_counter() - tw
+        t_recv = time.perf_counter()  # audio_bytes is now the finished, ready-to-send payload
 
         n_tok = len(real_tokens)
         total_tokens += n_tok
@@ -459,6 +483,7 @@ async def _handle_streaming_request(
                 "cache_hit":   False,
             }).encode() + audio_bytes
         )
+        recv_to_send_ms.append((time.perf_counter() - t_recv) * 1000)
         chunk_index += 1
 
     try:
@@ -501,6 +526,8 @@ async def _handle_streaming_request(
         avg_rtf = _record_rtf(total_s, total_tokens)
         audio_s = total_tokens * 320 / 16000
         rtf     = total_s / audio_s if audio_s > 0 else 0.0
+        avg_recv_to_send_ms = round(sum(recv_to_send_ms) / len(recv_to_send_ms), 3) if recv_to_send_ms else None
+        max_recv_to_send_ms = round(max(recv_to_send_ms), 3) if recv_to_send_ms else None
 
         await ws.send(json.dumps({
             "type":            "audio_done",
@@ -517,6 +544,8 @@ async def _handle_streaming_request(
             "decoder_ttft_ms": decoder_ttft_ms,
             "rtf":         round(rtf, 3),
             "avg_rtf":     round(avg_rtf, 3),
+            "avg_recv_to_send_ms": avg_recv_to_send_ms,
+            "max_recv_to_send_ms": max_recv_to_send_ms,
         }))
 
         record_call(
@@ -542,6 +571,8 @@ async def _handle_streaming_request(
             f"  llm={llm_ms}ms"
             f"  decode={round(decode_total*1000)}ms"
             f"  wav_enc={round(wav_total*1000)}ms"
+            f"  avg_recv_to_send={avg_recv_to_send_ms}ms"
+            f"  max_recv_to_send={max_recv_to_send_ms}ms"
             f"  total={round(total_s*1000)}ms"
             f"  wav={total_wav_b}B"
             f"  rtf={rtf:.3f}",

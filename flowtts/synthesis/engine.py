@@ -31,10 +31,12 @@ def _build_registry() -> dict:
     from flowtts.synthesis.mira      import MiraSynthesizer      # noqa: PLC0415
     from flowtts.synthesis.voxcpm    import VoxCpmSynthesizer    # noqa: PLC0415
     from flowtts.synthesis.omnivoice import OmniVoiceSynthesizer # noqa: PLC0415
+    from flowtts.synthesis.miotts    import MiottsSynthesizer    # noqa: PLC0415
     return {
         "mira":      MiraSynthesizer,
         "voxcpm":    VoxCpmSynthesizer,
         "omnivoice": OmniVoiceSynthesizer,
+        "miotts":    MiottsSynthesizer,
     }
 
 # Process-level singleton

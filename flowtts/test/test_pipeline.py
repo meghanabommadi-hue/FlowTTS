@@ -123,6 +123,7 @@ SAMPLE_TOKENS = _load_sample_tokens()
 _BENCH_TEXTS: List[str] = []   # loaded by _build_cache_mix or lazily on first use
 _VOICE_ID: str = ""            # set via --voice arg
 _FIXED_SENTENCE: str = ""      # set via --sentence arg; repeats same text every request
+_LANGUAGE: str = ""            # set via --language arg; picks which fallback text list to use
 
 _BAJAJ_SENTENCES_FILE = Path.home() / "FlowTTS/sample_files/bajaj_sentences_unique.txt"
 
@@ -284,14 +285,41 @@ _TELUGU_FALLBACK: List[str] = [
     "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది.",
 ]
 
-# Pick fallback list based on configured checkpoint.
+# Default fallback list, used when --language isn't given: keyed on the
+# configured Mira checkpoint (meaningless for other model_types, but kept as
+# the pre-existing default so callers that don't pass --language see no
+# behavior change).
 try:
     from flowtts.core.config import settings as _cfg
     _checkpoint = _cfg.tts_model.checkpoint_lg
 except Exception:
     _checkpoint = "hindi"
 
-_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
+_DEFAULT_FALLBACK_TEXTS: List[str] = _TELUGU_FALLBACK if _checkpoint == "telugu" else (_HINDI_FALLBACK + _HINDI_MIXED_STRESS)
+
+
+def _fallback_texts_for_language(language: str) -> List[str]:
+    """Return the fallback sentence list for --language.
+
+    miotts (and Indic-Mio generally) has no language tag or parameter --
+    language is inferred by the model from the input text's own script (see
+    its model card's "Prompting" section, which documents only emotion tags
+    like <happy>/<angry>). So this purely selects WHICH text to send, same
+    role "language" plays in miotts's own benchmark.py/config_test.py
+    (SAMPLE_TEXTS[category][language]) -- it is never sent to the server.
+
+    Per convention: "hindi" and "english" both route through the Hindi/
+    code-mixed text list (Indic-Mio handles code-mixed Hindi+English natively
+    -- see _HINDI_FALLBACK's mixed Hindi/English sentences); "telugu" routes
+    through the Telugu list. Anything else falls back to the pre-existing
+    checkpoint-based default.
+    """
+    lang = (language or "").strip().lower()
+    if lang in ("hindi", "english", "en", "hi"):
+        return _HINDI_FALLBACK + _HINDI_MIXED_STRESS
+    if lang in ("telugu", "te"):
+        return _TELUGU_FALLBACK
+    return _DEFAULT_FALLBACK_TEXTS
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +341,8 @@ class RequestResult(NamedTuple):
     cache_hit: bool = False                 # served from WAV cache, no LLM
     llm_ttft_ms: Optional[int] = None       # ms to first LLM speech token (server-measured)
     decoder_ttft_ms: Optional[int] = None   # ms to first decode_async completion (server-measured)
+    avg_recv_to_send_ms: Optional[float] = None  # server-measured: audio bytes ready -> ws.send() done, avg per chunk
+    max_recv_to_send_ms: Optional[float] = None  # server-measured: audio bytes ready -> ws.send() done, worst chunk
 
 
 
@@ -344,15 +374,19 @@ async def _run_one(
         async with websockets.connect(url, open_timeout=5, max_size=100 * 1024 * 1024) as ws:
             _log(req_id, port, "connected")
 
-            # Pick text: fixed > bench texts > english (non-hindi voices) > fallback
+            # Pick text: fixed > bench texts > language-selected fallback >
+            # english (non-hindi voices) > default fallback
             if _FIXED_SENTENCE:
                 text = _FIXED_SENTENCE
             elif _BENCH_TEXTS:
                 text = _BENCH_TEXTS[req_id % len(_BENCH_TEXTS)]
+            elif _LANGUAGE:
+                lang_texts = _fallback_texts_for_language(_LANGUAGE)
+                text = lang_texts[req_id % len(lang_texts)]
             elif _VOICE_ID in ("simran", "british_rose"):
                 text = _ENGLISH_AMERICAN[req_id % len(_ENGLISH_AMERICAN)]
             else:
-                text = _FALLBACK_TEXTS[req_id % len(_FALLBACK_TEXTS)]
+                text = _DEFAULT_FALLBACK_TEXTS[req_id % len(_DEFAULT_FALLBACK_TEXTS)]
             req = {
                 "type": "synthesize",
                 "call_id": call_id,
@@ -541,14 +575,16 @@ async def _recv_streaming(
                     chunk_path.write_bytes(wav_chunk)
 
             elif mtype == "audio_done":
-                latency         = round(time.time() - t0, 3)
-                llm_s           = msg.get("llm_s")
-                decode_s        = msg.get("decode_s")
-                rtf             = msg.get("rtf")
-                llm_ttft_ms     = msg.get("llm_ttft_ms")
-                decoder_ttft_ms = msg.get("decoder_ttft_ms")
-                chunks          = msg.get("chunks", len(chunk_wavs))
-                total_wav_b     = sum(len(w) for w in chunk_wavs)
+                latency             = round(time.time() - t0, 3)
+                llm_s               = msg.get("llm_s")
+                decode_s            = msg.get("decode_s")
+                rtf                 = msg.get("rtf")
+                llm_ttft_ms         = msg.get("llm_ttft_ms")
+                decoder_ttft_ms     = msg.get("decoder_ttft_ms")
+                avg_recv_to_send_ms = msg.get("avg_recv_to_send_ms")
+                max_recv_to_send_ms = msg.get("max_recv_to_send_ms")
+                chunks              = msg.get("chunks", len(chunk_wavs))
+                total_wav_b         = sum(len(w) for w in chunk_wavs)
 
                 if chunk_wavs:
                     wav_path = out_dir / f"req{req_id:04d}_port{port}.wav"
@@ -559,12 +595,15 @@ async def _recv_streaming(
                      f"  {total_wav_b}B → {wav_path.name if wav_path else '-'}"
                      f"  ttff={first_chunk_latency}s  llm_ttft={llm_ttft_ms}ms"
                      f"  decoder_ttft={decoder_ttft_ms}ms  total={latency}s"
-                     f"  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}")
+                     f"  llm_s={llm_s}  decode_s={decode_s}  rtf={rtf}"
+                     f"  avg_recv_to_send={avg_recv_to_send_ms}ms  max_recv_to_send={max_recv_to_send_ms}ms")
 
                 return RequestResult(req_id, port, True, latency, wav_path,
                                      None, total_wav_b, total_tokens * 20, llm_s, decode_s,
                                      ttff_s=first_chunk_latency, rtf=rtf,
-                                     llm_ttft_ms=llm_ttft_ms, decoder_ttft_ms=decoder_ttft_ms)
+                                     llm_ttft_ms=llm_ttft_ms, decoder_ttft_ms=decoder_ttft_ms,
+                                     avg_recv_to_send_ms=avg_recv_to_send_ms,
+                                     max_recv_to_send_ms=max_recv_to_send_ms)
 
     except Exception as e:
         err = str(e) or type(e).__name__
@@ -851,6 +890,8 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         rtfs            = [r.rtf            for r in passed if r.rtf            is not None]
         llm_ttfts       = [r.llm_ttft_ms    for r in passed if r.llm_ttft_ms    is not None]
         decoder_ttfts   = [r.decoder_ttft_ms for r in passed if r.decoder_ttft_ms is not None]
+        avg_r2s         = [r.avg_recv_to_send_ms for r in passed if r.avg_recv_to_send_ms is not None]
+        max_r2s         = [r.max_recv_to_send_ms for r in passed if r.max_recv_to_send_ms is not None]
 
         def _fmt(vals: list, unit: str = "s") -> str:
             if not vals:
@@ -875,6 +916,10 @@ def _print_summary(results: List[RequestResult], mode: str, out_dir: Path) -> bo
         if llm_ttfts and decoder_ttfts and len(llm_ttfts) == len(decoder_ttfts):
             decode_lag = [d - l for d, l in zip(decoder_ttfts, llm_ttfts)]
             lines.append(f"  decode lag    : {_fmt_ms(decode_lag)}  (decoder_ttft - llm_ttft)")
+        if avg_r2s:
+            lines.append(f"  recv->send avg: {_fmt(avg_r2s, 'ms')}  (server: audio bytes ready -> ws.send() done, per-request avg-of-chunks)")
+        if max_r2s:
+            lines.append(f"  recv->send max: {_fmt(max_r2s, 'ms')}  (server: worst single chunk's hand-off time)")
         lines.append(f"  llm           : {_fmt(llms)}")
         lines.append(f"  decoder       : {_fmt(decs)}")
         if llms and decs and len(llms) == len(decs):
@@ -971,7 +1016,7 @@ def _resolve_ports(
 # Entry point
 # ---------------------------------------------------------------------------
 async def main(args: argparse.Namespace) -> None:
-    global _VOICE_ID, _FIXED_SENTENCE, _BENCH_TEXTS
+    global _VOICE_ID, _FIXED_SENTENCE, _BENCH_TEXTS, _LANGUAGE
     if getattr(args, "out_dir", None):
         out_dir = Path(args.out_dir).expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -985,12 +1030,16 @@ async def main(args: argparse.Namespace) -> None:
     save_chunks      = getattr(args, "save_chunks", False)
     _VOICE_ID        = getattr(args, "voice", "") or ""
     _FIXED_SENTENCE  = getattr(args, "sentence", "") or ""
+    _LANGUAGE        = getattr(args, "language", "") or ""
     cache_mix        = getattr(args, "cache_mix", None)
 
     if _VOICE_ID:
         print(f"[voice] using voice_id={_VOICE_ID!r}", flush=True)
     if _FIXED_SENTENCE:
         print(f"[sentence] repeating: {_FIXED_SENTENCE!r}", flush=True)
+    if _LANGUAGE:
+        n = len(_fallback_texts_for_language(_LANGUAGE))
+        print(f"[language] using language={_LANGUAGE!r}  ({n} sentences)", flush=True)
     if cache_mix and not _FIXED_SENTENCE:
         _BENCH_TEXTS = _build_cache_mix(args.requests, cache_mix, _VOICE_ID)
         if not _BENCH_TEXTS:
@@ -1065,6 +1114,11 @@ if __name__ == "__main__":
                         help="Voice ID to use for synthesis (default: server default)")
     parser.add_argument("--sentence", default="", metavar="TEXT",
                         help="Repeat this single sentence for all requests")
+    parser.add_argument("--language", default="", choices=["", "hindi", "english", "telugu"],
+                        help="Select which fallback sentence list to send: hindi/english both use "
+                             "the Hindi (incl. code-mixed) list, telugu uses the Telugu list. "
+                             "Client-side only -- not sent to the server (Indic-Mio infers language "
+                             "from the text's script, not a parameter; see model card).")
     parser.add_argument("--out-dir", default=None, metavar="DIR",
                         help="Directory to save output WAV files (default: auto-generated under ~/FlowTTS/test/)")
     parser.add_argument("--cache-mix", default=None, metavar="MIX",
