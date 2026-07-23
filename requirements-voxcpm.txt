@@ -1,0 +1,14 @@
+# FlowTTS's VoxCPM2 backend (model_type=voxcpm) requirements.
+#
+# NOT frozen from a real venv -- unlike requirements-mira.txt/-omnivoice.txt/
+# -miotts.txt, this one could not be generated in this environment.
+# synthesis/voxcpm.py:21 requires /home/ubuntu/flow_voxcpm on sys.path
+# (nanovllm_voxcpm engine + AudioVAE decoder), and that checkout does not
+# exist on this box -- VoxCPM has apparently only been run on a different
+# host (note the /home/ubuntu path, vs. this box's /home/jovyan).
+#
+# Do not treat this file as installable; it is a placeholder documenting the
+# gap. To fill it in for real: on the host where flow_voxcpm is checked out,
+# activate whatever venv voxcpm.py's sys.path/imports actually resolve
+# against, then run:
+#   python3 -m pip freeze > requirements-voxcpm.txt
