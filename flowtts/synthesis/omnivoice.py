@@ -1,15 +1,16 @@
 """Pipeline position: SYNTHESIS — OmniVoice backend.
 
-Implements BaseSynthesizer for the OmniVoice model family (k2-fsa/OmniVoice),
-vendored from the omnivoice_scaled project.
+Implements BaseSynthesizer for the OmniVoice model family (k2-fsa/OmniVoice).
+The server code lives in-tree at FlowTTS/omnivoice/ (vendored from the
+omnivoice_scaled project) — no separate checkout is required.
 
 OmniVoice's own Python dependencies (transformers>=5.3.0) conflict with the
 transformers==4.57.3 pin sglang/Mira need in this same venv, so the model is
-NOT imported in-process. Instead this module spawns omnivoice_scaled's own
-FastAPI server (src/model.py) as a child process running under ITS OWN
-virtualenv (created by setup_omni.sh), and talks to it over loopback HTTP.
-FlowTTS owns the child process's lifecycle (start at initialize(), terminate
-at shutdown()) — it is not a standalone always-on service.
+NOT imported in-process. Instead this module spawns FlowTTS/omnivoice/model.py
+as a child process running under ITS OWN virtualenv (created by
+setup_omni.sh, at FlowTTS/omnivoice/.venv), and talks to it over loopback
+HTTP. FlowTTS owns the child process's lifecycle (start at initialize(),
+terminate at shutdown()) — it is not a standalone always-on service.
 
 Like OmniVoice's own microbatch_server.py explains: generate() is a
 synchronous, non-streaming, whole-batch call with no partial output, so
@@ -17,8 +18,8 @@ synthesize_stream() below yields exactly one final SynthChunk (mirrors how
 VoxCpmSynthesizer's shape is consumed by server.py's generic streaming path).
 
 Requires:
-  - omnivoice_scaled repo checked out (default: ~/omnivoice_scaled)
-  - its venv set up via setup_omni.sh (default: ~/omnivoice_scaled/.venv)
+  - FlowTTS/omnivoice/ (vendored in-tree, no separate checkout needed)
+  - its venv set up via setup_omni.sh (default: FlowTTS/omnivoice/.venv)
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ logger = structlog.get_logger(__name__)
 class OmniVoiceSynthesizer(BaseSynthesizer):
     """OmniVoice TTS backend, hosted in a FlowTTS-managed child process.
 
-    FlowTTS launches omnivoice_scaled/src/model.py using that project's own
+    FlowTTS launches the vendored omnivoice/model.py using its own dedicated
     venv interpreter, waits for it to report healthy on a loopback port, and
     proxies synthesize()/synthesize_stream() calls to it over HTTP. The child
     process is torn down when shutdown() is called (or the parent exits).
@@ -68,7 +69,7 @@ class OmniVoiceSynthesizer(BaseSynthesizer):
         cfg = settings.omnivoice
         repo_dir = Path(cfg.repo_dir)
         venv_python = Path(cfg.venv_python)
-        model_script = repo_dir / "src" / "model.py"
+        model_script = repo_dir / "model.py"
 
         if not venv_python.is_file():
             raise FileNotFoundError(
@@ -78,7 +79,7 @@ class OmniVoiceSynthesizer(BaseSynthesizer):
         if not model_script.is_file():
             raise FileNotFoundError(
                 f"OmniVoice server script not found: {model_script}\n"
-                f"Set FLOWTTS_OMNIVOICE__REPO_DIR to the omnivoice_scaled checkout."
+                f"Set FLOWTTS_OMNIVOICE__REPO_DIR to the FlowTTS/omnivoice directory."
             )
 
         self._base_url = f"http://127.0.0.1:{cfg.port}"
@@ -202,9 +203,9 @@ class OmniVoiceSynthesizer(BaseSynthesizer):
 
     async def synthesize_stream(self, text: str, voice_id: str | None = None) -> AsyncGenerator[SynthChunk, None]:
         # OmniVoice has no partial/token-by-token output (see module docstring
-        # and omnivoice_scaled/src/microbatch_server.py) — one full-response
-        # chunk, marked final, mirrors how VoxCPM's stream degenerates when
-        # there's only one PCM chunk from the underlying engine.
+        # and omnivoice/microbatch_server.py) — one full-response chunk,
+        # marked final, mirrors how VoxCPM's stream degenerates when there's
+        # only one PCM chunk from the underlying engine.
         result = await self.synthesize(text, voice_id=voice_id)
         yield SynthChunk(
             wav_bytes=result.wav_bytes,

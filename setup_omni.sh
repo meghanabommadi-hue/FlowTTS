@@ -2,12 +2,16 @@
 # Sets up the OmniVoice backend used by FlowTTS's OmniVoiceSynthesizer
 # (flowtts/synthesis/omnivoice.py, model_type=omnivoice).
 #
+# The OmniVoice server code (model.py, microbatch_server.py, batched_decode.py)
+# is vendored in-tree at FlowTTS/omnivoice/ — this script has NO dependency on
+# a separate omnivoice_scaled checkout.
+#
 # OmniVoice's own dependencies (transformers>=5.3.0) conflict with the
 # transformers==4.57.3 pin FlowTTS/sglang need for the Mira path, so
 # OmniVoice is NOT installed into FlowTTS's own venv. Instead this script
-# creates a SEPARATE venv inside the omnivoice_scaled checkout; FlowTTS
-# spawns that venv's python as a child process (src/model.py) and talks to
-# it over loopback HTTP — see flowtts/synthesis/omnivoice.py.
+# creates a SEPARATE venv inside FlowTTS/omnivoice/; FlowTTS spawns that
+# venv's python as a child process (omnivoice/model.py) and talks to it
+# over loopback HTTP — see flowtts/synthesis/omnivoice.py.
 #
 # It also makes sure FlowTTS itself has *some* venv to run server.py from.
 # server.py never imports sglang/torch-tensorrt/nanovllm_voxcpm at module
@@ -20,34 +24,27 @@
 # you to run it first only to try OmniVoice.
 #
 # Usage:
-#   ./setup_omni.sh                                   # uses ~/omnivoice_scaled
-#   OMNIVOICE_REPO_DIR=/path/to/omnivoice_scaled ./setup_omni.sh
+#   ./setup_omni.sh
 #   OMNIVOICE_VENV=.venv2 ./setup_omni.sh             # custom venv dir name
-#   SKIP_FLOWTTS_VENV=1 ./setup_omni.sh               # only set up omnivoice_scaled's venv
+#   SKIP_FLOWTTS_VENV=1 ./setup_omni.sh               # only set up the omnivoice venv
 #
 # After setup, run FlowTTS with:
 #   FLOWTTS_MODEL_TYPE=omnivoice ./run.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OMNIVOICE_REPO_DIR="${OMNIVOICE_REPO_DIR:-${HOME}/omnivoice_scaled}"
+OMNIVOICE_DIR="${SCRIPT_DIR}/omnivoice"
 VENV_DIR_NAME="${OMNIVOICE_VENV:-.venv}"
 
-if [ ! -d "${OMNIVOICE_REPO_DIR}" ]; then
-    echo "error: omnivoice_scaled checkout not found at ${OMNIVOICE_REPO_DIR}" >&2
-    echo "       set OMNIVOICE_REPO_DIR to point at your omnivoice_scaled checkout" >&2
+if [ ! -f "${OMNIVOICE_DIR}/model.py" ]; then
+    echo "error: ${OMNIVOICE_DIR}/model.py not found — vendored omnivoice server code is missing" >&2
     exit 1
 fi
 
-if [ ! -f "${OMNIVOICE_REPO_DIR}/src/model.py" ]; then
-    echo "error: ${OMNIVOICE_REPO_DIR}/src/model.py not found — is this really omnivoice_scaled?" >&2
-    exit 1
-fi
-
-# ── 1. omnivoice_scaled's own venv (hosts the model + microbatch server) ──
+# ── 1. Vendored omnivoice server's own venv (hosts the model + microbatch server) ──
 (
-    cd "${OMNIVOICE_REPO_DIR}"
-    VENV_DIR="${OMNIVOICE_REPO_DIR}/${VENV_DIR_NAME}"
+    cd "${OMNIVOICE_DIR}"
+    VENV_DIR="${OMNIVOICE_DIR}/${VENV_DIR_NAME}"
 
     if [ ! -d "${VENV_DIR}" ]; then
         echo "Creating OmniVoice virtualenv at ${VENV_DIR}"
@@ -62,7 +59,7 @@ fi
     # requirements.txt keeps vllm/vllm-omni commented out (see the file for why
     # — torch>=2.11/CUDA 13 mismatch with this host's driver); everything else
     # in it (omnivoice, soundfile, torch) installs normally.
-    pip install -r "${OMNIVOICE_REPO_DIR}/requirements.txt"
+    pip install -r "${OMNIVOICE_DIR}/requirements.txt"
 
     # A bare `torch` resolves to the newest release, which now ships CUDA-13
     # wheels by default — too new for this host's driver (550.127.08, CUDA
@@ -72,7 +69,7 @@ fi
     pip install --index-url https://download.pytorch.org/whl/cu124 \
         "torch==2.6.0" "torchaudio==2.6.0"
 
-    # Serving-layer deps used by src/model.py, not listed in requirements.txt.
+    # Serving-layer deps used by model.py, not listed in requirements.txt.
     pip install fastapi uvicorn requests pydantic aiohttp
 
     deactivate
@@ -108,12 +105,11 @@ echo
 echo "Setup complete."
 echo
 echo "FlowTTS defaults to this layout (flowtts/core/config.py: OmniVoiceSettings):"
-echo "  repo_dir     = ${HOME}/omnivoice_scaled"
-echo "  venv_python  = ${HOME}/omnivoice_scaled/.venv/bin/python"
+echo "  repo_dir     = ${OMNIVOICE_DIR}"
+echo "  venv_python  = ${OMNIVOICE_DIR}/.venv/bin/python"
 echo
-echo "If you used a different location or venv name, point FlowTTS at it with:"
-echo "  export FLOWTTS_OMNIVOICE__REPO_DIR=${OMNIVOICE_REPO_DIR}"
-echo "  export FLOWTTS_OMNIVOICE__VENV_PYTHON=${OMNIVOICE_REPO_DIR}/${VENV_DIR_NAME}/bin/python"
+echo "If you used a different venv name, point FlowTTS at it with:"
+echo "  export FLOWTTS_OMNIVOICE__VENV_PYTHON=${OMNIVOICE_DIR}/${VENV_DIR_NAME}/bin/python"
 echo
 echo "Then run FlowTTS with the OmniVoice backend, e.g.:"
 echo "  FLOWTTS_MODEL_TYPE=omnivoice ./run.sh"

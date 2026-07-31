@@ -208,11 +208,15 @@ class OmniVoiceSettings(BaseModel):
     needs in this venv, so the model runs in a child process under its own
     venv (created by setup_omni.sh) and is proxied over loopback HTTP —
     see synthesis/omnivoice.py for details.
+
+    The server code itself is vendored in-tree at FlowTTS/omnivoice/ (no
+    dependency on a separate omnivoice_scaled checkout); only its Python
+    deps live in a dedicated venv alongside it.
     """
 
-    # Location of the omnivoice_scaled checkout and its own venv interpreter.
-    repo_dir: str = str(Path.home() / "omnivoice_scaled")
-    venv_python: str = str(Path.home() / "omnivoice_scaled" / ".venv" / "bin" / "python")
+    # Location of the vendored omnivoice server code and its own venv interpreter.
+    repo_dir: str = str(Path.home() / "FlowTTS" / "omnivoice")
+    venv_python: str = str(Path.home() / "FlowTTS" / "omnivoice" / ".venv" / "bin" / "python")
 
     # Loopback port the child process's FastAPI server binds to.
     port: int = 8090
