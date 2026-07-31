@@ -1,0 +1,9 @@
+# NOTE: vllm-omni's OmniVoice support (0.20.0+) requires a paired vllm
+# version that hard-pins torch>=2.11 (CUDA 13 wheels). This driver
+# (550.127.08, CUDA 12.9 max) cannot run CUDA 13 binaries, so vllm/vllm-omni
+# are not currently installable here without a driver upgrade.
+# vllm
+# vllm-omni
+omnivoice
+soundfile
+torch
