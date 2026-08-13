@@ -33,11 +33,11 @@ class TtsModelSettings(BaseModel):
         warmup_sentence: str = "వర్షం పడుతున్న సాయంత్రంలో చిన్న గ్రామం మొత్తం మట్టి వాసనతో నిండిపోయి అందరినీ ఆనందంగా ముంచెత్తింది."
         ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/tel_male_audio.wav"
     else:
-        model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
+        model_dir: str = f"{_MODELS_DIR}/MeghanaKap-mira_hi_en"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/vaani_fast.wav"
         # ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/simran_eleven_labs.wav"
-        ref_audio: str = f"{_MODELS_DIR}/MeghanaKap-MiraTTSTelugu/friendly_simran.wav"
+        ref_audio: str = f"/home/jovyan/FlowTTS/sample_files/emotions_simran/normal_simran.mp3"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -102,7 +102,7 @@ class StreamingSettings(BaseModel):
     # Number of speech tokens accumulated before decoding and sending a chunk.
     # Lower = more chunks, lower latency to first audio; higher = fewer round-trips.
     # At 50 tokens/sec: 20 tokens ≈ 400ms of audio per chunk.
-    chunk_tokens: int = 15
+    chunk_tokens: int = 50
 
     # Linear crossfade overlap between consecutive chunks (samples at 16 kHz).
     # 320 = 20ms. Set to 0 to disable crossfade.

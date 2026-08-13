@@ -29,6 +29,7 @@ TEST=0
 TEST_HOST="localhost"
 SAVE_AUDIO=""
 CTRL_PORT=""
+HTTP_PORT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -44,9 +45,11 @@ while [[ $# -gt 0 ]]; do
             SAVE_AUDIO="$2"; shift 2 ;;
         --ctrl-port)
             CTRL_PORT="$2"; shift 2 ;;
+        --http-port)
+            HTTP_PORT="$2"; shift 2 ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--save-audio DIR] [--test [--host H]]"
+            echo "Usage: $0 [--ports N] [--port BASE] [--ctrl-port PORT] [--http-port PORT] [--save-audio DIR] [--test [--host H]]"
             exit 1 ;;
     esac
 done
@@ -124,6 +127,7 @@ LOG_FILE="${SCRIPT_DIR}/llm.log"
 EXTRA_ARGS=()
 [[ -n "${SAVE_AUDIO}" ]] && EXTRA_ARGS+=(--save-audio "${SAVE_AUDIO}")
 [[ -n "${CTRL_PORT}"  ]] && EXTRA_ARGS+=(--ctrl-port  "${CTRL_PORT}")
+[[ -n "${HTTP_PORT}"  ]] && EXTRA_ARGS+=(--http-port  "${HTTP_PORT}")
 
 RESTART_DELAY=5
 while true; do

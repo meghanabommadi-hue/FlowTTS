@@ -65,6 +65,19 @@ class SynthesisService:
             )
         return await self.synthesizer.synthesize(text)
 
+    async def synthesize_and_decode(self, text: str):
+        """Full text → WAV pipeline (LLM + codec decode). See
+        FlowTtsSynthesizer.synthesize_and_decode for details.
+
+        Returns (wav_tensor, context_tokens_used, llm_seconds).
+        """
+        if not self._initialized:
+            raise RuntimeError(
+                "SynthesisService not initialized. "
+                "Call initialize() first during application startup."
+            )
+        return await self.synthesizer.synthesize_and_decode(text)
+
     @property
     def is_initialized(self) -> bool:
         return self._initialized

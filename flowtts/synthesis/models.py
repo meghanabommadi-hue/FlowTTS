@@ -30,6 +30,7 @@ Performance notes:
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 
@@ -38,6 +39,20 @@ import structlog
 from flowtts.core.config import settings
 
 logger = structlog.get_logger(__name__)
+
+# Emotion tag → reference audio file. Preloaded (encoded) once at
+# initialize() time so switching emotion at request time costs nothing
+# beyond a dict lookup (no re-encoding on the hot path).
+_EMOTIONS_DIR = Path(__file__).resolve().parent.parent.parent / "sample_files" / "emotions_simran"
+EMOTION_REF_AUDIO: dict[str, Path] = {
+    "angry": _EMOTIONS_DIR / "angry_neutral_1.75x.mp3",
+    "angrier": _EMOTIONS_DIR / "angry_simran.mp3",
+    "sad": _EMOTIONS_DIR / "sad_simran.mp3",
+    "happy": _EMOTIONS_DIR / "excited_simran.mp3",
+}
+
+# Matches a leading "[tag]" (case-insensitive), e.g. "[angry] Hi how are you"
+_EMOTION_TAG_RE = re.compile(r"^\s*\[(\w+)\]\s*(.*)$")
 
 
 class FlowTtsSynthesizer:
@@ -49,6 +64,8 @@ class FlowTtsSynthesizer:
         self._context_tokens: str = ""
         self._ref_speech_tokens = None
         self._sampling_params: dict = {}
+        # emotion tag -> (context_tokens, ref_speech_tokens), preloaded at init
+        self._emotion_tokens: dict[str, tuple[str, object | None]] = {}
 
     async def initialize(self) -> None:
         """Load model. Mirrors main() in TTSIntegration/ws_server.py."""
@@ -91,6 +108,29 @@ class FlowTtsSynthesizer:
             logger.warning("ref_audio_not_found", path=ref_path, using="default_context")
             context_tokens = self._default_context()
 
+        # Preload emotion reference audio so [tag]-based emotion switching at
+        # request time is just a dict lookup — no re-encoding, no added latency.
+        emotion_tokens: dict[str, tuple[str, object | None]] = {}
+        for emotion, path in EMOTION_REF_AUDIO.items():
+            if not path.is_file():
+                logger.warning("emotion_ref_audio_not_found", emotion=emotion, path=str(path))
+                continue
+            try:
+                t0 = time.monotonic()
+                emo_enc = tts_codec.encode(str(path))
+                if isinstance(emo_enc, tuple) and len(emo_enc) == 2:
+                    emotion_tokens[emotion] = (emo_enc[1], emo_enc[0])
+                else:
+                    emotion_tokens[emotion] = (emo_enc, None)
+                logger.info(
+                    "emotion_ref_audio_loaded",
+                    emotion=emotion,
+                    path=str(path),
+                    encode_seconds=round(time.monotonic() - t0, 3),
+                )
+            except Exception as e:
+                logger.warning("emotion_ref_audio_failed", emotion=emotion, error=str(e))
+
         logger.info("loading_sglang_engine", model=model_path)
         import sglang as sgl
 
@@ -123,9 +163,10 @@ class FlowTtsSynthesizer:
         self._tts_codec = tts_codec
         self._context_tokens = context_tokens
         self._ref_speech_tokens = ref_speech_tokens
+        self._emotion_tokens = emotion_tokens
         self._engine = engine
         self._sampling_params = sampling_params
-        logger.info("synthesizer_ready")
+        logger.info("synthesizer_ready", emotions_preloaded=list(emotion_tokens.keys()))
 
         # Inspect live engine objects — not config.py values.
         # get_server_info() round-trips to the scheduler subprocess and returns
@@ -167,13 +208,41 @@ class FlowTtsSynthesizer:
         print(f"  ref_speech_tokens    : {'present' if ref_speech_present else 'absent'}", flush=True)
         print("=" * 60 + "\n", flush=True)
 
+    def _resolve_emotion(self, text: str) -> tuple[str, str, object | None]:
+        """Strip a leading "[tag]" from *text* and resolve it to preloaded
+        (context_tokens, ref_speech_tokens). Falls back to the default
+        speaker context if there's no tag or the tag wasn't preloaded.
+
+        Returns (text_without_tag, context_tokens, ref_speech_tokens).
+        Local return values only — never mutates self, so concurrent
+        requests with different emotions don't clobber each other.
+        """
+        match = _EMOTION_TAG_RE.match(text)
+        if not match:
+            return text, self._context_tokens, self._ref_speech_tokens
+
+        tag, rest = match.group(1).lower(), match.group(2)
+        cached = self._emotion_tokens.get(tag)
+        if cached is None:
+            logger.warning("unknown_emotion_tag", tag=tag, using="default_context")
+            return rest, self._context_tokens, self._ref_speech_tokens
+
+        context_tokens, ref_speech_tokens = cached
+        return rest, context_tokens, ref_speech_tokens
+
     async def synthesize(self, text: str) -> str:
-        """Return full audio token string for the given text."""
+        """Return full audio token string for the given text.
+
+        If *text* starts with an emotion tag like "[angry] Hi how are you",
+        the tag is stripped and the preloaded reference audio for that
+        emotion is used instead of the default speaker context.
+        """
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
+        text, context_tokens, ref_speech_tokens = self._resolve_emotion(text)
         prompt = self._tts_codec.format_prompt(
-            text, self._context_tokens, self._ref_speech_tokens
+            text, context_tokens, ref_speech_tokens
         )
 
         t0 = time.monotonic()
@@ -191,6 +260,32 @@ class FlowTtsSynthesizer:
         )
         return full_text
 
+    async def synthesize_and_decode(self, text: str):
+        """Full text → WAV pipeline for one utterance: LLM inference + codec decode.
+
+        Unlike synthesize(), this also runs the codec decode step, using the
+        *same* context_tokens that were resolved for the emotion tag (if any)
+        — decoding with a different speaker's context than the one used to
+        generate the speech tokens would produce wrong/garbled audio.
+
+        Returns (wav_tensor, context_tokens_used, llm_seconds).
+        """
+        if self._engine is None or self._tts_codec is None:
+            raise RuntimeError("FlowTtsSynthesizer not initialized")
+
+        text, context_tokens, ref_speech_tokens = self._resolve_emotion(text)
+        prompt = self._tts_codec.format_prompt(
+            text, context_tokens, ref_speech_tokens
+        )
+
+        t0 = time.monotonic()
+        result = await self._engine.async_generate(prompt, self._sampling_params)
+        audio_tokens = result["text"]
+        llm_s = time.monotonic() - t0
+
+        wav_tensor = await self._tts_codec.decode_async(audio_tokens, context_tokens)
+        return wav_tensor, context_tokens, llm_s
+
     async def synthesize_stream(self, text: str):
         """Async generator yielding incremental speech token strings as the LLM produces them.
 
@@ -200,8 +295,9 @@ class FlowTtsSynthesizer:
         if self._engine is None or self._tts_codec is None:
             raise RuntimeError("FlowTtsSynthesizer not initialized")
 
+        text, context_tokens, ref_speech_tokens = self._resolve_emotion(text)
         prompt = self._tts_codec.format_prompt(
-            text, self._context_tokens, self._ref_speech_tokens
+            text, context_tokens, ref_speech_tokens
         )
 
         stream_params = {**self._sampling_params}

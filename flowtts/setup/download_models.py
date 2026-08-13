@@ -25,9 +25,9 @@ MODELS = {
     #    "hf_repo": "MeghanaKap/MiraTTSTelugu",
     #    "local_dir": str(Path.home() / "models" / "MeghanaKap-MiraTTSTelugu"),
     #},
-    "Shubhangi/mira_hindi_second_round": {
-        "hf_repo": "Shubhangi7/mira_hindi_second_round",
-        "local_dir": str(Path.home() / "models" / "Shubhangi7-mira_hindi_second_round"),
+    "MeghanaKap/mira_hi_en": {
+        "hf_repo": "MeghanaKap/mira_hi_en",
+        "local_dir": str(Path.home() / "models" / "MeghanaKap-mira_hi_en"),
     },
 }
 

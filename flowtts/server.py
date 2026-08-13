@@ -628,7 +628,487 @@ async def _run_control_api(ctrl_port: int) -> None:
     print(f"[{_ts()}] control API  http://127.0.0.1:{ctrl_port}", flush=True)
 
 
-async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None) -> None:
+# ---------------------------------------------------------------------------
+# Public HTTP TTS API  (aiohttp, bound 0.0.0.0 — reachable externally)
+# ---------------------------------------------------------------------------
+async def _http_tts(req: web.Request) -> web.Response:
+    """POST /tts  {"text": "[angry] Hi how are you"}  → audio/wav bytes.
+
+    Recognized emotion tags (preloaded at startup, no extra latency to
+    switch): angry, angrier, sad, happy. No tag (or an unrecognized one)
+    falls back to the default reference voice.
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        return web.Response(status=400, text="Invalid JSON body")
+
+    text = (body.get("text") or "").strip()
+    if not text:
+        return web.Response(status=400, text="Missing or empty 'text'")
+
+    synth = await _get_synthesizer()
+    text = normalize_text(text)
+
+    try:
+        t0 = time.perf_counter()
+        wav_tensor, _ctx_used, llm_s = await asyncio.wait_for(
+            synth.synthesize_and_decode(text), timeout=30.0
+        )
+        decoded = tensor_to_wav(wav_tensor)
+        total_s = time.perf_counter() - t0
+        print(
+            f"[{_ts()}] :http/tts  {text[:60]!r}"
+            f"  llm={round(llm_s*1000)}ms  total={round(total_s*1000)}ms"
+            f"  wav={len(decoded.wav_bytes)}B",
+            flush=True,
+        )
+    except Exception as e:
+        print(f"[{_ts()}] :http/tts  ERROR: {e}", flush=True)
+        return web.Response(status=500, text=f"Synthesis failed: {e}")
+
+    return web.Response(
+        body=decoded.wav_bytes,
+        content_type="audio/wav",
+        headers={"X-LLM-Seconds": f"{llm_s:.4f}"},
+    )
+
+
+_TTS_TEST_PAGE = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FlowTTS Console</title>
+<style>
+  :root {
+    --paper: #f7f5f0;
+    --ink: #17181c;
+    --ink-soft: #4b4c52;
+    --line: #e2ddd2;
+    --panel: #ffffff;
+    --accent: #c8501f;
+    --accent-ink: #ffffff;
+    --accent-soft: #fdece1;
+    --code-bg: #1c1d22;
+    --code-ink: #eae7e0;
+    --code-key: #e8622c;
+    --code-str: #9fb88a;
+    --ok: #3f7d3f;
+    --err: #b5432a;
+    --focus: #1c6fd9;
+
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --font-sans: -apple-system, "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14151a;
+      --ink: #ece9e2;
+      --ink-soft: #a3a19b;
+      --line: #2c2d33;
+      --panel: #1b1c22;
+      --accent: #ea7a45;
+      --accent-ink: #17181c;
+      --accent-soft: #2a2018;
+      --code-bg: #0f1013;
+      --code-ink: #e2dfd8;
+      --code-key: #f0895c;
+      --code-str: #a8c793;
+      --ok: #7cba7c;
+      --err: #e08063;
+      --focus: #5b9ee8;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #14151a;
+    --ink: #ece9e2;
+    --ink-soft: #a3a19b;
+    --line: #2c2d33;
+    --panel: #1b1c22;
+    --accent: #ea7a45;
+    --accent-ink: #17181c;
+    --accent-soft: #2a2018;
+    --code-bg: #0f1013;
+    --code-ink: #e2dfd8;
+    --code-key: #f0895c;
+    --code-str: #a8c793;
+    --ok: #7cba7c;
+    --err: #e08063;
+    --focus: #5b9ee8;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+  }
+
+  section { margin-bottom: 48px; }
+
+  .section-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+  }
+
+  h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 12px;
+    letter-spacing: -0.005em;
+  }
+
+  p { margin: 0 0 12px; color: var(--ink); }
+  p.muted { color: var(--ink-soft); font-size: 14px; }
+
+  .tags-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+  }
+  .tag-card {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .tag-card .tag-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 2px;
+  }
+  .tag-card .tag-file {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-soft);
+  }
+
+  .console {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 22px;
+  }
+  .console label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+  }
+  textarea#text {
+    width: 100%;
+    min-height: 84px;
+    resize: vertical;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+    line-height: 1.5;
+  }
+  textarea#text:focus-visible { outline-offset: 0; }
+
+  .chip-row {
+    display: flex;
+    gap: 8px;
+    margin: 14px 0 0;
+    flex-wrap: wrap;
+  }
+  button.chip {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-soft);
+    border-radius: 20px;
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: border-color 120ms ease, color 120ms ease;
+  }
+  button.chip:hover { border-color: var(--accent); color: var(--accent); }
+  button.chip[data-active="true"] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .run-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 18px;
+  }
+  button#go {
+    font-family: var(--font-sans);
+    font-size: 14.5px;
+    font-weight: 600;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: none;
+    border-radius: 8px;
+    padding: 11px 22px;
+    cursor: pointer;
+    transition: opacity 120ms ease, transform 120ms ease;
+  }
+  button#go:hover { opacity: 0.92; }
+  button#go:active { transform: translateY(1px); }
+  button#go:disabled { opacity: 0.5; cursor: default; }
+
+  #status {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  #status[data-state="ok"] { color: var(--ok); }
+  #status[data-state="error"] { color: var(--err); }
+
+  #playerWrap {
+    margin-top: 18px;
+    display: none;
+  }
+  audio { width: 100%; }
+
+  @media (prefers-reduced-motion: reduce) {
+    button.chip, button#go { transition: none; }
+  }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <section>
+    <p class="section-label">Emotion tags</p>
+    <h2>Four preloaded voices</h2>
+    <div class="tags-grid">
+      <div class="tag-card"><span class="tag-name">[angry]</span><span class="tag-file">angry_neutral_1.75x.mp3</span></div>
+      <div class="tag-card"><span class="tag-name">[angrier]</span><span class="tag-file">angry_simran.mp3</span></div>
+      <div class="tag-card"><span class="tag-name">[sad]</span><span class="tag-file">sad_simran.mp3</span></div>
+      <div class="tag-card"><span class="tag-name">[happy]</span><span class="tag-file">excited_simran.mp3</span></div>
+    </div>
+    <p class="muted" style="margin-top: 12px;">An unrecognized or missing tag falls back to the default reference voice &mdash; never an error.</p>
+  </section>
+
+  <section>
+    <p class="section-label">Try it</p>
+    <h2>Live console</h2>
+    <div class="console">
+      <label for="text">Text</label>
+      <textarea id="text" spellcheck="false">[angry] Hello sir, you EMI payment is due 3 days now.</textarea>
+      <div class="chip-row" id="chips">
+        <button type="button" class="chip" data-tag="angry">angry</button>
+        <button type="button" class="chip" data-tag="angrier">angrier</button>
+        <button type="button" class="chip" data-tag="sad">sad</button>
+        <button type="button" class="chip" data-tag="happy">happy</button>
+        <button type="button" class="chip" data-tag="">neutral</button>
+      </div>
+      <div class="run-row">
+        <button id="go">Speak</button>
+        <span id="status"></span>
+      </div>
+      <div id="playerWrap"><audio id="player" controls></audio></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>FlowTTS &middot; local inference</span>
+    <span>16-bit PCM &middot; 16 kHz mono WAV</span>
+  </footer>
+
+</div>
+
+<script>
+  const textEl = document.getElementById('text');
+  const statusEl = document.getElementById('status');
+  const player = document.getElementById('player');
+  const playerWrap = document.getElementById('playerWrap');
+  const goBtn = document.getElementById('go');
+  const chips = document.querySelectorAll('.chip');
+
+  function currentTag() {
+    const m = textEl.value.match(/^\s*\[([^\]]*)\]\s*/);
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  function syncChips() {
+    const tag = currentTag();
+    chips.forEach(c => c.dataset.active = (c.dataset.tag === tag) ? 'true' : 'false');
+  }
+
+  chips.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tag = btn.dataset.tag;
+      const stripped = textEl.value.replace(/^\s*\[[^\]]*\]\s*/, '');
+      textEl.value = tag ? `[${tag}] ${stripped}` : stripped;
+      syncChips();
+      textEl.focus();
+    });
+  });
+  textEl.addEventListener('input', syncChips);
+  syncChips();
+
+  // Split on full stops into individual sentences, re-applying the leading
+  // [tag] (if any) to every sentence so each one clones the same voice.
+  function splitSentences(text) {
+    const m = text.match(/^\s*(\[[^\]]*\]\s*)/);
+    const tagPrefix = m ? m[1] : '';
+    const body = m ? text.slice(m[0].length) : text;
+
+    const sentences = body
+      .split('.')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    if (sentences.length === 0) return [];
+    return sentences.map(s => tagPrefix + s + '.');
+  }
+
+  function playClip(blob) {
+    return new Promise((resolve) => {
+      player.src = URL.createObjectURL(blob);
+      playerWrap.style.display = 'block';
+      player.onended = () => resolve();
+      player.play();
+    });
+  }
+
+  async function synthesizeOne(sentenceText) {
+    const res = await fetch('/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: sentenceText }),
+    });
+    if (!res.ok) {
+      const msg = await res.text();
+      throw new Error(`${res.status}: ${msg}`);
+    }
+    return { blob: await res.blob(), llmS: res.headers.get('X-LLM-Seconds') };
+  }
+
+  goBtn.addEventListener('click', async () => {
+    const raw = textEl.value.trim();
+    if (!raw) {
+      statusEl.dataset.state = 'error';
+      statusEl.textContent = 'Enter some text first.';
+      return;
+    }
+
+    const sentences = splitSentences(raw);
+    if (sentences.length === 0) {
+      statusEl.dataset.state = 'error';
+      statusEl.textContent = 'Enter some text first.';
+      return;
+    }
+
+    goBtn.disabled = true;
+    statusEl.dataset.state = '';
+    playerWrap.style.display = 'none';
+
+    try {
+      // Prefetch pipeline: sentence i+1 starts synthesizing as soon as
+      // sentence i's audio comes back, so it's usually ready before
+      // sentence i finishes playing — no gap between clips.
+      let nextPromise = synthesizeOne(sentences[0]);
+      for (let i = 0; i < sentences.length; i++) {
+        statusEl.textContent = sentences.length > 1
+          ? `Synthesizing ${i + 1}/${sentences.length}…`
+          : 'Synthesizing…';
+        const { blob, llmS } = await nextPromise;
+
+        if (i + 1 < sentences.length) {
+          nextPromise = synthesizeOne(sentences[i + 1]);
+        }
+
+        statusEl.textContent = sentences.length > 1
+          ? `Playing ${i + 1}/${sentences.length} · llm ${llmS}s`
+          : `Playing · llm ${llmS}s`;
+        await playClip(blob);
+      }
+      statusEl.dataset.state = 'ok';
+      statusEl.textContent = sentences.length > 1
+        ? `done · ${sentences.length} sentences`
+        : 'done';
+    } catch (e) {
+      statusEl.dataset.state = 'error';
+      statusEl.textContent = 'error: ' + e.message;
+    } finally {
+      goBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
+"""
+
+
+async def _http_tts_page(req: web.Request) -> web.Response:
+    """GET /  — minimal browser test page for POST /tts."""
+    return web.Response(text=_TTS_TEST_PAGE, content_type="text/html")
+
+
+async def _run_public_http_api(http_port: int) -> None:
+    """Public-facing HTTP API (unlike _run_control_api, bound 0.0.0.0)."""
+    app = web.Application()
+    app.router.add_get("/",     _http_tts_page)
+    app.router.add_post("/tts", _http_tts)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", http_port)
+    await site.start()
+    print(f"[{_ts()}] public HTTP API  http://0.0.0.0:{http_port}/tts", flush=True)
+    print(f"[{_ts()}] browser test page  http://0.0.0.0:{http_port}/", flush=True)
+
+
+async def run_server(
+    base_port: int,
+    n_ports: int,
+    ctrl_port: int | None = None,
+    http_port: int | None = None,
+) -> None:
     # Load model once before binding ports
     synth = await _get_synthesizer()
     await _warmup(synth)
@@ -636,6 +1116,10 @@ async def run_server(base_port: int, n_ports: int, ctrl_port: int | None = None)
     # Start HTTP control API if requested
     if ctrl_port:
         await _run_control_api(ctrl_port)
+
+    # Start public HTTP TTS API if requested
+    if http_port:
+        await _run_public_http_api(http_port)
 
     # Bind initial WS ports
     initial_ports = [base_port + i for i in range(n_ports)]
@@ -665,6 +1149,9 @@ def main() -> None:
                         help="Directory to save decoded WAV files (one per request)")
     parser.add_argument("--ctrl-port", type=int, default=None, metavar="PORT",
                         help="HTTP control API port for on-demand WS port binding (e.g. 8764)")
+    parser.add_argument("--http-port", type=int, default=None, metavar="PORT",
+                        help="Public HTTP TTS API port, bound 0.0.0.0 (e.g. 8081). "
+                             "POST {\"text\": \"[angry] hi\"} to /tts, returns audio/wav bytes.")
     args = parser.parse_args()
 
     global _llm_log_file, _llm_out_log_file
@@ -678,7 +1165,7 @@ def main() -> None:
         print(f"[FlowTTS] Saving audio to {_audio_out_dir}/", flush=True)
 
     try:
-        asyncio.run(run_server(args.base_port, args.ports, args.ctrl_port))
+        asyncio.run(run_server(args.base_port, args.ports, args.ctrl_port, args.http_port))
     except KeyboardInterrupt:
         print("\n[FlowTTS] Stopped.")
 
