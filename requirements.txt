@@ -306,3 +306,36 @@ jaraco.text==3.12.1
 more-itertools==10.3.0
 inflect==7.3.1
 backports.tarfile==1.2.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ── DhVaani (ARTPARK-IISc/DhVaani-0.5) ───────────────────────────────────────
+# Flow-matching TTS for 27 Indian languages. See docs/DHVAANI.md.
+# The pins above (torch 2.9.1 / cu128, transformers, fastapi, uvicorn,
+# websockets, aiohttp, prometheus-client, structlog, soundfile, pydub,
+# python-multipart, numpy, scipy) are all reused as-is.
+
+# Required
+vocos>=0.1.0                    # 24 kHz mel vocoder; the model's own requirement
+num2words>=0.5.13               # number -> words for English
+indic-num2words>=1.3.0          # number -> words for Indian languages
+# Text normalisation (not on PyPI):
+#   pip install "git+https://github.com/Ajaj-Ali/text_preprocessor_for_TTS.git"
+# Without it the pipeline degrades to sanitise + native-digit mapping only.
+
+# Optional -- TensorRT backend (DHVAANI_BACKEND__KIND=trt)
+#   Gives the lowest time-to-first-byte. Build engines once per machine with
+#   `python -m flowtts.dhvaani.setup.build_trt`.
+# tensorrt-cu12==10.7.0
+# onnx-graphsurgeon>=0.5.2
+# polygraphy>=0.49.9
+
+# Optional -- NVIDIA Triton Inference Server backend / client
+#   Only needed when the GPU is shared with other models. See triton/README.md.
+# tritonclient[all]>=2.52.0
+
+# Notes
+#   * `triton==3.5.1` above is OpenAI Triton (a torch dependency). It powers the
+#     fused ODE kernels in flowtts/dhvaani/model/triton_kernels.py and is
+#     unrelated to NVIDIA Triton Inference Server.
+#   * The model repo is GATED. Accept its terms at
+#     https://huggingface.co/ARTPARK-IISc/DhVaani-0.5 and export HF_TOKEN.
