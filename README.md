@@ -1,55 +1,79 @@
 # FlowTTS — OmniVoice streaming TTS server
 
-A production-grade, low-latency **text-to-speech WebSocket server** built around
+A production-grade, low-latency **text-to-speech server** built around
 [**k2-fsa/OmniVoice**](https://github.com/k2-fsa/OmniVoice) — a massively multilingual
-(600+ languages) zero-shot TTS model. Designed for high-throughput voice-bot / IVR
-workloads (Hindi + English), with **realtime chunk-wise streaming**, **dynamic in-flight
-batching**, and **reusable voice clones**.
+(600+ languages) zero-shot TTS model — with a **TensorRT-accelerated backbone**,
+**voice cloning**, **streaming synthesis**, and a **multilingual text preprocessor**
+covering all 22 scheduled languages of India. Built for voice-bot / IVR workloads.
 
 > OmniVoice is a non-autoregressive **discrete-diffusion language model** (Qwen3-0.6B
-> backbone + Higgs-Audio-v2 neural codec, **24 kHz**). It replaced this repo's previous
-> sglang + ncodec stack; the serving framework (WebSocket gateway, batching, metrics,
-> WAV cache, streaming protocol) was kept.
+> backbone + Higgs-Audio-v2 neural codec, **24 kHz**). Because it is not
+> autoregressive it cannot emit audio token by token, so streaming is done by
+> chunking the text, generating the chunks as one batch, and stitching the
+> results — which is what most of this repo is about.
+
+Acceleration follows [tlitech/omnivoice-trtllm](https://github.com/tlitech/omnivoice-trtllm);
+text preprocessing is ported from
+[Ajaj-Ali/text_preprocessor_for_TTS](https://github.com/Ajaj-Ali/text_preprocessor_for_TTS).
 
 ---
 
 ## Features
 
-- 🎙️ **Realtime streaming** — text is split into chunks (short first chunk); each is
-  synthesized and streamed as raw int16 PCM, targeting **TTFB < 200 ms**.
-- ⚡ **Dynamic in-flight batching** — concurrent requests *and* streamed chunks are
-  coalesced into single batched `generate()` calls, length-bucketed to minimize padding.
-- 🗣️ **Voice cloning by alias** — reference voices are precomputed once into tiny `.npz`
-  artifacts and loaded at startup; requests pick one via `voice_id`.
-- 🚀 **Acceleration levers** — fewer denoise steps, `torch.compile` + CUDA graphs, bf16/FP8
-  on Hopper/Ada, plus a SHA-256 **WAV cache** that bypasses the model on repeated prompts.
-- 🔌 **Plug-n-play protocol** — a stable WebSocket in/out contract (binary PCM frames).
-- 📊 **Ops built-in** — `/health`, `/ready`, `/metrics` (Prometheus), OOM recovery,
-  on-demand port binding, idle-connection reaping.
-- 🐳 **Containerized** — one `docker compose` command; keeps the host VM clean.
+- 🚀 **TensorRT-accelerated backbone** — the Qwen3 transformer runs from a
+  compiled engine, following [tlitech/omnivoice-trtllm](https://github.com/tlitech/omnivoice-trtllm):
+  only `llm.forward` is replaced, every other line of OmniVoice runs untouched.
+  **2.0x lower TTFB, 1.44x throughput** vs PyTorch, validated at cosine 0.999998
+  against the real module before it is ever installed.
+- 🌏 **All 22 scheduled languages of India** — plus a multilingual text
+  preprocessor (numbers, dates, currency, OTPs, phone numbers, URLs,
+  abbreviations) ported and extended from
+  [Ajaj-Ali/text_preprocessor_for_TTS](https://github.com/Ajaj-Ali/text_preprocessor_for_TTS),
+  with per-script normalization of code-mixed (Hinglish) input.
+- 🎙️ **Streaming synthesis** — duration-aware smart chunking with a short first
+  chunk, all chunks dispatched to the GPU at once, results stitched with an
+  equal-power crossfade. Median TTFB ~85 ms.
+- 🗣️ **Voice cloning** — REST clone usable immediately with no restart, a
+  one-shot preview that saves nothing, and inline reference audio per request.
+- 🎛️ **Every OmniVoice parameter exposed** — all 13 generation-config fields plus
+  speed, duration, instruct and language, per request, on every transport.
+- 🔌 **Four transports, one model load** — REST, streaming REST,
+  OpenAI-compatible `/v1/audio/speech`, and the FlowTTS WebSocket protocol.
+- ⚡ **Dynamic in-flight batching** — concurrent requests and streamed chunks are
+  coalesced into single batched `generate()` calls, bucketed by generation
+  config, voice-prompt presence and length.
+- 📊 **Ops built-in** — `/healthz`, `/readyz`, `/v1/stats`, `/metrics`, OOM
+  recovery, a WAV cache that serves repeats in ~1 ms.
 
 ---
 
 ## Architecture
 
 ```
-Client ──WS(text)──▶ server.py  (OmniVoice loaded once, N ports, one asyncio loop)
-                        │  normalize + split into streaming chunks (short first chunk)
-                        │  WAV-cache lookup (sha256(text)) ─hit─▶ send cached PCM ▶ done
+Client ──HTTP/WS──▶ api/http_app.py   (one FastAPI app: REST + OpenAI + /ws)
+                        │
                         ▼
-                     OmniVoiceEngine.synthesize(chunk, voice_id, speed, language)
-                        │  enqueue (text, VoiceClonePrompt, gen_cfg, future)
+                    text/pipeline.py            normalize per script run
+                        │                        (numbers, dates, OTPs, tags kept)
                         ▼
-                     dynamic batch queue  (length-bucketed, ~8 ms window)
-                        │  model.generate([...])  → 24 kHz waveforms   [GPU worker thread]
+                    synthesis/chunker.py        duration-aware chunks,
+                        │                        short first chunk, ≥1 s floor
                         ▼
-                     resample (optional) → int16 PCM → boundary crossfade
+                    synthesis/omnivoice_engine.py
+                        │  bucketed dynamic batch queue
                         ▼
-Client ◀── audio_chunk (JSON header + PCM bytes) … audio_done ──
+                    OmniVoice.generate()        [upstream code, untouched]
+                        └─ llm.forward ─────▶ trt/runtime.py
+                                               TensorRT | TRT-LLM | torch
+                        ▼
+                    processing/stitch.py        trim, DC-remove, crossfade
+                        ▼
+Client ◀── audio chunks, first byte as soon as chunk 0 lands
 ```
 
-A secondary Redis-backed multi-process path (`main.py` + `worker.py`) exists for
-cross-machine scaling; the single-process `server.py` above is the primary, lowest-latency path.
+The acceleration is one monkey-patch, exactly as upstream does it. Embeddings,
+audio heads, the iterative unmasking loop, CFG scoring and the Higgs codec are
+all upstream's code — which is what keeps the audio identical.
 
 ---
 
@@ -61,132 +85,180 @@ cross-machine scaling; the single-process `server.py` above is the primary, lowe
 
 ---
 
-## Quick start (Docker — recommended)
+## Quick start
 
 ```bash
-git clone <your-repo-url> FlowTTS && cd FlowTTS
+# 1. install (a CUDA build of torch first, if you do not already have one)
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt
 
-# one-time: build image, download OmniVoice (~3.3 GB), build voice npz from sample_files/
-docker compose run --rm omnivoice-tts setup
+# 2. build the TensorRT engine for the Qwen3 backbone (once per box, ~60 s)
+python -m flowtts.trt.build_trt --precision fp16 --max-batch 64 --max-seq 2048
 
-# serve on :8080 (WebSocket) + :8764 (control API / Prometheus)
-docker compose up -d
-docker compose logs -f omnivoice-tts
-
-# smoke test
-docker compose exec omnivoice-tts python -m flowtts.test.test_pipeline \
-    --ctrl-port 8764 --requests 5 --streaming
+# 3. serve: REST + OpenAI + WebSocket on :9000, control on :9764
+python -m flowtts.service --profile balanced --http-port 9000 --ctrl-port 9764
 ```
 
-Full container guide + tuning: [`docker/README.md`](docker/README.md).
+The engine build is optional — without it the service runs on PyTorch and says
+so in the startup log. `backbone_backend=auto` picks the best backend present
+and validates it against the real module before installing it, so a missing or
+broken engine degrades to correct-but-slower rather than to bad audio.
 
-## Quick start (bare metal)
+Profiles: `fast` (num_step 4), `balanced` (8, default), `quality` (32).
 
-```bash
-# install a CUDA build of torch first, e.g.:
-pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
-bash flowtts/setup/setup.sh            # deps + model + voices
-bash run.sh --ctrl-port 8764 --ports 1 # serve
-```
+For deployment on a shared box behind nginx, see
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) and [`deploy/`](deploy/).
 
 ---
 
-## WebSocket API
+## API
 
-Connect to `ws://<host>:8080/ws/<call_id>` and send JSON messages.
+Full OpenAPI browser at `/docs`. Every endpoint accepts the same parameter set.
 
-**Client → Server**
-```json
-{
-  "type": "synthesize",
-  "call_id": "call-123",
-  "text_id": "utt-1",
-  "text": "नमस्ते, मैं प्रिया बोल रही हूँ बजाज फाइनेंस से।",
-  "voice_id": "priya",        // optional — alias of a built voice; omit for default
-  "speed": 1.0,                // optional — >1 faster, <1 slower
-  "language": "hi",            // optional — omit to auto-detect
-  "streaming": true            // optional — defaults to server setting
-}
-```
-Cancel an in-flight utterance: `{ "type": "cancel", "text_id": "utt-1" }`
+### Synthesize
 
-**Server → Client** (streaming) — repeated **binary** frames, each a JSON header
-immediately followed by raw little-endian **int16 PCM** bytes:
-```
-{"type":"audio_chunk","call_id":"call-123","text_id":"utt-1","chunk_index":0,
- "sample_rate":24000,"encoding":"pcm_int16","tokens":12000,"is_final":false,"cache_hit":false}<PCM…>
-```
-Then a final JSON frame:
-```json
-{ "type":"audio_done","call_id":"call-123","text_id":"utt-1","chunks":3,
-  "total_wav_bytes":153600,"sample_rate":24000,"rtf":0.21 }
-```
-Errors: `{ "type":"error", "call_id", "text_id", "error" }`.
-Concatenate the PCM from each `audio_chunk` (same `sample_rate`) for the full utterance.
-
----
-
-## Voices (clone by alias)
-
-A voice is a precomputed `voices/<alias>.npz` (Higgs-codec tokens of a reference clip +
-its transcript + loudness). Clone it two ways:
-
-**REST (easiest — on the running server, no restart, no extra GPU load):**
 ```bash
-curl -sf -X POST http://localhost:8764/voices \
-  -F voice_id=priya -F preferred_lang=hi \
-  -F ref_text="नमस्ते, मैं प्रिया बोल रही हूँ।" \
-  -F audio=@sample_files/priya.wav
-# → {"status":"ok","voice_id":"priya","tokens":[8,NNN], ...}   → usable immediately
+curl -X POST http://localhost:9000/v1/tts -H 'content-type: application/json' -d '{
+  "text": "आपका बकाया ₹2,500 है, कृपया 15/04/2026 तक भुगतान करें।",
+  "language": "hi",
+  "voice_id": "anika",
+  "format": "wav",
+  "generation": {"num_step": 4, "guidance_scale": 2.0}
+}' --output speech.wav
 ```
-`POST /voices` inputs: `audio` (file), `voice_id`, `ref_text` (**required** — no ASR),
-`preferred_lang` (optional). `GET /voices` lists loaded voices.
 
-**Offline CLI (build ahead of time):**
+### Stream (low TTFB)
+
 ```bash
-# build all voices from sample_files/ (+ voices/manifest.json overrides)
-python -m flowtts.voices.clone --build-all --manifest voices/manifest.json
-# add one (ref_text is required — no ASR/auto-transcribe)
-python -m flowtts.voices.clone --add priya --ref-audio sample_files/priya.wav \
-    --ref-text "नमस्ते, मैं प्रिया बोल रही हूँ।"
-python -m flowtts.voices.clone --list
+curl -N -X POST http://localhost:9000/v1/tts/stream \
+  -H 'content-type: application/json' \
+  -d '{"text":"...","language":"hi","voice_id":"anika","format":"pcm"}' > out.pcm
 ```
-Restart the server to pick up new voices. In Docker, prefix with
-`docker compose run --rm omnivoice-tts clone …`. See [`voices/README.md`](voices/README.md).
+
+First bytes ship as soon as chunk 0 leaves the GPU, while later chunks are still
+generating. Behind nginx this needs `proxy_buffering off` — see
+[`deploy/nginx/omnivoice.conf`](deploy/nginx/omnivoice.conf).
+
+### OpenAI-compatible
+
+```bash
+curl -X POST http://localhost:9000/v1/audio/speech -H 'content-type: application/json' \
+  -d '{"model":"omnivoice","input":"Hello there.","voice":"anika","response_format":"wav"}'
+```
+
+Works with the OpenAI SDKs unchanged; also accepts this server's own fields
+(`language`, `instruct`, `generation`, `normalizer`).
+
+### Voice cloning
+
+```bash
+# clone — usable immediately, no restart
+curl -X POST http://localhost:9000/v1/voices \
+  -F voice_id=priya -F language=hi \
+  -F reference_text="नमस्ते, मैं प्रिया बोल रही हूं।" \
+  -F audio=@sample.wav
+
+# hear it before keeping it — nothing is written to disk
+curl -X POST http://localhost:9000/v1/voices/preview \
+  -F audio=@sample.wav -F reference_text="नमस्ते..." \
+  -F text="अब मैं क्लोन की गई आवाज़ में बोल रही हूं।" --output preview.wav
+
+curl http://localhost:9000/v1/voices
+curl -X DELETE http://localhost:9000/v1/voices/priya
+```
+
+`reference_text` is required — this server runs no ASR, and a wrong transcript
+degrades every future synthesis with that voice.
+
+### The three OmniVoice modes
+
+| mode | how |
+|---|---|
+| voice clone | `voice_id`, or `reference_audio` + `reference_text` inline |
+| voice design | `instruct: "Female, Elderly, British Accent"` |
+| auto voice | neither |
+
+Inline control tags pass through untouched: `[laughter]`,
+`[dissatisfaction-hnn]`, ARPAbet `[B EY1 S]`.
+
+### Every generation parameter, per request
+
+```json
+{"generation": {
+  "num_step": 4, "guidance_scale": 2.0, "t_shift": 0.1,
+  "layer_penalty_factor": 5.0, "position_temperature": 5.0,
+  "class_temperature": 0.0, "denoise": true,
+  "preprocess_prompt": true, "postprocess_output": true,
+  "pad_duration": 0.1, "fade_duration": 0.1,
+  "audio_chunk_duration": 15.0, "audio_chunk_threshold": 30.0
+}}
+```
+
+`num_step` is the only real latency dial. **`guidance_scale` is not a speed
+knob on this model** — `_generate_iterative` builds the cond+uncond batch either
+way, so 0 costs the same as 2.0 (186 ms vs 190 ms measured) while collapsing
+short chunks to silence. Leave it at 2.0.
+
+### Text preprocessing
+
+```bash
+curl -X POST http://localhost:9000/v1/normalize -H 'content-type: application/json' \
+  -d '{"text":"आपका बकाया ₹2,500 है, OTP 4821","language":"hi"}'
+# → "आपका बकाया दो हज़ार पाँच सौ रुपये है, O T P चार आठ दो एक"
+#   plus the chunks and their estimated durations
+```
+
+Per-request toggles live under `"normalizer"`; `GET /v1/languages` lists the
+30 languages with normalization tables (OmniVoice itself speaks 600+).
+
+### WebSocket
+
+Connect to `ws://<host>:9000/ws/<call_id>` and send JSON.
+
+```json
+{"type": "synthesize", "text_id": "utt-1",
+ "text": "नमस्ते, मैं प्रिया बोल रही हूँ।",
+ "voice_id": "priya", "language": "hi", "speed": 1.0,
+ "generation": {"num_step": 4}}
+```
+
+Replies are binary frames — a JSON header immediately followed by raw
+little-endian int16 PCM — then a final `audio_done` JSON frame. `{"type":"cancel",
+"text_id":"utt-1"}` stops an utterance in flight; `{"type":"ping"}` → `pong`.
 
 ---
 
 ## Configuration & tuning
 
-All settings are overridable via `FLOWTTS_*` env vars (nested with `__`). Key knobs:
+Everything is overridable via `FLOWTTS_*` env vars (nested with `__`). The knobs
+worth knowing:
 
 | Env var | Meaning | Default |
 |---|---|---|
-| `FLOWTTS_OMNIVOICE__MODEL_PATH` | local weights dir (used if it exists; else HF repo) | `model_dir/base` |
-| `FLOWTTS_OMNIVOICE__NUM_STEP` | diffusion steps (dominant latency knob) | `16` |
-| `FLOWTTS_OMNIVOICE__MAX_BATCH` | dynamic batch size | `32` |
-| `FLOWTTS_OMNIVOICE__BATCH_TIMEOUT_MS` | batch collection window (ms) | `8` |
-| `FLOWTTS_OMNIVOICE__GUIDANCE_SCALE` | classifier-free guidance strength | `2.0` |
-| `FLOWTTS_OMNIVOICE__COMPILE_MODEL` | `torch.compile` (+ CUDA graphs) | `false` |
-| `FLOWTTS_OMNIVOICE__DTYPE` | `bfloat16` / `float16` | `bfloat16` |
-| `FLOWTTS_OUTPUT__SAMPLE_RATE` | resample from native 24 kHz (e.g. `16000`, `8000`) | `24000` |
-| `FLOWTTS_VOICES__DEFAULT_VOICE` | alias used when `voice_id` omitted | `priya` |
-| `FLOWTTS_STREAMING__FIRST_CHUNK_MAX_CHARS` | size of the low-TTFB first chunk | `60` |
+| `FLOWTTS_GENERATION__NUM_STEP` | denoise steps — the dominant latency dial | `16` |
+| `FLOWTTS_GENERATION__GUIDANCE_SCALE` | CFG strength — **not** a speed dial here | `2.0` |
+| `FLOWTTS_OMNIVOICE__BACKBONE_BACKEND` | `auto` \| `tensorrt` \| `trtllm` \| `torch` \| `pytorch` | `auto` |
+| `FLOWTTS_OMNIVOICE__TRT_ENGINE_DIR` | where `build_trt` writes `backbone.plan` | `engines/omnivoice-backbone` |
+| `FLOWTTS_OMNIVOICE__BACKBONE_MIN_COSINE` | reject an engine below this vs PyTorch | `0.99` |
+| `FLOWTTS_OMNIVOICE__MAX_BATCH` | dynamic batch size | `16` |
+| `FLOWTTS_OMNIVOICE__MAX_BATCH_FRAMES` | total audio frames per batch | `6000` |
+| `FLOWTTS_STREAMING__FIRST_CHUNK_SECONDS` | target size of the low-TTFB first chunk | `1.2` |
+| `FLOWTTS_STREAMING__MIN_CHUNK_SECONDS` | floor — below this the model returns silence | `1.0` |
+| `FLOWTTS_OUTPUT__SAMPLE_RATE` | resample from native 24 kHz (`16000`, `8000`) | `24000` |
+| `FLOWTTS_VOICES__DEFAULT_VOICE` | alias used when `voice_id` is omitted | `priya` |
+| `FLOWTTS_TEXT__ENABLED` | master switch for text normalization | `true` |
+| `FLOWTTS_API_KEYS` | if set, requires Bearer / `X-API-Key` | *(none)* |
 
-`run.sh` exposes the common ones as flags (`--num-step`, `--max-batch`, `--compile`, …).
-The full speedup playbook (fewer-step distillation, CFG-cost reduction, FP8, codec
-overlap, TensorRT, …) with per-technique tradeoffs is in
-[`docs/omnivoice_acceleration.md`](docs/omnivoice_acceleration.md).
+Two findings worth carrying into any tuning you do, both measured on this model:
 
----
-
-## Performance targets
-
-Aiming for **~200 RPS** and **TTFB < 200 ms** on a single H200. This is a **tuning
-target**, not a guarantee — reach it by combining a large `MAX_BATCH`, low `NUM_STEP`,
-short first chunks, `torch.compile`, and the WAV cache (call-centre prompts repeat
-heavily). No absolute RPS numbers are published upstream for OmniVoice; **benchmark on
-your hardware** with the throughput sweep and tune from there.
+- **`guidance_scale` is not a throughput lever.** `_generate_iterative` builds
+  the conditional + unconditional batch and runs the backbone over all of it on
+  every step regardless of the value — 186 ms at 0.0 versus 190 ms at 2.0. What
+  it does change is robustness: at 0 the model collapses to near-silence on short
+  chunks. `num_step` is the dial; leave CFG at 2.0.
+- **Chunks below ~1 s of target audio come back silent** a large fraction of the
+  time, across languages. `min_chunk_seconds` enforces the floor by merging;
+  don't lower it chasing TTFB.
 
 ---
 
@@ -194,36 +266,80 @@ your hardware** with the throughput sweep and tune from there.
 
 ```
 flowtts/
-├── server.py            # primary single-process WS server (production entry point)
-├── main.py, worker.py   # secondary Redis-backed multi-process path
-├── core/config.py       # all settings (model, output, streaming, batching, accel)
+├── service.py             process entry point — HTTP + WS + control, one model load
+├── api/
+│   ├── http_app.py        FastAPI: REST, streaming, OpenAI-compatible, /ws
+│   ├── models.py          request/response schemas — every OmniVoice parameter
+│   ├── audio_io.py        resample + wav/pcm/mp3/opus encoding
+│   └── service.py         shared state: WAV cache, admission limiter, OOM recovery
+├── trt/                   the omnivoice-trtllm port
+│   ├── backbone.py        exportable Qwen3 mirror (bit-exact vs transformers)
+│   ├── build_trt.py       ONNX → TensorRT engine  (uses the installed TensorRT)
+│   ├── build_trtllm.py    checkpoint → TRT-LLM engine (needs tensorrt_llm)
+│   ├── convert_checkpoint.py  vendored from upstream, unchanged
+│   ├── patch/omnivoice/   vendored TRT-LLM network definition, unchanged
+│   ├── runtime.py         TensorRT | TRT-LLM | torch, one contract
+│   └── patcher.py         validate, then monkey-patch llm.forward
+├── text/                  multilingual preprocessing (indic-tts-normalizer port)
+│   ├── languages.py       30 languages incl. all 22 scheduled Indian languages
+│   ├── script_detect.py   code-mixed segmentation
+│   ├── numbers.py         cardinal backends with a total fallback chain
+│   └── pipeline.py        orchestrator + control-tag protection
 ├── synthesis/
-│   ├── omnivoice_engine.py  # model load + dynamic batcher + accel hooks
-│   ├── models.py            # OmniVoiceSynthesizer (whole + streaming)
-│   ├── engine.py            # process-wide singleton
-│   └── text_chunker.py      # streaming text splitter (pure stdlib)
-├── voices/              # npz voice-clone registry + offline builder CLI
-├── decoder/             # waveform → PCM/WAV helpers
-├── processing/          # resample, crossfade, fades
-├── api/                 # WebSocket gateway (Redis path) + message models
-├── monitoring/          # structlog + Prometheus metrics
-└── test/                # unit tests + benchmark client
-docker/                  # Dockerfile, entrypoint, container README
-docs/                    # acceleration playbook
+│   ├── chunker.py         duration-aware smart chunking
+│   ├── omnivoice_engine.py  model load, bucketed batching, cloning
+│   └── models.py          normalize → chunk → generate → stitch
+├── processing/stitch.py   silence trim, DC removal, equal-power crossfade
+├── voices/                npz voice-clone registry
+└── test/                  unit tests + bench + deployment verification
+deploy/                    nginx config, env, start/stop scripts
+docs/DEPLOYMENT.md         the live deployment, with measured numbers
 ```
+
+---
+
+## Performance
+
+Measured on an L40S **shared with a multi-day training job**. Streaming, Hindi
+voice-bot text, cold cache, TensorRT FP16 backbone, `num_step=4`:
+
+| requests/sec | TTFB p50 | TTFB p90 | failures |
+|---|---|---|---|
+| 1 | 85 ms | 181 ms | 0 |
+| 2 | 124 ms | 186 ms | 0 |
+| 4 | 120 ms | 180 ms | 0 |
+| 6 | 140 ms | 207 ms | 0 |
+| 8 | 251 ms | 431 ms | 0 |
+
+Median TTFB stays under 150 ms to ~6 requests/second; the GPU saturates at
+~8.6 rps (45x realtime). TensorRT vs PyTorch: **2.0x lower TTFB, 1.44x
+throughput** — matching upstream's reported FP16 figure.
+
+Under *fixed* concurrency the queue dominates: 100 simultaneous requests give a
+~7.8 s median TTFB, because the card can only do ~8.6 requests/second no matter
+how the queue is arranged. For a voice bot that distinction matters — 100 open
+sessions are fine, 100 simultaneous *turns* are not. Full tables and the
+reasoning are in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ---
 
 ## Testing
 
 ```bash
-# unit tests (no GPU required)
-python -m pytest flowtts/test/test_text_chunker.py \
-                 flowtts/test/test_voice_npz.py \
-                 flowtts/test/test_pcm.py -q
+# unit tests — no GPU required (172 tests)
+python -m pytest flowtts/test/test_text_normalizer.py flowtts/test/test_chunker.py \
+                 flowtts/test/test_stitch.py flowtts/test/test_api.py \
+                 flowtts/test/test_voice_npz.py flowtts/test/test_pcm.py -q
 
-# end-to-end streaming benchmark against a running server
-python -m flowtts.test.test_pipeline --ctrl-port 8764 --requests 75 --streaming
+# against a running server
+python -m flowtts.test.verify_deployment --url http://127.0.0.1:9000   # 38 checks
+python -m flowtts.test.bench --rate 1,2,4,6,8 --duration 15            # offered load
+python -m flowtts.test.bench --sweep 1,4,16,64,100 --requests 200      # concurrency
+
+# engine correctness and generation-setting sweeps
+python -m flowtts.test.diagnose_backbone       # transformers vs mirror vs TRT
+python -m flowtts.test.sweep_generation        # num_step x guidance_scale
+python -m flowtts.test.diagnose_chunk --text "..."
 ```
 
 ---

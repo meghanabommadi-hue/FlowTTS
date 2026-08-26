@@ -14,6 +14,7 @@ import numpy as np
 import structlog
 
 from flowtts.synthesis.models import OmniVoiceSynthesizer
+from flowtts.synthesis.omnivoice_engine import GenParams
 
 logger = structlog.get_logger(__name__)
 
@@ -45,11 +46,26 @@ class SynthesisService:
         voice_id: str | None = None,
         speed: float | None = None,
         language: str | None = None,
+        instruct: str | None = None,
+        **generation,
     ) -> np.ndarray:
+        """Synthesize one utterance through the shared engine.
+
+        ``speed`` and any OmniVoice generation-config field may be passed as
+        keyword arguments; they are folded into a GenParams for this request
+        only, leaving the server defaults untouched.
+        """
         if not self._initialized:
             raise RuntimeError("SynthesisService not initialized. Call initialize() first.")
+        overrides = {k: v for k, v in generation.items() if v is not None}
+        if speed is not None:
+            overrides["speed"] = speed
         return await self.synthesizer.synthesize(
-            text, voice_id=voice_id, speed=speed, language=language
+            text,
+            voice_id=voice_id,
+            language=language,
+            instruct=instruct,
+            params=GenParams.build(overrides) if overrides else None,
         )
 
     @property

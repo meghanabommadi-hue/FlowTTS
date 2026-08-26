@@ -86,6 +86,28 @@ class VoiceRegistry:
         logger.info("voice_registered", alias=alias, tokens=tuple(data["ref_audio_tokens"].shape))
         return data
 
+    def remove(self, alias: str) -> bool:
+        """Drop a voice from the live registry (used by DELETE /v1/voices/{id})."""
+        existed = self._raw.pop(alias, None) is not None
+        self._prompts.pop(alias, None)
+        if existed:
+            logger.info("voice_unregistered", alias=alias)
+        return existed
+
+    def describe(self) -> list[dict]:
+        """Metadata for every loaded voice, for GET /v1/voices."""
+        return [
+            {
+                "voice_id": alias,
+                "language": data.get("language") or None,
+                "reference_frames": int(data["ref_audio_tokens"].shape[-1]),
+                "ref_text": data["ref_text"],
+                "sample_rate": data.get("sample_rate") or None,
+                "is_default": alias == self.default_voice,
+            }
+            for alias, data in sorted(self._raw.items())
+        ]
+
     def resolve(self, voice_id: str | None) -> str | None:
         """Return the alias to use: the requested one if known, else the default."""
         if voice_id and voice_id in self._raw:

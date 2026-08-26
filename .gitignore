@@ -19,3 +19,9 @@ monitoring/latest_llm_logs.json
 monitoring/recent.txt
 monitoring/stress_latest.json
 monitoring/silence_alerts.json
+
+# TensorRT / ONNX build artifacts (rebuilt per box, ~900 MB)
+engines/
+*.plan
+*.onnx
+*.onnx_data
