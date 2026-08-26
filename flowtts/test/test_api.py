@@ -431,3 +431,28 @@ def test_silent_generation_fails_the_whole_utterance_route_too(client):
     client.engine.synthesize = _silent
     r = client.post("/v1/tts", json={"text": "Hello there."})
     assert r.status_code >= 400 or len(r.content) > 44
+
+
+# ---------------------------------------------------------------------------
+# The WAV cache must not override the caller's format / sample rate
+# ---------------------------------------------------------------------------
+def test_cache_hit_honours_requested_format_and_rate(client, tmp_path):
+    """A cached entry is stored as 24 kHz WAV; the caller may want 8 kHz PCM."""
+    service_module.service._cache_dir = tmp_path
+    text = "Cache format probe."
+
+    first = client.post("/v1/tts", json={"text": text, "language": "en"})
+    assert first.status_code == 200 and first.content[:4] == b"RIFF"
+    assert first.headers["x-cache-hit"] == "0"
+
+    second = client.post("/v1/tts", json={"text": text, "language": "en",
+                                          "format": "pcm", "sample_rate": 8000})
+    assert second.status_code == 200
+    assert second.headers["x-cache-hit"] == "1", "expected the second call to hit cache"
+    assert second.headers["x-sample-rate"] == "8000"
+    assert second.headers["x-audio-format"] == "pcm"
+    assert second.content[:4] != b"RIFF", "cache returned a WAV for a pcm request"
+    # 8 kHz is a third of 24 kHz, so the payload should be about a third the size.
+    assert len(second.content) < len(first.content) * 0.5
+
+    service_module.service._cache_dir = None

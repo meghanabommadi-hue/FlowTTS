@@ -22,6 +22,7 @@ import io
 import shutil
 import struct
 import subprocess
+import wave
 from typing import Optional
 
 import numpy as np
@@ -169,6 +170,22 @@ def encode_audio(
 
     pcm = to_pcm16(wav)
     return wav_header(sample_rate, len(pcm)) + pcm, "wav", CONTENT_TYPES["wav"]
+
+
+def decode_wav(data: bytes) -> tuple[np.ndarray, int]:
+    """Decode a PCM WAV back to float32 plus its sample rate.
+
+    Needed so a WAV-cache hit can still honour the caller's requested format and
+    sample rate, instead of handing back the stored 24 kHz WAV regardless.
+    """
+    with wave.open(io.BytesIO(data)) as handle:
+        rate = handle.getframerate()
+        width = handle.getsampwidth()
+        frames = handle.readframes(handle.getnframes())
+    if width != 2:
+        raise ValueError(f"cached WAV is {width * 8}-bit; expected 16-bit PCM")
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    return samples, rate
 
 
 def streaming_content_type(fmt: str) -> str:

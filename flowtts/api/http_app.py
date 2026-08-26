@@ -199,14 +199,28 @@ async def _synthesize_whole(req: SynthesisRequest) -> tuple[bytes, str, str, Syn
         if cached is None and not overrides:
             cached = service.cache_lookup_legacy(req.text.strip())
         if cached is not None:
-            elapsed = round((time.perf_counter() - started) * 1000)
-            meta = SynthesisMetadata(
-                sample_rate=service.sample_rate, format="wav",
-                duration_seconds=round(max(0, len(cached) - 44) / 2 / service.sample_rate, 3),
-                chunks=1, language=language, voice_id=req.voice_id,
-                normalized_text=clean, total_ms=elapsed, ttfb_ms=elapsed, cache_hit=True,
-            )
-            return cached, "wav", audio_io.CONTENT_TYPES["wav"], meta
+            # The cache stores WAV at the engine's native rate. Re-encode it to
+            # whatever this caller asked for rather than handing back the stored
+            # bytes: otherwise a request for 8 kHz PCM silently receives a 24 kHz
+            # WAV whenever the text happens to be cached, which a telephony
+            # pipeline downstream will happily play at the wrong speed.
+            try:
+                wav, cached_rate = audio_io.decode_wav(cached)
+                wav = audio_io.resample(wav, cached_rate, rate)
+                body, actual_fmt, content_type = audio_io.encode_audio(wav, rate, fmt)
+            except Exception as exc:  # noqa: BLE001 — a corrupt entry must not fail the request
+                logger.warning("wav_cache_decode_failed", error=str(exc), key=cache_key)
+                body = None
+            if body is not None:
+                elapsed = round((time.perf_counter() - started) * 1000)
+                meta = SynthesisMetadata(
+                    sample_rate=rate, format=actual_fmt,
+                    duration_seconds=round(len(wav) / rate, 3) if rate else 0.0,
+                    chunks=1, language=language, voice_id=req.voice_id,
+                    normalized_text=clean, total_ms=elapsed, ttfb_ms=elapsed,
+                    cache_hit=True,
+                )
+                return body, actual_fmt, content_type, meta
 
     prompt, temp_ref = await _build_prompt(req)
     try:
@@ -612,12 +626,20 @@ async def normalize(payload: dict) -> JSONResponse:
         chunk_seconds=settings.streaming.chunk_seconds,
         min_chunk_seconds=settings.streaming.min_chunk_seconds,
     )
+    from flowtts.text import omnivoice_lang, resolve_language
+
     from flowtts.synthesis.models import for_model
 
     return JSONResponse({
         "original": text,
         "normalized": for_model(clean),
+        # Three views of the language, because this endpoint exists to show what
+        # the server decided: what the caller sent, what the normalizer tables
+        # were selected by, and what OmniVoice will actually be given (it keys
+        # several Indic languages by ISO 639-3, so "or" reaches it as "ory").
         "language": resolved,
+        "resolved_language": resolve_language(resolved) if resolved else None,
+        "omnivoice_language": omnivoice_lang(resolved),
         "detected_language": detect_language(text),
         "chunks": [
             {"index": i, "text": for_model(chunk),
