@@ -417,6 +417,65 @@ Note what happened: the OTP is read digit by digit, the amount as a cardinal, th
 date localized, the acronym spelled out, the email spoken — and the Latin run
 inside the Hindi sentence handled in its own language.
 
+### Preview how text will be split
+
+Chunk boundaries decide whether a long reply sounds like one speaker or several
+clips, so you can see them without spending a GPU call:
+
+```bash
+curl -s -X POST $BASE/v1/chunks -H 'content-type: application/json' \
+  -d '{"text": "स्पोर्ट्स डेस्क, नई दिल्ली। ऑस्ट्रेलिया अंडर 19 के खिलाफ...", "language": "hi"}' | jq
+```
+
+```json
+{
+  "chunk_count": 4,
+  "language": "hi", "omnivoice_language": "hi",
+  "settings": {"target_chars": 200, "tolerance_chars": 50, "split_on_clause": true},
+  "chunks": [
+    {"index": 0, "chars": 179, "boundary": "sentence", "estimated_seconds": 14.92,
+     "text": "स्पोर्ट्स डेस्क, नई दिल्ली। … एलान कर दिया है।"},
+    {"index": 3, "chars": 94, "boundary": "end", "estimated_seconds": 7.83, "text": "…"}
+  ],
+  "estimated_seconds": 56.92
+}
+```
+
+`boundary` says why the split after that chunk happened:
+
+| value | meaning |
+|---|---|
+| `sentence` | a sentence terminator — what you want |
+| `clause` | 250 characters passed with no sentence ending, so a comma was used |
+| `word` | no punctuation at all was available |
+| `end` | the last chunk |
+
+`GET /v1/chunks?text=…&language=hi` works too. Pass `target_chars` /
+`tolerance_chars` to try a setting before changing it on the server:
+
+```bash
+curl -s -X POST $BASE/v1/chunks -H 'content-type: application/json' \
+  -d '{"text":"…","language":"hi","target_chars":300}' | jq '.chunk_count'
+```
+
+### Sentence terminators
+
+Chunking splits on the terminator of every script served, and the space after
+the Indic and Perso-Arabic ones is **optional**, because that text routinely
+omits it:
+
+| script | terminator | languages |
+|---|---|---|
+| Devanagari danda | `।` `॥` | hi mr ne sa kok mai doi brx bn or pa as gu |
+| Arabic | `۔` `؟` | ur sd ks |
+| Ol Chiki | `᱾` `᱿` | sat |
+| Latin / Tamil / Telugu / Kannada / Malayalam | `.` `?` `!` | requires a following space |
+| CJK | `。` `？` `！` | |
+
+`.` requires a following space so `3.14159`, `e.g.` and `example.com` are not
+split; the danda and Arabic full stop never appear inside a word or number, so
+they do not need one.
+
 ### Turning stages off
 
 ```bash

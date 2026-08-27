@@ -593,3 +593,33 @@ def test_voice_preference_holds_within_the_same_script(client):
     specific answer than "this is Devanagari"."""
     client.post("/v1/tts", json={"text": DEVANAGARI, "voice_id": "marathi"})
     assert _language_seen(client) == "mr"
+
+
+# ---------------------------------------------------------------------------
+# /v1/chunks — see the split without spending a GPU call
+# ---------------------------------------------------------------------------
+def test_chunks_endpoint(client):
+    body = client.post("/v1/chunks", json={"text": HINDI_LONG, "language": "hi"}).json()
+    assert body["chunk_count"] == len(body["chunks"]) > 1
+    assert body["language"] == "hi"
+    assert sum(c["chars"] for c in body["chunks"]) > 0
+    for chunk in body["chunks"][:-1]:
+        assert chunk["boundary"] in ("sentence", "clause", "word")
+    assert body["chunks"][-1]["boundary"] == "end"
+
+
+def test_chunks_endpoint_accepts_get(client):
+    r = client.get("/v1/chunks", params={"text": HINDI, "language": "hi"})
+    assert r.status_code == 200 and r.json()["chunk_count"] >= 1
+
+
+def test_chunks_endpoint_allows_trying_a_setting(client):
+    small = client.post("/v1/chunks", json={"text": HINDI_LONG, "language": "hi",
+                                            "target_chars": 60}).json()
+    big = client.post("/v1/chunks", json={"text": HINDI_LONG, "language": "hi",
+                                          "target_chars": 400}).json()
+    assert small["chunk_count"] > big["chunk_count"]
+
+
+def test_chunks_endpoint_requires_text(client):
+    assert client.post("/v1/chunks", json={}).status_code == 400

@@ -12,6 +12,7 @@ Role in pipeline:
       POST /v1/voices/preview    one-shot clone + synthesize, nothing persisted
       GET  /v1/languages         languages, with which have full number support
       POST /v1/normalize         run the text preprocessor alone (debugging)
+      POST /v1/chunks            preview how text will be split for synthesis
       GET  /v1/stats             engine + latency counters
       GET  /healthz /readyz      liveness / readiness
       GET  /metrics              Prometheus
@@ -648,6 +649,86 @@ async def normalize(payload: dict) -> JSONResponse:
              "chars": len(chunk), "boundary": chunk.boundary,
              "estimated_seconds": round(estimate_duration(chunk.text), 2)}
             for chunk in chunks
+        ],
+        "estimated_seconds": round(estimate_duration(clean), 2),
+    })
+
+
+@router.post("/v1/chunks", summary="Preview how text will be split")
+@router.get("/v1/chunks", include_in_schema=False)
+async def chunks(request: Request) -> JSONResponse:
+    """Show exactly how a piece of text will be cut up before synthesis.
+
+    The chunk boundaries decide whether a long reply sounds like one speaker or
+    several clips, so being able to see them without spending a GPU call — or
+    guessing from the audio — is the difference between tuning and hoping.
+
+    POST ``{"text": "...", "language": "hi"}`` or GET ``?text=...&language=hi``.
+    ``target_chars`` and ``tolerance_chars`` may be overridden to try a setting
+    before changing it on the server.
+    """
+    if request.method == "GET":
+        payload = dict(request.query_params)
+    else:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="body must be JSON")
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    from flowtts.synthesis.chunker import estimate_duration, split_for_streaming
+    from flowtts.synthesis.models import for_model
+
+    synthesizer = service.synthesizer
+    language = payload.get("language") or None
+    voice_id = payload.get("voice_id") or None
+
+    if synthesizer is not None:
+        clean, resolved = synthesizer.prepare(text, language, voice_id=voice_id)
+    else:
+        # Usable while the model is still loading — chunking needs no GPU.
+        from flowtts.text import NormalizerConfig, normalize_for_tts
+        config = NormalizerConfig.from_dict(settings.text.model_dump())
+        clean, resolved = normalize_for_tts(text, language, config)
+
+    st = settings.streaming
+    pieces = split_for_streaming(
+        clean,
+        target_chars=int(payload.get("target_chars") or st.target_chars),
+        tolerance_chars=int(payload.get("tolerance_chars") or st.tolerance_chars),
+        first_chunk_chars=payload.get("first_chunk_chars") or st.first_chunk_chars,
+        split_on_clause=st.split_on_clause,
+        max_chunks=st.max_chunks,
+    )
+
+    from flowtts.text import omnivoice_lang
+
+    return JSONResponse({
+        "text": text,
+        "normalized": for_model(clean),
+        "language": resolved,
+        "omnivoice_language": omnivoice_lang(resolved),
+        "chunk_count": len(pieces),
+        "settings": {
+            "target_chars": int(payload.get("target_chars") or st.target_chars),
+            "tolerance_chars": int(payload.get("tolerance_chars") or st.tolerance_chars),
+            "split_on_clause": st.split_on_clause,
+        },
+        "chunks": [
+            {
+                "index": chunk.index,
+                "text": for_model(chunk.text),
+                "chars": len(chunk),
+                # Why the split AFTER this chunk happened. "sentence" is the one
+                # you want; "clause" means 250 characters passed with no sentence
+                # ending; "word" means there was no punctuation at all.
+                "boundary": chunk.boundary,
+                "estimated_seconds": round(estimate_duration(chunk.text), 2),
+            }
+            for chunk in pieces
         ],
         "estimated_seconds": round(estimate_duration(clean), 2),
     })

@@ -94,16 +94,50 @@ _CHARS_PER_SECOND = {
 }
 _DEFAULT_CHARS_PER_SECOND = 14.0
 
-# Sentence terminators across the scripts this server serves.
-_TERMINATORS = ".?!।॥。？！…"
-_CLAUSE_CHARS = ",;:—–、，；："
+# Sentence terminators, split by whether the space after them is required.
+#
+# HARD terminators cannot occur inside a word or a number, so the space after
+# them is OPTIONAL. This matters: Devanagari, Bengali, Odia and Gurmukhi text
+# routinely omits the space after a danda ("...है।आपका..."), and Urdu does the
+# same with its full stop. Requiring whitespace there silently demotes every
+# sentence end in such text to a word gap, and the chunker then cuts mid-word.
+#
+# SOFT terminators are ambiguous and DO require trailing whitespace: "3.14",
+# "e.g." and "example.com" would all split otherwise, and an ellipsis appears
+# mid-sentence often enough ("well… I think") to belong here too.
+_HARD_TERMINATORS = (
+    "\u0964"   # DEVANAGARI DANDA         hi mr ne sa kok mai doi brx bn or pa as gu
+    "\u0965"   # DEVANAGARI DOUBLE DANDA
+    "\u06d4"   # ARABIC FULL STOP         ur sd ks
+    "\u061f"   # ARABIC QUESTION MARK
+    "\u1c7e"   # OL CHIKI MUCAAD          sat
+    "\u1c7f"   # OL CHIKI DOUBLE MUCAAD
+    "\u3002"   # IDEOGRAPHIC FULL STOP
+    "\uff1f"   # FULLWIDTH QUESTION MARK
+    "\uff01"   # FULLWIDTH EXCLAMATION MARK
+)
+_SOFT_TERMINATORS = ".?!\u2026"
+_TERMINATORS = _SOFT_TERMINATORS + _HARD_TERMINATORS
 
-# A boundary is the punctuation, any closing quote/bracket, and the space after
-# it. NBSP is excluded from the whitespace class: the normalizer uses it to bind
-# the words of one numeral, and a split there would read as two numbers.
-_SENTENCE_BOUNDARY = re.compile(rf"[{re.escape(_TERMINATORS)}]['\"”’)\]]*[^\S ]+")
-_CLAUSE_BOUNDARY = re.compile(rf"[{re.escape(_CLAUSE_CHARS)}]['\"”’)\]]*[^\S ]+")
-_WORD_BOUNDARY = re.compile(r"[^\S ]+")
+_CLAUSE_CHARS = (
+    ",;:"
+    "\u2014\u2013"                 # em dash, en dash
+    "\u060c\u061b"                 # ARABIC COMMA, ARABIC SEMICOLON   ur sd ks
+    "\u3001\uff0c\uff1b\uff1a"     # CJK comma / fullwidth , ; :
+)
+
+# A boundary is the punctuation, any closing quote or bracket, then whitespace —
+# required after a soft terminator, optional after a hard one. NBSP is excluded
+# from the whitespace class: the normalizer uses it to bind the words of one
+# numeral, and a split there would read as two separate numbers.
+_CLOSERS = "['\"\u201d\u2019)\\]]*"
+_WS = "[^\\S\u00a0]"
+_SENTENCE_BOUNDARY = re.compile(
+    "[" + re.escape(_SOFT_TERMINATORS) + "]" + _CLOSERS + _WS + "+"
+    "|[" + re.escape(_HARD_TERMINATORS) + "]" + _CLOSERS + _WS + "*"
+)
+_CLAUSE_BOUNDARY = re.compile("[" + re.escape(_CLAUSE_CHARS) + "]" + _CLOSERS + _WS + "+")
+_WORD_BOUNDARY = re.compile(_WS + "+")
 
 # Spans a split must never land inside.
 _ATOMIC = re.compile(
