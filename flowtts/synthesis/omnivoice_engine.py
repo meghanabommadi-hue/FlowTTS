@@ -193,6 +193,9 @@ class OmniVoiceEngine:
         # ordering deterministic while the batch loop collects the next batch.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="omnivoice_gpu")
         self._queue: asyncio.Queue[_Req] | None = None
+        self._pending: list[_Req] = []            # collected, not yet dispatched
+        self._arrival: asyncio.Event | None = None
+        self._collect_task: asyncio.Task | None = None
         self._batch_task: asyncio.Task | None = None
         self._gen_config_cls = None
 
@@ -273,69 +276,122 @@ class OmniVoiceEngine:
             logger.warning("backbone_patch_failed", error=str(exc))
             return {"backend": "pytorch", "error": str(exc)}
 
-    # ------------------------------------------------------------------ batch loop
+    # ------------------------------------------------------------------ batching
+    #
+    # Two tasks, not one. The collector drains the arrival queue into a pending
+    # pool continuously; the dispatcher forms a batch and hands it to the single
+    # GPU thread. Keeping them separate is the whole point: with one combined
+    # loop, `await run_in_executor(...)` blocks the same coroutine that reads the
+    # queue, so nothing is collected while the GPU is busy and a request that
+    # arrives mid-batch waits for the entire in-flight group before it is even
+    # considered. Split, the pool keeps filling during generation and the next
+    # batch is formed from everything that accumulated — which is what makes the
+    # batching actually in-flight rather than round-based.
+    #
+    # OmniVoice itself cannot take new sequences mid-generation: _generate_iterative
+    # runs one fixed step schedule across the whole call. So a batch is atomic
+    # once submitted, and the lever available is making sure the GPU is never
+    # idle and every batch is built from the freshest possible pool.
+
     def _ensure_batch_loop(self) -> None:
         if self._batch_task is None or self._batch_task.done():
+            loop = asyncio.get_event_loop()
             self._queue = asyncio.Queue()
-            self._batch_task = asyncio.get_event_loop().create_task(self._batch_loop())
+            self._pending = []
+            self._arrival = asyncio.Event()
+            self._collect_task = loop.create_task(self._collect_loop())
+            self._batch_task = loop.create_task(self._dispatch_loop())
 
-    async def _batch_loop(self) -> None:
+    async def _collect_loop(self) -> None:
+        """Drain the arrival queue into the pending pool, without ever blocking."""
+        while True:
+            try:
+                req = await self._queue.get()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                continue
+            self._pending.append(req)
+            self._arrival.set()
+
+    async def _dispatch_loop(self) -> None:
+        """Form the best batch available and run it, one at a time on the GPU."""
         loop = asyncio.get_event_loop()
         while True:
-            pending: list[_Req] = []
-            try:
-                pending.append(await asyncio.wait_for(self._queue.get(), timeout=5.0))
-            except asyncio.TimeoutError:
+            if not self._pending:
+                self._arrival.clear()
+                await self._arrival.wait()
                 continue
 
-            # Collect for up to batch_timeout, or until we have plenty to group.
-            deadline = loop.time() + self._batch_timeout
-            while len(pending) < self._max_batch * 4:
-                remaining = deadline - loop.time()
+            # Hold briefly for stragglers, but only while the pool is thin —
+            # once there is a full batch waiting there is nothing to gain by
+            # delaying it, and the wait is measured from the OLDEST request so a
+            # steady arrival stream cannot push its deadline forward forever.
+            deadline = self._pending[0].queued_at + self._batch_timeout
+            while len(self._pending) < self._max_batch:
+                remaining = deadline - time.perf_counter()
                 if remaining <= 0:
                     break
+                self._arrival.clear()
                 try:
-                    pending.append(await asyncio.wait_for(self._queue.get(), timeout=remaining))
+                    await asyncio.wait_for(self._arrival.wait(), timeout=remaining)
                 except asyncio.TimeoutError:
                     break
 
-            for group in self._group(pending):
-                try:
-                    await loop.run_in_executor(self._executor, self._generate_group, group)
-                except Exception as exc:  # noqa: BLE001
-                    self._fail(group, exc)
+            batch = self._take_batch()
+            if not batch:
+                continue
 
-    def _group(self, reqs: list[_Req]) -> list[list[_Req]]:
-        """Partition into batches that generate() can legally and efficiently run.
+            waited = time.perf_counter() - batch[0].queued_at
+            self.stats["queue_ms"] += waited * 1000
+            try:
+                await loop.run_in_executor(self._executor, self._generate_group, batch)
+            except Exception as exc:  # noqa: BLE001
+                self._fail(batch, exc)
 
-        Split by generation config and by has-prompt (both are whole-call
-        properties of generate()), then within each partition sort by estimated
-        length and cut a new batch whenever the item count, the total frame
-        budget, or the length-bucket ratio would be exceeded.
+    def _take_batch(self) -> list[_Req]:
+        """Remove and return the best batch that generate() can legally run.
+
+        ``generate()`` takes ONE generation_config per call, keys the voice-clone
+        path off item[0], and pads every item to the longest one. A batch is only
+        sound when its members agree on the first two, and only efficient when
+        they agree roughly on the third.
+
+        The oldest waiting request seeds the batch, so nothing starves however
+        much compatible work arrives behind it; companions are then chosen from
+        the pool by closeness in length, which is what keeps padding waste down.
         """
-        partitions: dict[tuple[str, bool], list[_Req]] = {}
-        for req in reqs:
-            partitions.setdefault((req.params.batch_key, req.prompt is not None), []).append(req)
+        if not self._pending:
+            return []
 
-        batches: list[list[_Req]] = []
-        for items in partitions.values():
-            items.sort(key=lambda r: r.est_frames)
-            current: list[_Req] = []
-            frames = 0
-            for req in items:
-                too_many = len(current) >= self._max_batch
-                too_long = current and (frames + req.est_frames) > self._max_batch_frames
-                # Padding waste: generate() pads to the longest item, so a short
-                # request batched behind a much longer one pays the long one's cost.
-                too_ragged = current and req.est_frames > current[0].est_frames * self._bucket_ratio
-                if current and (too_many or too_long or too_ragged):
-                    batches.append(current)
-                    current, frames = [], 0
-                current.append(req)
-                frames += req.est_frames
-            if current:
-                batches.append(current)
-        return batches
+        seed = self._pending[0]
+        key = (seed.params.batch_key, seed.prompt is not None)
+        low = seed.est_frames / self._bucket_ratio
+        high = seed.est_frames * self._bucket_ratio
+
+        candidates = [
+            (abs(req.est_frames - seed.est_frames), i, req)
+            for i, req in enumerate(self._pending)
+            if i > 0
+            and (req.params.batch_key, req.prompt is not None) == key
+            and low <= req.est_frames <= high
+        ]
+        candidates.sort(key=lambda item: item[0])
+
+        batch = [seed]
+        taken = {0}
+        frames = seed.est_frames
+        for _, index, req in candidates:
+            if len(batch) >= self._max_batch:
+                break
+            if frames + req.est_frames > self._max_batch_frames:
+                continue
+            batch.append(req)
+            taken.add(index)
+            frames += req.est_frames
+
+        self._pending = [r for i, r in enumerate(self._pending) if i not in taken]
+        return batch
 
     def _generate_group(self, group: list[_Req]) -> None:
         """Run one batched generate() on the GPU thread."""
@@ -596,7 +652,8 @@ class OmniVoiceEngine:
             **stats,
             "avg_batch_size": round(stats["batched_items"] / batches, 2),
             "avg_batch_ms": round(stats["gpu_ms"] / batches, 1),
-            "queue_depth": self._queue.qsize() if self._queue else 0,
+            "queue_depth": (self._queue.qsize() if self._queue else 0) + len(self._pending),
+            "avg_queue_ms": round(stats["queue_ms"] / max(1, stats["requests"]), 1),
             "engine": self.engine_info,
         }
 

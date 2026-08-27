@@ -30,9 +30,11 @@ text preprocessing is ported from
   abbreviations) ported and extended from
   [Ajaj-Ali/text_preprocessor_for_TTS](https://github.com/Ajaj-Ali/text_preprocessor_for_TTS),
   with per-script normalization of code-mixed (Hinglish) input.
-- 🎙️ **Streaming synthesis** — duration-aware smart chunking with a short first
-  chunk, all chunks dispatched to the GPU at once, results stitched with an
-  equal-power crossfade. Median TTFB ~85 ms.
+- 🎙️ **Sentence-aligned chunking** — text is cut at sentence ends, ~200 chars
+  (±50), so an ordinary utterance is generated in **one piece** and never
+  stitched at all. When a cut is unavoidable the stitcher knows *why* it
+  happened and gives it the right pause, and normalizes every chunk to one level
+  for the whole utterance. Median TTFB ~90 ms.
 - 🗣️ **Voice cloning** — REST clone usable immediately with no restart, a
   one-shot preview that saves nothing, and inline reference audio per request.
 - 🎛️ **Every OmniVoice parameter exposed** — all 13 generation-config fields plus
@@ -303,20 +305,20 @@ docs/DEPLOYMENT.md         the live deployment, with measured numbers
 Measured on an L40S **shared with a multi-day training job**. Streaming, Hindi
 voice-bot text, cold cache, TensorRT FP16 backbone, `num_step=4`:
 
-| requests/sec | TTFB p50 | TTFB p90 | failures |
-|---|---|---|---|
-| 1 | 85 ms | 181 ms | 0 |
-| 2 | 124 ms | 186 ms | 0 |
-| 4 | 120 ms | 180 ms | 0 |
-| 6 | 140 ms | 207 ms | 0 |
-| 8 | 251 ms | 431 ms | 0 |
+| requests/sec | TTFB p50 | TTFB p90 | TTFB p99 | failures |
+|---|---|---|---|---|
+| 1 | 87 ms | 114 ms | 165 ms | 0 |
+| 4 | 102 ms | 157 ms | 163 ms | 0 |
+| 8 | 105 ms | 146 ms | 176 ms | 0 |
+| 10 | 96 ms | 162 ms | 181 ms | 0 |
+| 12 | 125 ms | 190 ms | 272 ms | 0 |
 
-Median TTFB stays under 150 ms to ~6 requests/second; the GPU saturates at
-~8.6 rps (45x realtime). TensorRT vs PyTorch: **2.0x lower TTFB, 1.44x
+**p99 TTFB stays under 200 ms to 10 requests/second**; the GPU saturates at
+~18 rps (82x realtime). TensorRT vs PyTorch: **2.0x lower TTFB, 1.44x
 throughput** — matching upstream's reported FP16 figure.
 
-Under *fixed* concurrency the queue dominates: 100 simultaneous requests give a
-~7.8 s median TTFB, because the card can only do ~8.6 requests/second no matter
+Under *fixed* concurrency the queue dominates: 64 simultaneous requests give a
+~2.8 s median TTFB, because the card can only do ~18 requests/second no matter
 how the queue is arranged. For a voice bot that distinction matters — 100 open
 sessions are fine, 100 simultaneous *turns* are not. Full tables and the
 reasoning are in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).

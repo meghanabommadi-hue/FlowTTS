@@ -135,18 +135,34 @@ class OmniVoiceSettings(BaseModel):
 
     # --- Dynamic in-flight batching (request-level, length-bucketed) ---
     # Concurrent synthesize() calls — including every streamed chunk from every
-    # connection — are coalesced into one model.generate([...]) call.
-    max_batch: int = 16
+    # connection — are coalesced into batched model.generate([...]) calls.
+    #
+    # These numbers come from flowtts.test.bench_batching, and they are smaller
+    # than an LLM server's for a structural reason. OmniVoice's
+    # _generate_iterative runs a PER-ITEM Python loop inside every denoise step
+    # (top-k, gumbel, masked_fill, copy_ per batch element), and materializes
+    # float32 logits of [2B, 8, S, 1025]. Both scale with B and neither is
+    # batched work, so the win flattens almost immediately:
+    #
+    #     batch  1 -> 61.2 ms/item      batch  8 -> 53.3 ms/item
+    #     batch  2 -> 48.8 ms/item      batch 16 -> 47.8 ms/item
+    #     batch  4 -> 49.1 ms/item      batch 24 -> 52.3 ms/item
+    #
+    # Everything batching has to offer is captured by batch 2-4; past that a
+    # larger batch adds latency (a batch of 24 blocks the GPU for 1.26 s) and
+    # buys nothing. So the cap is deliberately modest.
+    max_batch: int = 8
     batch_timeout_ms: float = 8.0        # collection window before dispatch
-    # Hard ceiling on the work in one batch, in estimated audio frames summed
-    # across items. A batch of 16 two-second chunks and a batch of 16
-    # twenty-second chunks are not the same amount of GPU work, and only the
-    # second one blows the latency budget for everyone in it.
-    max_batch_frames: int = 6000
-    # Items whose estimated length differs by more than this ratio are not
-    # batched together: OmniVoice pads to the longest item, so mixing a 1 s
-    # chunk with a 20 s one makes the short request pay the long one's cost.
-    length_bucket_ratio: float = 2.0
+    # Total estimated audio frames in one batch. A batch is atomic — nothing in
+    # it returns until all of it does — so this bounds how long one request can
+    # be made to wait by the company it keeps.
+    max_batch_frames: int = 2400
+    # How much length mismatch to tolerate within a batch. generate() pads every
+    # item to the longest, and measurement says the padding is not worth paying:
+    # batching a short chunk with a long one ran at 0.66x of doing them
+    # separately. Keep this tight — it is a quality-of-service knob, not a
+    # throughput one.
+    length_bucket_ratio: float = 1.5
     # Requests beyond this wait in the queue rather than piling onto the GPU.
     max_active_requests: int = 256
 
@@ -217,37 +233,43 @@ class OutputSettings(BaseModel):
 class StreamingSettings(BaseModel):
     """Chunked streaming — the only way to stream a non-autoregressive model.
 
-    Budgets are seconds of estimated audio, not characters: see
-    flowtts/synthesis/chunker.py for why.
+    Chunks are measured in characters and aligned to punctuation; see
+    flowtts/synthesis/chunker.py for why the alignment matters more than the size.
     """
 
     enabled: bool = True
 
-    # First chunk short so the first audio frame ships fast (low TTFB); it may
-    # run to first_chunk_max_seconds to reach a real sentence/clause boundary.
-    first_chunk_seconds: float = 1.2
-    first_chunk_max_seconds: float = 2.6
-    second_chunk_seconds: float = 3.0
-    chunk_seconds: float = 10.0
-    # Below ~1 s of target audio OmniVoice returns silence a significant
-    # fraction of the time; chunks under this are merged, never sent.
-    min_chunk_seconds: float = 1.0
+    # A chunk runs to the last sentence end within target + tolerance. Only when
+    # 250 characters pass with no sentence ending does it fall back to a comma,
+    # and only failing that to a word gap.
+    target_chars: int = 200
+    tolerance_chars: int = 50
+    split_on_clause: bool = True
+    # Shrinks the FIRST chunk only, trading one extra seam for a lower TTFB.
+    # None keeps every chunk the same size, which is what sounds best.
+    first_chunk_chars: int | None = None
     max_chunks: int = 128
-    # Append a comma to chunks that end at a bare word gap, so the model reads a
-    # continuation contour instead of trailing off at every seam.
-    terminate_chunks: bool = True
 
     # --- Stitching (flowtts/processing/stitch.py) ---
+    # The pause inserted after each kind of boundary, in milliseconds. A full
+    # stop gets a real pause; a comma a shorter one; a word-gap cut none at all,
+    # because the phrase genuinely continues and gets a crossfade instead.
+    sentence_gap_ms: float = 260.0
+    clause_gap_ms: float = 130.0
     crossfade_ms: float = 20.0
-    edge_fade_ms: float = 4.0
+    edge_fade_ms: float = 8.0
+    click_fade_ms: float = 3.0
     final_fade_ms: float = 12.0
     trim_silence: bool = True
-    trim_keep_ms: float = 20.0
+    trim_keep_ms: float = 10.0
+    # Every chunk is normalized to one level for the whole utterance. OmniVoice's
+    # output level wanders ~3.4 dB between calls, which reads as the voice
+    # changing character mid-sentence, so the clamp has to be wider than that.
     level_match: bool = True
-    level_match_max_db: float = 1.5
+    level_match_max_db: float = 6.0
     # Streaming chunks skip OmniVoice's own edge padding and fades: those insert
-    # ~200 ms of silence per chunk, which is exactly what the stitcher then has
-    # to cut back out.
+    # ~200 ms of silence per chunk, which is exactly what the stitcher would then
+    # have to cut back out.
     disable_model_edge_processing: bool = True
 
 
@@ -329,18 +351,18 @@ PROFILES: dict[str, dict] = {
     # stable run to run.
     "fast": {
         "generation": {"num_step": 4, "guidance_scale": 2.0},
-        "omnivoice": {"max_batch": 32, "batch_timeout_ms": 6.0},
+        "omnivoice": {"max_batch": 8, "batch_timeout_ms": 6.0},
     },
     # The default: ~2x the compute of `fast` for clearly steadier prosody.
     "balanced": {
         "generation": {"num_step": 8, "guidance_scale": 2.0},
-        "omnivoice": {"max_batch": 24, "batch_timeout_ms": 8.0},
+        "omnivoice": {"max_batch": 8, "batch_timeout_ms": 8.0},
     },
     # Upstream's own defaults. Use for offline generation and for building the
     # WAV cache, where latency does not matter and quality is the whole point.
     "quality": {
         "generation": {"num_step": 32, "guidance_scale": 2.0},
-        "omnivoice": {"max_batch": 8, "batch_timeout_ms": 12.0},
+        "omnivoice": {"max_batch": 4, "batch_timeout_ms": 12.0},
     },
 }
 

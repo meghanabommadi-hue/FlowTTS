@@ -33,7 +33,7 @@ import structlog
 
 from flowtts.core.config import settings
 from flowtts.processing.stitch import StreamStitcher, stitch_all
-from flowtts.synthesis.chunker import split_for_streaming
+from flowtts.synthesis.chunker import CLAUSE, SENTENCE, Chunk, split_for_streaming
 from flowtts.synthesis.omnivoice_engine import GenParams, OmniVoiceEngine
 from flowtts.text import NormalizerConfig, light_sanitize, normalize_for_tts
 
@@ -48,6 +48,7 @@ class StreamChunk:
     audio: np.ndarray        # float32 at engine.sampling_rate
     is_final: bool
     text: str                # the text chunk this audio came from
+    boundary: str = "end"    # what caused the split after it (see chunker)
 
 
 # The normalizer binds the words of a single numeral with a non-breaking space
@@ -111,32 +112,34 @@ class OmniVoiceSynthesizer:
             text, language or settings.text.default_language, cfg
         )
 
-    def chunk(self, text: str) -> list[str]:
-        """Split normalized text with the configured streaming budgets."""
+    def chunk(self, text: str):
+        """Split normalized text into Chunks with the configured budgets."""
         st = settings.streaming
         return split_for_streaming(
             text,
-            first_chunk_seconds=st.first_chunk_seconds,
-            first_chunk_max_seconds=st.first_chunk_max_seconds,
-            second_chunk_seconds=st.second_chunk_seconds,
-            chunk_seconds=st.chunk_seconds,
-            min_chunk_seconds=st.min_chunk_seconds,
+            target_chars=st.target_chars,
+            tolerance_chars=st.tolerance_chars,
+            first_chunk_chars=st.first_chunk_chars,
+            split_on_clause=st.split_on_clause,
             max_chunks=st.max_chunks,
-            terminate_chunks=st.terminate_chunks,
         )
 
-    def _stitcher(self) -> StreamStitcher:
+    def _stitch_kwargs(self) -> dict:
         st = settings.streaming
-        return StreamStitcher(
-            self.engine.sampling_rate,
-            overlap_ms=st.crossfade_ms,
-            edge_fade_ms=st.edge_fade_ms,
-            final_fade_ms=st.final_fade_ms,
-            trim=st.trim_silence,
-            trim_keep_ms=st.trim_keep_ms,
-            level_match=st.level_match,
-            max_gain_db=st.level_match_max_db,
-        )
+        return {
+            "overlap_ms": st.crossfade_ms,
+            "edge_fade_ms": st.edge_fade_ms,
+            "click_fade_ms": st.click_fade_ms,
+            "final_fade_ms": st.final_fade_ms,
+            "trim": st.trim_silence,
+            "trim_keep_ms": st.trim_keep_ms,
+            "level_match": st.level_match,
+            "max_gain_db": st.level_match_max_db,
+            "gaps_ms": {SENTENCE: st.sentence_gap_ms, CLAUSE: st.clause_gap_ms},
+        }
+
+    def _stitcher(self) -> StreamStitcher:
+        return StreamStitcher(self.engine.sampling_rate, **self._stitch_kwargs())
 
     # ------------------------------------------------------------------ synthesize
     async def synthesize(
@@ -164,26 +167,25 @@ class OmniVoiceSynthesizer:
             return np.zeros(0, dtype=np.float32)
 
         params = params or GenParams.build()
-        chunks = self.chunk(clean) if chunked is not False else [clean]
+        # chunked=False means "one generate() for the whole text" — still a
+        # Chunk, so the code below has one shape to handle rather than two.
+        chunks = self.chunk(clean) if chunked is not False else [Chunk(text=clean)]
         if len(chunks) <= 1:
             return await self.engine.synthesize(
-                for_model(chunks[0] if chunks else clean), voice_id=voice_id,
+                for_model(chunks[0].text if chunks else clean), voice_id=voice_id,
                 language=lang, instruct=instruct, prompt=prompt, params=params,
             )
 
         stream_params = params.for_streaming()
         waves = await asyncio.gather(*[
-            self.engine.synthesize(for_model(chunk), voice_id=voice_id, language=lang,
-                                   instruct=instruct, prompt=prompt, params=stream_params)
+            self.engine.synthesize(for_model(chunk.text), voice_id=voice_id,
+                                   language=lang, instruct=instruct, prompt=prompt,
+                                   params=stream_params)
             for chunk in chunks
         ])
-        st = settings.streaming
         return stitch_all(
             list(waves), self.engine.sampling_rate,
-            overlap_ms=st.crossfade_ms, edge_fade_ms=st.edge_fade_ms,
-            final_fade_ms=st.final_fade_ms, trim=st.trim_silence,
-            trim_keep_ms=st.trim_keep_ms, level_match=st.level_match,
-            max_gain_db=st.level_match_max_db,
+            boundaries=[c.boundary for c in chunks], **self._stitch_kwargs(),
         )
 
     async def synthesize_stream(
@@ -215,8 +217,8 @@ class OmniVoiceSynthesizer:
         # consumer still receives them strictly in order.
         tasks = [
             asyncio.create_task(self.engine.synthesize(
-                for_model(chunk), voice_id=voice_id, language=lang, instruct=instruct,
-                prompt=prompt, params=params,
+                for_model(chunk.text), voice_id=voice_id, language=lang,
+                instruct=instruct, prompt=prompt, params=params,
             ))
             for chunk in chunks
         ]
@@ -231,10 +233,12 @@ class OmniVoiceSynthesizer:
                     break
                 wav = await task
                 is_final = i == len(tasks) - 1
-                audio = stitcher.push(wav, is_final=is_final)
+                audio = stitcher.push(wav, boundary=chunks[i].boundary,
+                                      is_final=is_final)
                 if audio.size or is_final:
-                    yield StreamChunk(index=emitted, audio=audio,
-                                      is_final=is_final, text=for_model(chunks[i]))
+                    yield StreamChunk(index=emitted, audio=audio, is_final=is_final,
+                                      text=for_model(chunks[i].text),
+                                      boundary=chunks[i].boundary)
                     emitted += 1
 
             if cancelled:

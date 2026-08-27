@@ -109,57 +109,77 @@ OmniVoice demo `model.py` (:8081), Jupyter and nginx itself.
 NVIDIA L40S **shared with a multi-day `transliteration.cli train` job** holding
 ~15 GiB and bursting across the CPUs. A dedicated card would do materially better.
 
-TensorRT FP16 backbone, streaming, Hindi voice-bot text mix, **cold WAV cache**.
+TensorRT FP16 backbone, streaming, Hindi voice-bot text mix, **cold WAV cache**,
+`num_step=4`.
 
 **Sustained offered load** — the measurement that sizes a deployment, because a
 voice bot's open sockets are idle between turns. The load generator sends at a
 fixed rate without waiting for responses, so a queue forms only if the server is
 genuinely behind.
 
-`num_step=4` (the `fast` profile):
-
 | requests/sec in | TTFB p50 | TTFB p90 | TTFB p99 | realtime | failures |
 |---|---|---|---|---|---|
-| 1 | 85 ms | 181 ms | 209 ms | 4.8x | 0 |
-| 2 | 124 ms | 186 ms | 209 ms | 9.6x | 0 |
-| 4 | 120 ms | 180 ms | 273 ms | 19.3x | 0 |
-| 6 | 140 ms | 207 ms | 304 ms | 29.5x | 0 |
-| 8 | 251 ms | 431 ms | 519 ms | 39.1x | 0 |
+| 1 | 87 ms | 114 ms | 165 ms | 4.5x | 0 |
+| 2 | 80 ms | 103 ms | 192 ms | 8.9x | 0 |
+| 4 | 102 ms | 157 ms | 163 ms | 17.9x | 0 |
+| 6 | 98 ms | 126 ms | 175 ms | 27.4x | 0 |
+| 8 | 105 ms | 146 ms | 176 ms | 36.8x | 0 |
+| 10 | 96 ms | 162 ms | 181 ms | 45.6x | 0 |
+| 12 | 125 ms | 190 ms | 272 ms | 54.7x | 0 |
+| 14 | 257 ms | 435 ms | 523 ms | 63.3x | 0 |
 
-`num_step=8` (the `balanced` profile, the default):
+**p99 TTFB stays under 200 ms all the way to 10 requests/second.** The knee is
+between 10 and 12.
 
-| requests/sec in | TTFB p50 | TTFB p90 | TTFB p99 | failures |
-|---|---|---|---|---|
-| 1 | 205 ms | 276 ms | 302 ms | 0 |
-| 2 | 198 ms | 303 ms | 307 ms | 0 |
-| 3 | 201 ms | 304 ms | 364 ms | 0 |
-| 4 | 246 ms | 402 ms | 579 ms | 0 |
-
-So: **median TTFB stays under 150 ms up to 6 requests/second at `num_step=4`**,
-with the knee just past 7. At `num_step=8` the median sits around 200 ms — the
-quality/latency trade is roughly 2x either way, and `num_step` is the only dial
-that moves it (`guidance_scale` costs nothing on this model — see below).
-
-These numbers are ~40-60 ms worse than an earlier revision, deliberately.
-`min_chunk_seconds` was raised from 0.5 to 1.0 after measuring that OmniVoice
-returns outright **silence** on targets below ~1 s of audio — reproducibly, in
-Hindi and Santali alike, roughly two runs in three at 34 frames while the same
-sentence at 125 frames was stable every time. A slightly later first byte is
-worth not shipping silent audio to a live call.
-
-**Fixed concurrency** — all N requests issued simultaneously, 200 per level:
+**Fixed concurrency** — all N requests issued at once, 96 per level:
 
 | concurrent | TTFB p50 | TTFB p99 | rps | realtime | failures |
 |---|---|---|---|---|---|
-| 1 | 100 ms | 175 ms | 5.4 | 28x | 0 |
-| 4 | 262 ms | 589 ms | 7.8 | 41x | 0 |
-| 8 | 586 ms | 1183 ms | 8.2 | 43x | 0 |
-| 16 | 1069 ms | 1928 ms | 8.6 | 45x | 0 |
-| 32 | 2095 ms | 3918 ms | 8.6 | 45x | 0 |
-| 64 | 5204 ms | 7494 ms | 8.7 | 46x | 0 |
-| 100 | 7787 ms | 11890 ms | 8.6 | 45x | 0 |
+| 1 | 101 ms | 187 ms | 9.7 | 44x | 0 |
+| 4 | 286 ms | 479 ms | 14.4 | 66x | 0 |
+| 8 | 574 ms | 874 ms | 13.9 | 63x | 0 |
+| 16 | 899 ms | 1511 ms | 17.4 | 79x | 0 |
+| 32 | 1798 ms | 3502 ms | 16.6 | 76x | 0 |
+| 64 | 2817 ms | 4785 ms | 18.1 | 82x | 0 |
 
-Zero failures at every level; the GPU saturates at ~8.6 rps (45x realtime).
+Zero failures at every level; the GPU saturates at ~18 rps (82x realtime).
+
+### What batching is worth here, measured
+
+`flowtts.test.bench_batching` on this box, `num_step=4`, uniform-length inputs:
+
+| batch | total | per item | vs sequential |
+|---|---|---|---|
+| 1 | 61.2 ms | 61.2 ms | 1.00x |
+| 2 | 97.6 ms | 48.8 ms | 1.25x |
+| 4 | 196.5 ms | 49.1 ms | 1.25x |
+| 8 | 426.4 ms | 53.3 ms | 1.15x |
+| 16 | 765.4 ms | 47.8 ms | 1.28x |
+| 24 | 1255.6 ms | 52.3 ms | 1.17x |
+
+Batching is worth about 1.2x and the curve is **flat from batch 2 onward** —
+unlike an LLM server, where it is the dominant throughput lever. The reason is
+structural: OmniVoice's `_generate_iterative` runs a per-item Python loop inside
+every denoise step (top-k, gumbel, masked_fill, copy_ per batch element) and
+materializes float32 logits of `[2B, 8, S, 1025]`. Both scale with batch size
+and neither is batched work.
+
+Mixed lengths are worse than not batching at all, because `generate()` pads
+every item to the longest:
+
+| | |
+|---|---|
+| short alone | 41.1 ms |
+| long alone | 83.2 ms |
+| run separately | 124.3 ms |
+| **batched together** | **156.7 ms** — 0.79x |
+| 8 mixed, separately | 452.2 ms |
+| **8 mixed, one batch** | **682.0 ms** — 0.66x |
+
+So `max_batch` is deliberately 8 rather than 32 (past batch 4 there is nothing
+left to gain and a batch of 24 blocks the GPU for 1.26 s), and
+`length_bucket_ratio` is deliberately tight at 1.5. Both are set from this
+measurement, not from intuition — rerun it after any model change.
 
 ### On the "TTFB < 200 ms at 100 concurrent" target
 
@@ -167,15 +187,15 @@ Not reachable on this hardware, and not by tuning. OmniVoice is
 non-autoregressive: each of the `num_step` denoise passes re-runs the whole
 28-layer backbone over the entire sequence, for the conditional and
 unconditional halves both. 100 simultaneous first-chunks is tens of TFLOP of
-work; the card sustains ~8.6 requests/second, so a 100-deep queue is ~11 s deep
+work; the card sustains ~18 requests/second, so a 100-deep queue is still seconds deep
 no matter how the queue is arranged.
 
 What the numbers above do say:
 
 * **100 concurrent voice-bot *sessions* are fine** if their combined turn rate
-  stays at or under ~6 turns/second — i.e. each session speaking about once
-  every 16 s. That is a normal IVR cadence, and median TTFB there is ~140 ms.
-* Sustained rates above ~7 rps need a second GPU. Throughput scales linearly
+  stays at or under ~10 turns/second — i.e. each session speaking about once
+  every 10 s. That is a normal IVR cadence, and p99 TTFB there is 181 ms.
+* Sustained rates above ~10 rps need a second GPU. Throughput scales linearly
   with cards; the service is stateless apart from the voice registry, so two
   instances behind the existing nginx upstream is the direct path.
 * The WAV cache serves repeated prompts in ~1 ms without touching the GPU, which

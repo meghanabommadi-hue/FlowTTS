@@ -618,13 +618,14 @@ async def normalize(payload: dict) -> JSONResponse:
     clean, resolved = normalize_for_tts(text, language, NormalizerConfig.from_dict(config_data))
 
     from flowtts.synthesis.chunker import split_for_streaming
+    st = settings.streaming
     chunks = split_for_streaming(
         clean,
-        first_chunk_seconds=settings.streaming.first_chunk_seconds,
-        first_chunk_max_seconds=settings.streaming.first_chunk_max_seconds,
-        second_chunk_seconds=settings.streaming.second_chunk_seconds,
-        chunk_seconds=settings.streaming.chunk_seconds,
-        min_chunk_seconds=settings.streaming.min_chunk_seconds,
+        target_chars=st.target_chars,
+        tolerance_chars=st.tolerance_chars,
+        first_chunk_chars=st.first_chunk_chars,
+        split_on_clause=st.split_on_clause,
+        max_chunks=st.max_chunks,
     )
     from flowtts.text import omnivoice_lang, resolve_language
 
@@ -642,9 +643,10 @@ async def normalize(payload: dict) -> JSONResponse:
         "omnivoice_language": omnivoice_lang(resolved),
         "detected_language": detect_language(text),
         "chunks": [
-            {"index": i, "text": for_model(chunk),
-             "estimated_seconds": round(estimate_duration(chunk), 2)}
-            for i, chunk in enumerate(chunks)
+            {"index": chunk.index, "text": for_model(chunk.text),
+             "chars": len(chunk), "boundary": chunk.boundary,
+             "estimated_seconds": round(estimate_duration(chunk.text), 2)}
+            for chunk in chunks
         ],
         "estimated_seconds": round(estimate_duration(clean), 2),
     })

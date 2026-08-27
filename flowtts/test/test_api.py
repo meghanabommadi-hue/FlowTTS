@@ -102,6 +102,9 @@ def client():
 
 HINDI = "आपका बकाया ₹2,500 है, कृपया 15/04/2026 तक payment करें। धन्यवाद।"
 
+# Long enough to exceed the 250-character chunk budget, so it must be split.
+HINDI_LONG = " ".join([HINDI] * 4)
+
 
 # ---------------------------------------------------------------------------
 # Synthesis
@@ -172,13 +175,21 @@ def test_stream_pcm_has_no_header(client):
 
 def test_long_text_is_chunked_into_several_generate_calls(client):
     before = len(client.engine.calls)
-    client.post("/v1/tts", json={"text": HINDI, "language": "hi"})
+    client.post("/v1/tts", json={"text": HINDI_LONG, "language": "hi"})
     assert len(client.engine.calls) - before > 1
 
 
 def test_short_text_is_a_single_generate_call(client):
     before = len(client.engine.calls)
     client.post("/v1/tts", json={"text": "Hello."})
+    assert len(client.engine.calls) - before == 1
+
+
+def test_an_ordinary_utterance_is_never_split(client):
+    """Every seam is a place the audio can betray itself, so a request that fits
+    inside the budget must reach the model in one piece."""
+    before = len(client.engine.calls)
+    client.post("/v1/tts", json={"text": HINDI, "language": "hi"})
     assert len(client.engine.calls) - before == 1
 
 
@@ -456,3 +467,13 @@ def test_cache_hit_honours_requested_format_and_rate(client, tmp_path):
     assert len(second.content) < len(first.content) * 0.5
 
     service_module.service._cache_dir = None
+
+
+def test_chunked_false_sends_the_whole_text_in_one_call(client):
+    """The unchunked path must still work — it is the reference the streaming
+    path is compared against."""
+    before = len(client.engine.calls)
+    r = client.post("/v1/tts", json={"text": HINDI_LONG, "language": "hi",
+                                     "chunked": False})
+    assert r.status_code == 200
+    assert len(client.engine.calls) - before == 1
