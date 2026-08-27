@@ -249,6 +249,7 @@ worth knowing:
 | `FLOWTTS_OUTPUT__SAMPLE_RATE` | resample from native 24 kHz (`16000`, `8000`) | `24000` |
 | `FLOWTTS_VOICES__DEFAULT_VOICE` | alias used when `voice_id` is omitted | `priya` |
 | `FLOWTTS_TEXT__ENABLED` | master switch for text normalization | `true` |
+| `FLOWTTS_TEXT__DETECT_LANGUAGE` | infer the inference language from the script | `false` |
 | `FLOWTTS_API_KEYS` | if set, requires Bearer / `X-API-Key` | *(none)* |
 
 Two findings worth carrying into any tuning you do, both measured on this model:
@@ -258,9 +259,12 @@ Two findings worth carrying into any tuning you do, both measured on this model:
   every step regardless of the value — 186 ms at 0.0 versus 190 ms at 2.0. What
   it does change is robustness: at 0 the model collapses to near-silence on short
   chunks. `num_step` is the dial; leave CFG at 2.0.
-- **Chunks below ~1 s of target audio come back silent** a large fraction of the
-  time, across languages. `min_chunk_seconds` enforces the floor by merging;
-  don't lower it chasing TTFB.
+- **Always pass `language`.** It conditions the model's phonemes and changes the
+  output completely: on identical text, `hi` versus `mr` differ by 1.71 mean
+  absolute error against a 0.0 rerun noise floor. Script detection is off by
+  default because it identifies a *script*, not a language — everything in
+  Devanagari would be read as Hindi. Requests missing it are counted in
+  `/v1/stats` under `no_language`.
 
 ---
 

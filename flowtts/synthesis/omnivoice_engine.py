@@ -204,6 +204,10 @@ class OmniVoiceEngine:
             "requests": 0, "batches": 0, "batched_items": 0,
             "errors": 0, "gpu_ms": 0.0, "queue_ms": 0.0,
             "degenerate": 0, "retries": 0,
+            # Requests that arrived with no language and no voice preference.
+            # Language conditions the model's phonemes, so a non-zero value here
+            # is the first thing to check when output sounds unstable.
+            "no_language": 0,
         }
 
     # ------------------------------------------------------------------ load

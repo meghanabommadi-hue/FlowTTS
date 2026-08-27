@@ -29,15 +29,23 @@ SR = 24000
 
 
 class _FakeRegistry:
+    # "marathi" deliberately stores a language that script detection would get
+    # wrong: its reference text is Devanagari, which detects as Hindi.
+    LANGUAGES = {"priya": "hi", "marathi": "mr", "nolang": ""}
+
     def describe(self):
-        return [{"voice_id": "priya", "language": "hi", "reference_frames": 120,
-                 "ref_text": "नमस्ते", "sample_rate": SR, "is_default": True}]
+        return [{"voice_id": vid, "language": lang or None, "reference_frames": 120,
+                 "ref_text": "नमस्ते", "sample_rate": SR, "is_default": vid == "priya"}
+                for vid, lang in self.LANGUAGES.items()]
 
     def aliases(self):
-        return ["priya"]
+        return sorted(self.LANGUAGES)
 
     def has(self, alias):
-        return alias == "priya"
+        return alias in self.LANGUAGES
+
+    def language(self, voice_id):
+        return self.LANGUAGES.get(voice_id) or None
 
 
 class _FakeEngine:
@@ -48,6 +56,7 @@ class _FakeEngine:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.stats: dict = {}
         self.engine_info = {"backbone": {"backend": "fake"}, "sampling_rate": SR}
         self.registry = _FakeRegistry()
 
@@ -55,6 +64,11 @@ class _FakeEngine:
         return None
 
     async def synthesize(self, text, **kwargs):
+        # Mirror the real engine's final step so assertions see the code the
+        # model would actually be given: OmniVoice keys several Indic languages
+        # by ISO 639-3, so "or" has to arrive as "ory".
+        from flowtts.text import omnivoice_lang
+        kwargs = {**kwargs, "language": omnivoice_lang(kwargs.get("language"))}
         self.calls.append((text, kwargs))
         await asyncio.sleep(0)
         samples = max(1, int(estimate_duration(text) * SR))
@@ -72,10 +86,10 @@ class _FakeEngine:
                 "language": language, "sample_rate": SR, "npz": f"/tmp/{voice_id}.npz"}
 
     def delete_voice(self, voice_id):
-        return voice_id == "priya"
+        return voice_id in _FakeRegistry.LANGUAGES
 
     def snapshot(self):
-        return {"engine": self.engine_info, "requests": len(self.calls)}
+        return {"engine": self.engine_info, "requests": len(self.calls), **self.stats}
 
 
 @pytest.fixture()
@@ -477,3 +491,105 @@ def test_chunked_false_sends_the_whole_text_in_one_call(client):
                                      "chunked": False})
     assert r.status_code == 200
     assert len(client.engine.calls) - before == 1
+
+
+# ---------------------------------------------------------------------------
+# Language resolution — the parameter that conditions the model's phonemes
+# ---------------------------------------------------------------------------
+DEVANAGARI = "आपका बकाया दो हज़ार रुपये है।"
+
+
+def _language_seen(client) -> str | None:
+    return client.engine.calls[-1][1]["language"]
+
+
+def test_explicit_language_wins(client):
+    client.post("/v1/tts", json={"text": DEVANAGARI, "language": "mr",
+                                 "voice_id": "priya"})
+    assert _language_seen(client) == "mr"
+
+
+def test_voice_preference_beats_script_detection(client):
+    """Script detection can only see a SCRIPT. Devanagari always looks like
+    Hindi, so a Marathi voice must not be conditioned as Hindi."""
+    client.post("/v1/tts", json={"text": DEVANAGARI, "voice_id": "marathi"})
+    assert _language_seen(client) == "mr", \
+        "the voice's own language lost to script detection"
+
+
+def test_no_detection_by_default(client):
+    """The caller is authoritative. A wrong guess is worse than none, because
+    script detection identifies a script, not a language."""
+    client.post("/v1/tts", json={"text": DEVANAGARI, "voice_id": "nolang"})
+    assert _language_seen(client) is None
+
+
+def test_missing_language_is_counted(client):
+    """So a caller that omits it can be found rather than silently degrading."""
+    before = client.engine.stats.get("no_language", 0)
+    client.post("/v1/tts", json={"text": DEVANAGARI, "voice_id": "nolang"})
+    assert client.engine.stats["no_language"] > before
+
+
+def test_script_detection_when_explicitly_enabled(client, monkeypatch):
+    from flowtts.core.config import settings
+    monkeypatch.setattr(settings.text, "detect_language", True)
+    client.post("/v1/tts", json={"text": DEVANAGARI, "voice_id": "nolang"})
+    assert _language_seen(client) == "hi"
+
+
+def test_language_names_and_iso_codes_are_resolved(client):
+    client.post("/v1/tts", json={"text": DEVANAGARI, "language": "hindi"})
+    assert _language_seen(client) == "hi"
+    # OmniVoice keys Odia by ISO 639-3, so "or" must reach it as "ory".
+    client.post("/v1/tts", json={"text": "ଆପଣଙ୍କ ବାକି ଅଛି।", "language": "or"})
+    assert _language_seen(client) == "ory"
+
+
+def test_numbers_are_still_spelled_in_the_right_script(client):
+    """Inference may run agnostic, but the numeral vocabulary still has to match
+    the text or Devanagari gets English number words in the middle of it."""
+    client.post("/v1/tts", json={"text": "आपका बकाया ₹2,500 है।", "voice_id": "nolang"})
+    spoken = client.engine.calls[-1][0]
+    assert "hazaar" not in spoken.lower() and "thousand" not in spoken.lower()
+    assert not any(ch.isdigit() for ch in spoken), spoken
+
+
+def test_language_is_used_for_normalization_too(client):
+    """The same resolution has to drive number spelling, or a Marathi voice
+    reads Marathi words with Hindi numerals in the middle."""
+    body = client.post("/v1/normalize",
+                       json={"text": "₹2,500", "language": "mr"}).json()
+    assert body["resolved_language"] == "mr"
+
+
+def test_streaming_resolves_the_language_the_same_way(client):
+    with client.stream("POST", "/v1/tts/stream",
+                       json={"text": DEVANAGARI, "voice_id": "marathi"}) as s:
+        for _ in s.iter_bytes():
+            pass
+    assert _language_seen(client) == "mr"
+
+
+def test_websocket_resolves_the_language_the_same_way(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({"type": "synthesize", "text": DEVANAGARI,
+                                 "voice_id": "marathi"}))
+        _drain_ws(ws)
+    assert _language_seen(client) == "mr"
+
+
+def test_voice_preference_yields_when_the_script_disagrees(client, monkeypatch):
+    """With detection on, a Marathi voice handed Tamil text still reads Tamil."""
+    from flowtts.core.config import settings
+    monkeypatch.setattr(settings.text, "detect_language", True)
+    client.post("/v1/tts", json={"text": "உங்கள் கணக்கில் உள்ளது.",
+                                 "voice_id": "marathi"})
+    assert _language_seen(client) == "ta"
+
+
+def test_voice_preference_holds_within_the_same_script(client):
+    """…but Marathi and Hindi share Devanagari, and there the voice is the more
+    specific answer than "this is Devanagari"."""
+    client.post("/v1/tts", json={"text": DEVANAGARI, "voice_id": "marathi"})
+    assert _language_seen(client) == "mr"

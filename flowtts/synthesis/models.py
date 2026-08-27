@@ -35,7 +35,12 @@ from flowtts.core.config import settings
 from flowtts.processing.stitch import StreamStitcher, stitch_all
 from flowtts.synthesis.chunker import CLAUSE, SENTENCE, Chunk, split_for_streaming
 from flowtts.synthesis.omnivoice_engine import GenParams, OmniVoiceEngine
-from flowtts.text import NormalizerConfig, light_sanitize, normalize_for_tts
+from flowtts.text import (
+    NormalizerConfig,
+    detect_language,
+    light_sanitize,
+    normalize_for_tts,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -61,6 +66,18 @@ _NBSP = "\u00a0"
 def for_model(text: str) -> str:
     """Undo the chunker's non-breaking hints just before the GPU sees the text."""
     return text.replace(_NBSP, " ")
+
+
+def _same_script(a: str, b: str) -> bool:
+    """True if two language codes are written in the same script.
+
+    Languages this server has no profile for (Yoruba, Igbo, Nigerian Pidgin —
+    all Latin) fall through to the English profile, which is also Latin, so they
+    compare equal to detected Latin text and keep their voice's language.
+    """
+    from flowtts.text import get_profile
+
+    return (get_profile(a).script or "latn") == (get_profile(b).script or "latn")
 
 
 def _normalizer_config(overrides: dict | None = None) -> NormalizerConfig:
@@ -94,23 +111,76 @@ class OmniVoiceSynthesizer:
         return self.engine.registry
 
     # ------------------------------------------------------------------ prep
+    def resolve_language(self, text: str, language: str | None,
+                         voice_id: str | None) -> str | None:
+        """Decide the language once, for both normalization and inference.
+
+        Precedence, highest first:
+
+            1. what the caller asked for — pass it, on every request
+            2. the voice's own preferred language, stored when it was cloned
+            3. the script of the text, only if ``text.detect_language`` is on
+               (it is off by default)
+            4. the configured default
+            5. None — OmniVoice runs language-agnostic
+
+        There is deliberately no detection in the default path. Script detection
+        cannot identify a language, only a script, and language changes the
+        model's output completely, so a confident wrong guess is worse than
+        none.
+
+        Step 2 is not detection — it is metadata recorded when the voice was
+        cloned, and it applies only when the caller omitted the parameter. When
+        detection is enabled it is additionally required to agree with the
+        text's script, so an Assamese voice handed Tamil text still reads Tamil.
+        """
+        if language:
+            return language
+
+        detected = (detect_language(text, default="")
+                    if settings.text.detect_language else "")
+        preferred = self.registry.language(voice_id) if self.registry else None
+
+        if preferred and (not detected or _same_script(preferred, detected)):
+            return preferred
+
+        resolved = detected or settings.text.default_language
+        if not resolved:
+            # Worth surfacing rather than silently running agnostic: language
+            # conditions the model's phonemes, so a caller omitting it is the
+            # most likely source of "the voice sounds unstable". The counter
+            # shows up in /v1/stats so it can be tracked down.
+            self.engine.stats["no_language"] = self.engine.stats.get("no_language", 0) + 1
+            logger.warning("request_without_language", voice_id=voice_id,
+                           chars=len(text), preview=text[:48])
+        return resolved
+
     def prepare(
         self,
         text: str,
         language: str | None,
         *,
+        voice_id: str | None = None,
         normalize: bool | None = None,
         normalizer_overrides: dict | None = None,
     ) -> tuple[str, str | None]:
         """Normalize *text* and resolve the language to synthesize it in."""
+        resolved = self.resolve_language(text, language, voice_id)
         if normalize is False:
-            return light_sanitize(text), language
+            return light_sanitize(text), resolved
+
         cfg = _normalizer_config(normalizer_overrides)
         if normalize is True:
             cfg.enabled = True
-        return normalize_for_tts(
-            text, language or settings.text.default_language, cfg
-        )
+
+        # The normalizer still needs *a* language even when inference will run
+        # agnostic, because it has to pick the words a numeral is spelled with —
+        # "२,५००" must not come out as English inside a Hindi sentence. That
+        # choice never reaches the model: it only decides which characters are
+        # written, so inferring it from the script here is safe in a way that
+        # inferring the inference language is not.
+        clean, _ = normalize_for_tts(text, resolved or detect_language(text), cfg)
+        return clean, resolved
 
     def chunk(self, text: str):
         """Split normalized text into Chunks with the configured budgets."""
@@ -161,7 +231,8 @@ class OmniVoiceSynthesizer:
         long text is both slower (OmniVoice chunks it internally anyway, serially)
         and more likely to drift in prosody than N batched chunks stitched here.
         """
-        clean, lang = self.prepare(text, language, normalize=normalize,
+        clean, lang = self.prepare(text, language, voice_id=voice_id,
+                                   normalize=normalize,
                                    normalizer_overrides=normalizer_overrides)
         if not clean:
             return np.zeros(0, dtype=np.float32)
@@ -202,7 +273,8 @@ class OmniVoiceSynthesizer:
         cancel_event: asyncio.Event | None = None,
     ):
         """Yield :class:`StreamChunk` objects in order as each chunk completes."""
-        clean, lang = self.prepare(text, language, normalize=normalize,
+        clean, lang = self.prepare(text, language, voice_id=voice_id,
+                                   normalize=normalize,
                                    normalizer_overrides=normalizer_overrides)
         if not clean:
             return

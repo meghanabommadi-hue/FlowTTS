@@ -434,6 +434,53 @@ Toggles: `enabled`, `numbers`, `datetime`, `urls_emails`, `phone_numbers`,
 `otp_digit_splitting`, `abbreviations`, `symbols`, `contractions`, `code_mixed`,
 `lowercase`, `min_digit_run`, `latin_language`.
 
+### The `language` parameter
+
+**Pass it on every request.** It conditions the model's phoneme choices, and it
+changes the output completely — measured with deterministic sampling on
+identical Hindi text:
+
+| | mean absolute difference |
+|---|---|
+| `hi` vs `hi` (rerun) | **0.0000** — the noise floor |
+| `hi` vs `mr` | **1.71** |
+| `hi` vs `ta` | 1.68 |
+| `hi` vs `en` | 1.42 |
+
+Resolution order, highest first:
+
+1. **`language` on the request** — always wins, and is passed to the model verbatim
+2. the voice's own language, recorded when it was cloned
+3. the text's script — **off by default**, see below
+4. nothing: OmniVoice runs language-agnostic
+
+There is deliberately no script detection in the default path. Detection can
+identify a *script*, not a language: Devanagari always resolves to Hindi, so
+Marathi, Nepali and Sanskrit would all be conditioned as Hindi, and Assamese as
+Bengali. Given the table above, a confident wrong guess is worse than none.
+Set `FLOWTTS_TEXT__DETECT_LANGUAGE=true` if you want it anyway.
+
+Names, ISO 639-1 and ISO 639-3 all resolve, and the value is remapped to
+whatever OmniVoice actually accepts:
+
+```bash
+"language": "hi"      → hi     "language": "hindi"  → hi
+"language": "or"      → ory    "language": "odia"   → ory
+"language": "ne"      → npi    "language": "kok"    → knn
+```
+
+Requests that arrive with no language and no voice preference are counted, so a
+caller that omits it can be found rather than silently degrading:
+
+```bash
+curl -s $BASE/v1/stats | jq .no_language
+```
+
+Number and date spelling is chosen separately, from the text's script, so
+`"₹2,500"` in Devanagari still reads as `दो हज़ार पाँच सौ रुपये` even when
+inference runs agnostic. That choice never reaches the model — it only decides
+which characters get written.
+
 ### Supported languages
 
 ```bash

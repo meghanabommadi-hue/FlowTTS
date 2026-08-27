@@ -187,7 +187,8 @@ async def _synthesize_whole(req: SynthesisRequest) -> tuple[bytes, str, str, Syn
     started = time.perf_counter()
 
     clean, language = synthesizer.prepare(
-        req.text, req.language, normalizer_overrides=req.normalizer_overrides()
+        req.text, req.language, voice_id=req.voice_id,
+        normalizer_overrides=req.normalizer_overrides(),
     )
 
     # Cache lookup only for the plain path: an inline reference clip or a

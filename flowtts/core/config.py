@@ -197,8 +197,20 @@ class TextSettings(BaseModel):
     lowercase: bool = False
     min_digit_run: int = 4
     latin_language: str = "en-IN"
-    # Language assumed when a request declares none and the text has no script
-    # to detect from (pure digits/punctuation).
+    # Whether to infer the INFERENCE language from the text's script when the
+    # request declares none. Off: the caller is authoritative.
+    #
+    # Script detection cannot identify a language, only a script — Devanagari
+    # always resolves to Hindi, so Marathi, Nepali and Sanskrit input would all
+    # be conditioned as Hindi, and Assamese as Bengali. Since language changes
+    # the model's output completely (measured: "hi" vs "mr" on identical text
+    # differ by 1.71 mean absolute error against a 0.0 rerun noise floor), a
+    # wrong guess is worse than no guess. Pass `language` on every request.
+    #
+    # This does NOT disable the normalizer's own script check, which only picks
+    # which words a numeral is spelled with and never reaches the model.
+    detect_language: bool = False
+    # Used when nothing else resolves. None means "let OmniVoice decide".
     default_language: str | None = None
 
 
