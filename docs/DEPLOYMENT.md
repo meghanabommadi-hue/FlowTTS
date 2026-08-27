@@ -60,11 +60,42 @@ http://127.0.0.1:8090     the service's own nginx block (port not open externall
 
 ```bash
 cd /root/omnivoice-svc
-./start.sh &                 # supervised; restarts on non-zero exit
-./stop.sh                    # stops ONLY this service, never a broad pkill
+nohup ./start.sh >/dev/null 2>&1 &   # supervised; restarts on non-zero exit
+./stop.sh                            # stops ONLY this service
 tail -f omnivoice.log
 curl -s http://127.0.0.1:9764/stats | python3 -m json.tool
 ```
+
+`start.sh` records its PID in `omnivoice.pid` and refuses to start a second
+supervisor while one is alive. `stop.sh` kills the supervisor first — by PID —
+then the service, and reports a non-zero exit if anything survives.
+
+That ordering and that pidfile both exist because of a real failure here: the
+original `stop.sh` matched the supervisor by command line, but the launcher runs
+as `./start.sh`, so a pattern built from the absolute path never matched. Every
+stop killed only the child, the loop restarted it ten seconds later, and each
+subsequent start added another supervisor — **fifteen accumulated** before it
+was noticed, all racing to restart the service.
+
+Two self-match hazards are also guarded, both of which actually fired: the
+service pattern is assembled from string fragments so the script's own command
+line cannot contain it, and the fallback scan for pre-pidfile supervisors skips
+this process and its ancestors and requires a candidate to *be* `bash …start.sh`
+(exactly two arguments) rather than merely mention it. Without those, running
+`./stop.sh` from inside `/root/omnivoice-svc` kills the shell that ran it.
+
+Confirming it is really down (the supervisor retries after 10 s, so wait past
+that before believing a clean result):
+
+```bash
+sleep 12
+pgrep -af "flowtts[.]service"        # expect nothing
+ss -ltn | grep -E ':(9000|9080|9081|9764) '   # expect nothing
+nvidia-smi --query-gpu=memory.used --format=csv,noheader
+```
+
+Stopped, the service returns ~9.3 GiB: the card sits at ~15 GiB (the other
+services and the training job) against ~24.3 GiB while it runs.
 
 Change the latency profile in `start.sh` (`PROFILE=fast|balanced|quality`) or
 override any single setting in `omnivoice.env`.
