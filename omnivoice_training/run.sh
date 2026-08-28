@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch the whole unattended pipeline detached, guarded by a pidfile.
 set -uo pipefail
-BASE=/opt/omnivoice-train
+BASE=/home/jovyan/omnivoice-train
 RUN=${RUN:-$BASE/run}
 PKG=$BASE/omnivoice_training
 mkdir -p "$RUN/logs"

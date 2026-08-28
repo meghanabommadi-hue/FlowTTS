@@ -4,8 +4,9 @@
 # TensorBoard binds to loopback only and is proxied, so it is never directly
 # exposed. --path_prefix is required or its asset URLs break behind the proxy.
 set -uo pipefail
-RUN=${RUN:-/opt/omnivoice-train/run}
-TB=${TB:-/opt/omnivoice-train/.venv/bin/tensorboard}
+BASE_DIR=${BASE_DIR:-/home/jovyan/omnivoice-train}
+RUN=${RUN:-$BASE_DIR/run}
+TB=${TB:-$BASE_DIR/.venv/bin/tensorboard}
 # 6006 belongs to another tenant's tensorboard on this shared box - pick the
 # first free port at or above 6007 rather than fighting them for it.
 PORT=${PORT:-6007}
@@ -25,12 +26,12 @@ server {
 
     # status json + preview wavs, served straight off disk
     location /status/ {
-        alias /opt/omnivoice-train/run/ui/;
+        alias /home/jovyan/omnivoice-train/run/ui/;
         add_header Cache-Control "no-store, must-revalidate";
         autoindex on;
     }
     location /wav/ {
-        alias /opt/omnivoice-train/run/eval_wav/;
+        alias /home/jovyan/omnivoice-train/run/eval_wav/;
         add_header Accept-Ranges bytes;
         autoindex on;
     }

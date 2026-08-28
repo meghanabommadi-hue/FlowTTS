@@ -87,6 +87,12 @@ def main():
     ap.add_argument("--max-sec", type=float, default=25.0)
     ap.add_argument("--token", default=os.environ.get("HF_TOKEN"))
     ap.add_argument("--status", default=None, help="json status file for the UI")
+    ap.add_argument("--read-workers", type=int, default=8,
+                    help="parallel parquet shard readers")
+    ap.add_argument("--skip-shards", type=int, default=0,
+                    help="resume: skip this many shards of the (shuffled) list")
+    ap.add_argument("--max-shards", type=int, default=0,
+                    help="stop after this many shards (0 = no limit)")
     ap.add_argument("--shuffle-seed", type=int, default=17,
                     help="shard order seed - avoids taking every clip from one speaker")
     ap.add_argument("--from-sources", action="store_true",
@@ -120,7 +126,8 @@ def main():
         cols = ["audio_id", "speaker_id", "transcript", "language",
                 "audio_path", "audio"]
         ds = iter_rows(repo, a.split, columns=cols, token=a.token,
-                       shuffle_seed=a.shuffle_seed)
+                       shuffle_seed=a.shuffle_seed, workers=a.read_workers,
+                       skip_shards=a.skip_shards, max_shards=a.max_shards or None)
 
         ftr = open(train_p, "w", encoding="utf-8")
         fdv = open(dev_p, "w", encoding="utf-8")

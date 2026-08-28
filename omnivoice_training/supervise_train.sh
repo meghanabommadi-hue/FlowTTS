@@ -10,10 +10,10 @@ set -uo pipefail
 
 RUN=${1:?run dir}
 BT_OVERRIDE=${2:-}
-PKG=${PKG:-/opt/omnivoice-train/omnivoice_training}
-SRC=${SRC:-/opt/OmniVoice-src}
-PY=${PY:-/opt/omnivoice-train/.venv/bin/python}
-ACC=${ACC:-/opt/omnivoice-train/.venv/bin/accelerate}
+PKG=${PKG:-/home/jovyan/omnivoice-train/omnivoice_training}
+SRC=${SRC:-/home/jovyan/omnivoice-train/OmniVoice-src}
+PY=${PY:-/home/jovyan/omnivoice-train/.venv/bin/python}
+ACC=${ACC:-/home/jovyan/omnivoice-train/.venv/bin/accelerate}
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-60}
 EXP="$RUN/exp"
 
@@ -27,8 +27,8 @@ export OHUN_INFER_TIMEOUT=${OHUN_INFER_TIMEOUT:-1200}
 export OHUN_HF_REPO=${OHUN_HF_REPO:-kapturecx/ohun-omnivoice}
 export OHUN_HF_MIN_DELTA=${OHUN_HF_MIN_DELTA:-0.002}
 export OHUN_HF_MIN_STEP=${OHUN_HF_MIN_STEP:-500}
-[ -f /opt/omnivoice-train/token.write ] && \
-  export OHUN_HF_TOKEN=$(cat /opt/omnivoice-train/token.write)
+[ -f /home/jovyan/omnivoice-train/token.write ] && \
+  export OHUN_HF_TOKEN=$(cat /home/jovyan/omnivoice-train/token.write)
 export HF_TOKEN=${OHUN_HF_TOKEN:-}
 
 mkdir -p "$EXP"

@@ -9,7 +9,7 @@ lets us pull only the columns we actually need.
 """
 from __future__ import annotations
 
-import io, re, threading, time
+import io, json, os, re, threading, time
 
 import pyarrow.parquet as pq
 import requests
@@ -74,13 +74,30 @@ class HttpFile(io.RawIOBase):
         return data
 
 
-def list_shards(repo, split, token=None, repo_type="datasets"):
+def _cache_path(repo, split):
+    d = os.environ.get("OHUN_SHARD_CACHE", "/tmp/ohun_shard_cache")
+    os.makedirs(d, exist_ok=True)
+    key = f"{repo}_{split}".replace("/", "_")
+    return os.path.join(d, key + ".json")
+
+
+def list_shards(repo, split, token=None, repo_type="datasets", use_cache=True):
     """Return [(path, size)] for one split, newest shard-set only.
 
     Some repos carry orphaned shard sets from an earlier re-shard (igbo has both
     dev-*-of-00016 and dev-*-of-00041); including both would duplicate rows, so
     keep only the set written by the newest commit.
     """
+    # The tree endpoint pages through every file in the repo (6,885 for ohun),
+    # and this is called once per window - cache it.
+    cp = _cache_path(repo, split)
+    if use_cache and os.path.exists(cp):
+        try:
+            with open(cp) as fh:
+                return [tuple(x) for x in json.load(fh)]
+        except Exception:
+            pass
+
     files, cursor = [], None
     while True:
         url = f"{API}/api/{repo_type}/{repo}/tree/main?recursive=1&expand=1"
@@ -113,24 +130,69 @@ def list_shards(repo, split, token=None, repo_type="datasets"):
     if not sets:
         return []
     best = max(sets.values(), key=lambda v: (v["newest"], len(v["files"])))
-    return sorted(best["files"])
+    out = sorted(best["files"])
+    if use_cache:
+        try:
+            tmp = cp + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(out, fh)
+            os.replace(tmp, cp)
+        except Exception:
+            pass
+    return out
 
 
-def iter_rows(repo, split, columns=None, token=None, shuffle_seed=None, repo_type="datasets"):
-    """Yield row dicts, one shard at a time, without materialising the dataset."""
+def _read_shard(repo, path, size, columns, token, repo_type):
+    url = f"{API}/{repo_type}/{repo}/resolve/main/{path}"
+    pf = pq.ParquetFile(HttpFile(url, size, token))
+    names = pf.schema_arrow.names
+    cols = [c for c in (columns or names) if c in names] or None
+    out = []
+    for rg in range(pf.metadata.num_row_groups):
+        out.extend(pf.read_row_group(rg, columns=cols).to_pylist())
+    return out
+
+
+def iter_rows(repo, split, columns=None, token=None, shuffle_seed=None,
+              repo_type="datasets", workers=8, skip_shards=0, max_shards=None):
+    """Yield row dicts, prefetching several shards concurrently.
+
+    A single sequential reader is latency-bound (~1.8 MB/s here); fetching a
+    few shards in parallel and handing rows off through a bounded queue keeps
+    the link busy without ever holding more than `workers` shards in memory.
+    """
+    import queue as _q
+    from concurrent.futures import ThreadPoolExecutor
+
     shards = list_shards(repo, split, token=token, repo_type=repo_type)
     if shuffle_seed is not None:
         import random
         random.Random(shuffle_seed).shuffle(shards)
-    for path, size in shards:
-        url = f"{API}/{repo_type}/{repo}/resolve/main/{path}"
+    shards = shards[skip_shards:]
+    if max_shards:
+        shards = shards[:max_shards]
+    if not shards:
+        return
+
+    out = _q.Queue(maxsize=workers)
+    sentinel = object()
+
+    def work(item):
+        path, size = item
         try:
-            pf = pq.ParquetFile(HttpFile(url, size, token))
-            names = pf.schema_arrow.names
-            cols = [c for c in (columns or names) if c in names] or None
-            for rg in range(pf.metadata.num_row_groups):
-                for row in pf.read_row_group(rg, columns=cols).to_pylist():
-                    yield row
+            out.put(_read_shard(repo, path, size, columns, token, repo_type))
         except Exception as e:
             print(f"    WARN shard {path} unreadable: {e!r}", flush=True)
-            continue
+            out.put([])
+
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futs = [ex.submit(work, s) for s in shards]
+        done = 0
+        while done < len(futs):
+            rows = out.get()
+            done += 1
+            for row in rows:
+                yield row
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)

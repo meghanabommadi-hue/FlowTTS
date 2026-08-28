@@ -7,13 +7,15 @@
 # to take the other down.
 set -uo pipefail
 
-RUN=${RUN:-/opt/omnivoice-train/run}
-SRC=${SRC:-/opt/OmniVoice-src}
-PKG=${PKG:-/opt/omnivoice-train/omnivoice_training}
-PY=${PY:-/opt/omnivoice-train/.venv/bin/python}
-ACC=${ACC:-/opt/omnivoice-train/.venv/bin/accelerate}
+BASE_DIR=${BASE_DIR:-/home/jovyan/omnivoice-train}
+RUN=${RUN:-$BASE_DIR/run}
+SRC=${SRC:-$BASE_DIR/OmniVoice-src}
+PKG=${PKG:-$BASE_DIR/omnivoice_training}
+PY=${PY:-$BASE_DIR/.venv/bin/python}
+ACC=${ACC:-$BASE_DIR/.venv/bin/accelerate}
 
-HOURS_PER_LANG=${HOURS_PER_LANG:-25}
+HOURS_PER_LANG=${HOURS_PER_LANG:-90}
+declare -A RW=( [ibo]=32 [yor]=14 [hau]=14 [pcm]=14 )
 DEV_MINUTES=${DEV_MINUTES:-12}
 MAX_SEC=${MAX_SEC:-25}
 MIN_SEC=${MIN_SEC:-1.5}
@@ -28,7 +30,7 @@ SRC_FLAG=""; [ "$FROM_SOURCES" = "1" ] && SRC_FLAG="--from-sources"
 mkdir -p "$RUN"/{stage,logs,prep,tokens,exp,eval_wav}
 export PYTHONPATH="$SRC:${PYTHONPATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
-export HF_HUB_ENABLE_HF_TRANSFER=1
+export HF_TOKEN=${HF_TOKEN:-$(cat "$BASE_DIR/token.read" 2>/dev/null)}
 export TOKENIZERS_PARALLELISM=false
 
 log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$RUN/logs/pipeline.log"; }
@@ -63,6 +65,7 @@ if ! done_stage prepare; then
         --dev-minutes-per-lang "$DEV_MINUTES" \
         --min-sec "$MIN_SEC" --max-sec "$MAX_SEC" \
         --status "$RUN/ui/prepare_$lg.json" $SRC_FLAG \
+        --read-workers "${RW[$lg]:-12}" \
         >> "$RUN/logs/prepare_$lg.log" 2>&1 &
     pids="$pids $!"
     log "  [$lg] pid $!"
@@ -79,6 +82,14 @@ if ! done_stage prepare; then
   fi
   mark prepare
   log "  prepare done: $(du -sh "$RUN/prep" | cut -f1), $(cat "$RUN"/prep/*_train.jsonl 2>/dev/null | wc -l) train utts"
+fi
+
+# ---------------------------------------------------------------- 1b: balance
+if ! done_stage balance; then
+  log "stage 1b: balancing languages to equal hours (before tokenising)"
+  $PY "$PKG/balance_tokens.py" --prep-dir "$RUN/prep" \
+      2>&1 | tee -a "$RUN/logs/balance.log" | sed 's/^/    /' | tee -a "$RUN/logs/pipeline.log"
+  mark balance
 fi
 
 # ---------------------------------------------------------------- 2: eval set
