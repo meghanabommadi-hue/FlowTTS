@@ -74,14 +74,15 @@ class HttpFile(io.RawIOBase):
         return data
 
 
-def _cache_path(repo, split):
+def _cache_path(repo, split, subdir=None):
     d = os.environ.get("OHUN_SHARD_CACHE", "/tmp/ohun_shard_cache")
     os.makedirs(d, exist_ok=True)
-    key = f"{repo}_{split}".replace("/", "_")
+    key = f"{repo}_{subdir or 'ROOT'}_{split}".replace("/", "_")
     return os.path.join(d, key + ".json")
 
 
-def list_shards(repo, split, token=None, repo_type="datasets", use_cache=True):
+def list_shards(repo, split, subdir=None, token=None, repo_type="datasets",
+                use_cache=True):
     """Return [(path, size)] for one split, newest shard-set only.
 
     Some repos carry orphaned shard sets from an earlier re-shard (igbo has both
@@ -90,7 +91,7 @@ def list_shards(repo, split, token=None, repo_type="datasets", use_cache=True):
     """
     # The tree endpoint pages through every file in the repo (6,885 for ohun),
     # and this is called once per window - cache it.
-    cp = _cache_path(repo, split)
+    cp = _cache_path(repo, split, subdir)
     if use_cache and os.path.exists(cp):
         try:
             with open(cp) as fh:
@@ -113,7 +114,11 @@ def list_shards(repo, split, token=None, repo_type="datasets", use_cache=True):
         else:
             break
 
-    pat = re.compile(rf"^data/(?:[^/]+/)?{re.escape(split)}-(\d{{5}})-of-(\d{{5}})\.parquet$")
+    if subdir:
+        pat = re.compile(
+            rf"^data/{re.escape(subdir)}/{re.escape(split)}-(\d{{5}})-of-(\d{{5}})\.parquet$")
+    else:
+        pat = re.compile(rf"^data/{re.escape(split)}-(\d{{5}})-of-(\d{{5}})\.parquet$")
     sets = {}
     for e in files:
         if e.get("type") != "file":
@@ -154,7 +159,8 @@ def _read_shard(repo, path, size, columns, token, repo_type):
 
 
 def iter_rows(repo, split, columns=None, token=None, shuffle_seed=None,
-              repo_type="datasets", workers=8, skip_shards=0, max_shards=None):
+              repo_type="datasets", workers=8, skip_shards=0, max_shards=None,
+              subdir=None):
     """Yield row dicts, prefetching several shards concurrently.
 
     A single sequential reader is latency-bound (~1.8 MB/s here); fetching a
@@ -164,7 +170,12 @@ def iter_rows(repo, split, columns=None, token=None, shuffle_seed=None,
     import queue as _q
     from concurrent.futures import ThreadPoolExecutor
 
-    shards = list_shards(repo, split, token=token, repo_type=repo_type)
+    shards = list_shards(repo, split, subdir=subdir, token=token,
+                         repo_type=repo_type)
+    if not shards:
+        raise RuntimeError(
+            f"no shards matched repo={repo} split={split} subdir={subdir!r} - "
+            "refusing to silently read the wrong language")
     if shuffle_seed is not None:
         import random
         random.Random(shuffle_seed).shuffle(shards)

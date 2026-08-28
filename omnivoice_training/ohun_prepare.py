@@ -125,9 +125,11 @@ def main():
         # rest costs nothing, but naming them keeps the read explicit.
         cols = ["audio_id", "speaker_id", "transcript", "language",
                 "audio_path", "audio"]
+        subdir = None if a.from_sources else cfg
         ds = iter_rows(repo, a.split, columns=cols, token=a.token,
                        shuffle_seed=a.shuffle_seed, workers=a.read_workers,
-                       skip_shards=a.skip_shards, max_shards=a.max_shards or None)
+                       skip_shards=a.skip_shards, max_shards=a.max_shards or None,
+                       subdir=subdir)
 
         ftr = open(train_p, "w", encoding="utf-8")
         fdv = open(dev_p, "w", encoding="utf-8")
@@ -162,6 +164,13 @@ def main():
                     st.drop_silent += 1
                     continue
 
+                aid = str(row.get("audio_id") or "")
+                if aid and not aid.startswith(cfg + "_"):
+                    # cross-language contamination - abort loudly rather than
+                    # train on mislabelled audio
+                    raise SystemExit(
+                        f"FATAL: {cfg} stream produced audio_id {aid!r}; "
+                        "shard listing is resolving the wrong language")
                 uid = row.get("audio_id") or f"{cfg}_{st.kept:08d}"
                 uid = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(uid))
                 path = os.path.join(wav_dir, f"{uid}.wav")
