@@ -50,6 +50,8 @@ class HookedTrainer(OmniTrainer):
         self.hf_token = _env("OHUN_HF_TOKEN")
         self.hf_min_delta = float(_env("OHUN_HF_MIN_DELTA", "0.002"))
         self.hf_min_step = int(_env("OHUN_HF_MIN_STEP", "0"))
+        self.asr_url = _env("OHUN_ASR_URL")          # enables eval WER/CER
+        self.asr_model = _env("OHUN_ASR_MODEL", "Axiveri/NaijaVox-2.0")
         self._push_thread = None
         # Persist the best score so a supervisor restart doesn't re-push a
         # checkpoint that was already the best.
@@ -117,6 +119,10 @@ class HookedTrainer(OmniTrainer):
                "--logdir", self._tb_logdir(), "--step", str(self.global_step)]
         if self.wav_dir:
             cmd += ["--wav-out", self.wav_dir]
+        if self.asr_url:
+            cmd += ["--asr-url", self.asr_url, "--asr-model", self.asr_model,
+                    "--metrics-out",
+                    os.path.join(self.config.output_dir, "last_eval_metrics.json")]
         t0 = time.time()
         try:
             r = subprocess.run(cmd, timeout=self.infer_timeout,
