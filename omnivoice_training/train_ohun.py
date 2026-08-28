@@ -41,6 +41,7 @@ class HookedTrainer(OmniTrainer):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.best_eval = float("inf")
+        self.best_composite = -1.0
         self.n_evals = 0
         self.eval_set = _env("OHUN_EVAL_SET")
         self.infer_every = int(_env("OHUN_EVAL_INFER_EVERY", "1"))
@@ -57,8 +58,11 @@ class HookedTrainer(OmniTrainer):
         # checkpoint that was already the best.
         self._state_p = os.path.join(self.config.output_dir, "hook_state.json")
         try:
-            self.best_eval = json.load(open(self._state_p))["best_eval"]
-            print(f"[hook] resumed best_eval={self.best_eval:.4f}", flush=True)
+            _s = json.load(open(self._state_p))
+            self.best_eval = _s.get("best_eval", float("inf"))
+            self.best_composite = _s.get("best_composite", -1.0)
+            print(f"[hook] resumed best_eval={self.best_eval:.4f} "
+                  f"best_composite={self.best_composite:.4f}", flush=True)
         except Exception:
             pass
 
@@ -73,6 +77,7 @@ class HookedTrainer(OmniTrainer):
         try:
             with open(self._state_p, "w") as f:
                 json.dump({"best_eval": self.best_eval,
+                           "best_composite": self.best_composite,
                            "step": self.global_step}, f)
         except OSError:
             pass
@@ -138,7 +143,7 @@ class HookedTrainer(OmniTrainer):
         except Exception as e:
             print(f"[hook] audio preview failed: {e!r}", flush=True)
 
-    def _push(self, snap, eval_loss, step):
+    def _push(self, snap, score, step, metric="composite"):
         """Upload a snapshot to the Hub. Runs in a thread so training continues."""
         def work():
             try:
@@ -146,9 +151,13 @@ class HookedTrainer(OmniTrainer):
                 api = HfApi(token=self.hf_token)
                 api.create_repo(self.hf_repo, repo_type="model",
                                 private=True, exist_ok=True)
-                readme = (f"# ohun OmniVoice fine-tune\n\n"
-                          f"Auto-pushed at step **{step}** with eval loss "
-                          f"**{eval_loss:.4f}**.\n\n"
+                arrow = "higher is better" if metric == "composite" else "lower is better"
+                readme = (f"# OmniNaija - OmniVoice fine-tuned for Nigerian languages\n\n"
+                          f"Auto-pushed at step **{step}** with **{metric} "
+                          f"{score:.4f}** ({arrow}).\n\n"
+                          f"`composite` is a weighted tts-bench score: "
+                          f"0.40*(1-WER) + 0.20*(1-CER) + 0.15*(1-SER) + "
+                          f"0.25*(MOS-1)/4, computed on a held-out eval set.\n\n"
                           f"Languages: Igbo (ig), Yoruba (yo), Hausa (ha), "
                           f"Nigerian Pidgin (pcm).\n\n"
                           f"Base: `{self.config.llm_name_or_path}`, "
@@ -157,7 +166,7 @@ class HookedTrainer(OmniTrainer):
                     f.write(readme)
                 api.upload_folder(folder_path=snap, repo_id=self.hf_repo,
                                   repo_type="model",
-                                  commit_message=f"step {step} eval_loss {eval_loss:.4f}")
+                                  commit_message=f"step {step} {metric} {score:.4f}")
                 print(f"[hook] pushed step {step} -> {self.hf_repo}", flush=True)
             except Exception as e:
                 # Never let a Hub problem (rate limit, network) kill training.
@@ -190,8 +199,37 @@ class HookedTrainer(OmniTrainer):
         if snap and want_audio:
             torch.cuda.empty_cache()      # hand the preview process real headroom
             self._audio_preview(snap)
+        # eval_infer writes the tts-bench metrics; prefer the composite for
+        # deciding what is worth publishing
+        comp = None
+        mp = os.path.join(self.config.output_dir, "last_eval_metrics.json")
+        try:
+            if want_audio and os.path.exists(mp):
+                em = json.load(open(mp))
+                if em.get("step") == self.global_step:
+                    comp = em.get("composite")
+                    w = self.accelerator.get_tracker("tensorboard", unwrap=True)
+                    for k in ("composite", "wer", "cer", "mos",
+                              "sentence_error_rate"):
+                        if em.get(k) is not None and w is not None:
+                            w.add_scalar(f"eval_quality/{k}", float(em[k]),
+                                         self.global_step)
+        except Exception as e:
+            print(f"[hook] could not read eval metrics: {e!r}", flush=True)
+
+        if comp is not None:
+            want_push = (self.hf_repo and comp > self.best_composite + 0.001
+                         and self.global_step >= self.hf_min_step)
+            print(f"[hook] composite={comp:.4f} (best {self.best_composite:.4f}) "
+                  f"-> {'PUSH' if want_push else 'hold'}", flush=True)
+
         if snap and want_push:
-            self._push(snap, loss, self.global_step)
+            self._push(snap, comp if comp is not None else loss,
+                       self.global_step,
+                       metric="composite" if comp is not None else "eval_loss")
+        if comp is not None and comp > self.best_composite:
+            self.best_composite = comp
+            self._save_state()
 
         if loss is not None and loss < self.best_eval:
             self.best_eval = loss
@@ -230,6 +268,15 @@ def main():
     p.add_argument("--data_config", required=True)
     p.add_argument("--output_dir", required=True)
     args = p.parse_args()
+
+    frac = float(_env("OHUN_VRAM_FRACTION", "0") or 0)
+    if frac > 0 and torch.cuda.is_available():
+        # Leaves room for the co-resident aligner + audio tokenizer; without
+        # this the allocator expands until they can no longer allocate.
+        torch.cuda.set_per_process_memory_fraction(frac, 0)
+        total = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"[hook] trainer capped at {frac:.0%} of {total:.0f} GB "
+              f"= {frac*total:.0f} GB", flush=True)
 
     config = TrainingConfig.from_json(args.train_config)
     config.output_dir = args.output_dir

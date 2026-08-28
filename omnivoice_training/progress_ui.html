@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniNaija — training progress</title>
+<style>
+ :root{--bg:#0b0e14;--panel:#131822;--panel2:#1a2130;--line:#242c3d;--fg:#e6edf7;
+   --dim:#8b98ad;--dimmer:#5d6a80;--acc:#4da3ff;--ok:#3fcf8e;--warn:#f0a232;--err:#f2555a;
+   --ibo:#4da3ff;--yor:#a78bfa;--hau:#3fcf8e;--pcm:#f0a232;
+   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+ .wrap{max-width:1120px;margin:0 auto;padding:26px 20px 60px}
+ header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+ h1{font-size:28px;margin:0;letter-spacing:-.02em;font-weight:650}
+ h1 .sub{color:var(--dim);font-size:14px;font-weight:400;margin-left:6px}
+ .pill{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--dim);background:var(--panel)}
+ .pill.live{color:var(--ok);border-color:#1e4d3a;background:#0f2119}
+ .pill.err{color:var(--err);border-color:#4d2024;background:#1f1113}
+ .lede{color:var(--dim);margin:8px 0 20px;max-width:74ch}
+ .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+ .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dimmer);margin:0 0 14px;font-weight:600}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px}
+ .stat .k{font-size:11px;color:var(--dimmer);text-transform:uppercase;letter-spacing:.07em}
+ .stat .v{font-family:var(--mono);font-size:21px;margin-top:3px;letter-spacing:-.02em}
+ .stat .v small{font-size:12px;color:var(--dim);font-weight:400}
+ .bar{height:14px;border-radius:8px;background:var(--panel2);overflow:hidden;display:flex;border:1px solid var(--line)}
+ .bar i{display:block;height:100%;transition:width .6s ease}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dimmer);font-weight:600;padding:0 10px 8px 0;border-bottom:1px solid var(--line)}
+ td{padding:9px 10px 9px 0;border-bottom:1px solid var(--line)}
+ tr:last-child td{border-bottom:none}
+ td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+ .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px}
+ .mini{height:7px;border-radius:4px;background:var(--panel2);overflow:hidden;min-width:80px}
+ .mini i{display:block;height:100%}
+ pre.log{font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:11px 13px;max-height:220px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-word}
+ .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:9px}
+ .row .l{color:var(--dim);font-size:13px}.row .r{font-family:var(--mono);font-size:13px}
+ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+ footer{color:var(--dimmer);font-size:12px;margin-top:22px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+ .two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+ @media(max-width:800px){.two{grid-template-columns:1fr}}
+</style></head><body><div class="wrap">
+<header><h1>OmniNaija<span class="sub">progressive fine-tune</span></h1>
+ <span class="pill" id="phase">connecting…</span><span class="pill" id="hb">—</span></header>
+<p class="lede">Continues from <code>ohun-omnivoice</code> on 239h of balanced Nigerian speech, while long-form
+ recordings are chunked and folded in as they are produced. Quality is scored with the same tts-bench
+ metrics as the leaderboard, so these numbers are comparable to the benchmark.</p>
+
+<div class="card"><h2>Data used for training</h2>
+ <div class="row"><span class="l">already-trained corpus + newly chunked long-form</span><span class="r" id="totH">–</span></div>
+ <div class="bar"><i id="barBase" style="background:linear-gradient(90deg,#4da3ff,#a78bfa)"></i><i id="barNew" style="background:linear-gradient(90deg,#3fcf8e,#f0a232)"></i></div>
+ <div class="grid" style="margin-top:18px">
+  <div class="stat"><div class="k">Base corpus</div><div class="v" id="baseH">–</div></div>
+  <div class="stat"><div class="k">New chunks</div><div class="v" id="newH">–</div></div>
+  <div class="stat"><div class="k">Total utterances</div><div class="v" id="totU">–</div></div>
+  <div class="stat"><div class="k">Shards</div><div class="v" id="shards">–</div></div>
+  <div class="stat"><div class="k">Long clips seen</div><div class="v" id="clips">–</div></div>
+  <div class="stat"><div class="k">Rejected (bad align)</div><div class="v" id="rej">–</div></div>
+ </div></div>
+
+<div class="two">
+ <div class="card"><h2>Training</h2>
+  <div class="row"><span class="l" id="stepTxt">–</span><span class="r" id="pct">0%</span></div>
+  <div class="bar"><i id="barStep" style="background:linear-gradient(90deg,#4da3ff,#3fcf8e)"></i></div>
+  <div class="grid" style="margin-top:16px">
+   <div class="stat"><div class="k">Train loss</div><div class="v" id="tl">–</div></div>
+   <div class="stat"><div class="k">Eval loss</div><div class="v" id="el">–</div></div>
+   <div class="stat"><div class="k">LR</div><div class="v" id="lr">–</div></div>
+   <div class="stat"><div class="k">Speed</div><div class="v" id="its">–</div></div>
+   <div class="stat"><div class="k">Checkpoints</div><div class="v" id="ck">–</div></div>
+   <div class="stat"><div class="k">Evals run</div><div class="v" id="nev">–</div></div>
+  </div></div>
+ <div class="card"><h2>Quality (tts-bench metrics)</h2>
+  <div class="grid">
+   <div class="stat"><div class="k">WER ↓</div><div class="v" id="qwer">–</div></div>
+   <div class="stat"><div class="k">CER ↓</div><div class="v" id="qcer">–</div></div>
+   <div class="stat"><div class="k">Sentence ER ↓</div><div class="v" id="qser">–</div></div>
+   <div class="stat"><div class="k">GPU</div><div class="v" id="gpu">–</div></div>
+  </div>
+  <p style="color:var(--dimmer);font-size:12px;margin:14px 0 0">
+   Scored on the held-out eval set each cycle. Baseline for reference:
+   OmniVoice base <b>0.264</b> WER on Hausa, ohun fine-tune <b>0.132</b>.</p>
+ </div></div>
+
+<div class="card"><h2>Chunk production by language</h2>
+ <table><thead><tr><th>Language</th><th>Progress</th><th class="num">Hours</th><th class="num">Chunks</th></tr></thead>
+ <tbody id="langRows"><tr><td colspan="4" style="color:var(--dimmer)">waiting…</td></tr></tbody></table></div>
+
+<div class="two">
+ <div class="card"><h2>Training cycles</h2><pre class="log" id="cyclelog">…</pre></div>
+ <div class="card"><h2>Producer</h2><pre class="log" id="prodlog">…</pre></div>
+</div>
+
+<footer><span><a href="/tb/" target="_blank">TensorBoard →</a> · <a href="/wav/" target="_blank">eval audio →</a></span>
+ <span id="upd">–</span></footer>
+</div>
+<script>
+const $=i=>document.getElementById(i), C={ibo:"var(--ibo)",yor:"var(--yor)",hau:"var(--hau)",pcm:"var(--pcm)"};
+const n=(v,d=0)=>v==null?"–":(+v).toLocaleString("en-US",{maximumFractionDigits:d});
+let last=0;
+async function tick(){
+ try{
+  const r=await fetch("status.json?t="+Date.now(),{cache:"no-store"});
+  if(!r.ok) throw new Error(r.status);
+  render(await r.json()); last=Date.now();
+  $("phase").textContent="live"; $("phase").className="pill live";
+ }catch(e){ $("phase").textContent="unreachable"; $("phase").className="pill err"; }
+ const age=last?Math.round((Date.now()-last)/1000):null;
+ $("hb").textContent=age==null?"—":`updated ${age}s ago`;
+}
+function render(s){
+ const d=s.data||{}, t=s.training||{}, p=s.producer||{};
+ const tot=d.total_hours||0, base=d.base_hours||0, nw=d.new_hours||0;
+ $("totH").textContent=`${n(tot,1)} h total`;
+ $("baseH").innerHTML=`${n(base,1)} <small>h</small>`;
+ $("newH").innerHTML=`${n(nw,2)} <small>h new</small>`;
+ $("totU").textContent=n(d.total_utts);
+ $("shards").textContent=n((d.base_shards||0)+(d.new_shards||0));
+ $("clips").textContent=n(p.clips_seen);
+ $("rej").textContent=n(p.rejected);
+ $("barBase").style.width=(tot?100*base/tot:0)+"%";
+ $("barNew").style.width=(tot?100*nw/tot:0)+"%";
+
+ const st=t.step||0, ts=t.total_steps||0;
+ $("stepTxt").textContent=ts?`step ${n(st)} of ${n(ts)}`:"waiting for a cycle";
+ $("pct").textContent=(ts?100*st/ts:0).toFixed(1)+"%";
+ $("barStep").style.width=Math.max(ts?100*st/ts:0,.4)+"%";
+ $("tl").textContent=t.train_loss!=null?t.train_loss.toFixed(4):"–";
+ $("el").textContent=t.eval_loss!=null?t.eval_loss.toFixed(4):"–";
+ $("lr").textContent=t.lr!=null?t.lr.toExponential(2):"–";
+ $("its").innerHTML=t.it_per_s!=null?`${t.it_per_s.toFixed(2)} <small>it/s</small>`:"–";
+ $("ck").textContent=(s.checkpoints||{}).count??"–";
+ $("nev").textContent=t.n_evals??"–";
+ $("qwer").textContent=t.q_wer!=null?t.q_wer.toFixed(4):"–";
+ $("qcer").textContent=t.q_cer!=null?t.q_cer.toFixed(4):"–";
+ $("qser").textContent=t.q_sentence_error_rate!=null?t.q_sentence_error_rate.toFixed(3):"–";
+ const g=s.gpu||{};
+ $("gpu").innerHTML=g.used_gb!=null?`${g.used_gb} <small>/${g.total_gb} GB · ${g.util_pct}%</small>`:"–";
+
+ const L=p.langs||{}, mx=Math.max(0.001,...Object.values(L).map(v=>v.hours||0));
+ const rows=Object.entries(L).map(([k,v])=>`<tr>
+   <td><span class="dot" style="background:${C[k]||"var(--dim)"}"></span>${v.name||k}</td>
+   <td><div class="mini"><i style="width:${Math.max(100*(v.hours||0)/mx,1)}%;background:${C[k]||"var(--acc)"}"></i></div></td>
+   <td class="num">${n(v.hours,2)}</td><td class="num">${n(v.chunks)}</td></tr>`).join("");
+ $("langRows").innerHTML=rows||`<tr><td colspan="4" style="color:var(--dimmer)">waiting…</td></tr>`;
+ $("cyclelog").textContent=(s.cycle_log||[]).join("\n")||"…";
+ $("prodlog").textContent=(s.producer_log||[]).join("\n")||"…";
+ $("upd").textContent=s.updated_utc?new Date(s.updated_utc*1000).toISOString().replace("T"," ").slice(0,19)+" UTC":"–";
+}
+tick(); setInterval(tick,5000);
+</script></body></html>

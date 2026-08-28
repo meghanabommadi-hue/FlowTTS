@@ -43,6 +43,8 @@ export OHUN_EVAL_INFER_EVERY=${OHUN_EVAL_INFER_EVERY:-1}
 export OHUN_INFER_TIMEOUT=${OHUN_INFER_TIMEOUT:-1200}
 export OHUN_ASR_URL=${OHUN_ASR_URL:-http://127.0.0.1:8899}
 export OHUN_ASR_MODEL=${OHUN_ASR_MODEL:-Axiveri/NaijaVox-2.0}
+# cap the trainer so the aligner and audio tokenizer keep their share
+export OHUN_VRAM_FRACTION=${OHUN_VRAM_FRACTION:-0.60}
 
 mkdir -p "$PROG"/{logs,exp,eval_wav}
 PIDFILE="$PROG/progressive.pid"
@@ -132,8 +134,8 @@ src, dst, bt, steps, seed, ck, expdir = sys.argv[1:8]
 c = json.load(open(src))
 c["batch_tokens"] = int(bt)
 c["num_workers"] = 2                 # leave CPU for the producer
-c["eval_steps"] = 250                # quality curve resolution
-c["save_steps"] = 250
+c["eval_steps"] = int(__import__("os").environ.get("EVAL_STEPS", "1000"))
+c["save_steps"] = c["eval_steps"]
 c["logging_steps"] = 25
 c["keep_last_n_checkpoints"] = 3
 if ck:

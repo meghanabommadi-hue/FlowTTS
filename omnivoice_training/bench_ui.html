@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nigerian TTS — benchmark</title>
+<style>
+ :root{--bg:#0b0e14;--panel:#131822;--panel2:#1a2130;--line:#242c3d;--fg:#e6edf7;
+  --dim:#8b98ad;--dimmer:#5d6a80;--acc:#4da3ff;--ok:#3fcf8e;--warn:#f0a232;--err:#f2555a;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+ .wrap{max-width:1180px;margin:0 auto;padding:26px 20px 60px}
+ header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+ h1{font-size:28px;margin:0;letter-spacing:-.02em;font-weight:650}
+ h1 .sub{color:var(--dim);font-size:14px;font-weight:400;margin-left:6px}
+ .pill{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--dim);background:var(--panel)}
+ .pill.live{color:var(--ok);border-color:#1e4d3a;background:#0f2119}
+ .pill.err{color:var(--err);border-color:#4d2024;background:#1f1113}
+ .nav{margin:6px 0 18px}.nav a{color:var(--dim);margin-right:14px}.nav a.on{color:var(--acc);font-weight:600}
+ .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+ .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dimmer);margin:0 0 6px;font-weight:600}
+ .card .cap{color:var(--dimmer);font-size:12px;margin:0 0 14px}
+ .bar{height:14px;border-radius:8px;background:var(--panel2);overflow:hidden;border:1px solid var(--line)}
+ .bar i{display:block;height:100%;background:linear-gradient(90deg,#4da3ff,#3fcf8e);transition:width .6s}
+ .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:9px}
+ .row .l{color:var(--dim);font-size:13px}.row .r{font-family:var(--mono);font-size:13px}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dimmer);font-weight:600;padding:0 10px 8px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+ td{padding:9px 10px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+ tr:last-child td{border-bottom:none}
+ td.num,th.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+ .metric{font-weight:600}
+ .help{display:block;color:var(--dimmer);font-size:11.5px;font-weight:400;margin-top:2px;max-width:52ch;line-height:1.45}
+ .better{color:var(--ok);font-weight:600}.worse{color:var(--err);font-weight:600}.same{color:var(--dim)}
+ .win{background:rgba(63,207,142,.09)}
+ .pend{color:var(--dimmer);font-style:italic}
+ .langsec{margin-bottom:6px}
+ .langtitle{font-size:15px;font-weight:650;margin:22px 0 10px;display:flex;align-items:center;gap:10px}
+ .badge{font-family:var(--mono);font-size:10.5px;color:var(--dimmer);border:1px solid var(--line);border-radius:999px;padding:2px 8px}
+ .note{background:#171b12;border:1px solid #3a3a1a;color:#d9d08a;border-radius:8px;padding:10px 13px;font-size:12.5px;margin-top:14px}
+ footer{color:var(--dimmer);font-size:12px;margin-top:24px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+</style></head><body><div class="wrap">
+<header><h1>Nigerian TTS benchmark<span class="sub">held-out ohun dev split</span></h1>
+ <span class="pill" id="phase">connecting…</span><span class="pill" id="hb">—</span></header>
+<div class="nav"><a href="/prog/">Training progress</a><a href="/prog/bench.html" class="on">Benchmark</a><a href="/tb/">TensorBoard</a><a href="/wav/">Eval audio</a></div>
+
+<div class="card"><h2>Run progress</h2>
+ <p class="cap">1,000 held-out samples per language per model. Every engine sees identical text and identical
+  voice-cloning references, so differences are the weights alone.</p>
+ <div class="row"><span class="l" id="curTxt">—</span><span class="r" id="curPct">—</span></div>
+ <div class="bar"><i id="curBar" style="width:0%"></i></div>
+ <div class="row" style="margin-top:14px"><span class="l">configs completed</span><span class="r" id="cfgDone">—</span></div>
+ <div class="bar"><i id="cfgBar" style="width:0%"></i></div>
+ <div class="row" style="margin-top:16px">
+  <span class="l">synthesis heartbeat <span style="color:var(--dimmer)">— tts-bench hides its progress bar when not on a terminal, so this counts generated audio files</span></span>
+  <span class="r" id="synth">—</span></div>
+ <div class="row"><span class="l">scoring heartbeat <span style="color:var(--dimmer)">— WER is measured by transcribing every clip back with NaijaVox; synthesis pauses while this runs</span></span>
+  <span class="r" id="score">—</span></div>
+</div>
+
+<div id="langs"></div>
+
+<div class="card"><h2>What the metrics mean</h2>
+ <table><tbody id="glossary"></tbody></table>
+ <div class="note" id="note"></div>
+</div>
+
+<footer><span id="engines">—</span><span id="upd">—</span></footer>
+</div>
+<script>
+const $=i=>document.getElementById(i);
+let last=0;
+const fmt=(m,v)=>v==null?"—":(m==="ttfb_ms"?Math.round(v)+" ms":(m==="rtfx"?v.toFixed(2)+"×":(m==="mos"?v.toFixed(2):v.toFixed(4))));
+async function tick(){
+ try{const r=await fetch("bench_status.json?t="+Date.now(),{cache:"no-store"});
+  if(!r.ok)throw 0; render(await r.json()); last=Date.now();
+  $("phase").textContent="live";$("phase").className="pill live";
+ }catch(e){$("phase").textContent="unreachable";$("phase").className="pill err";}
+ $("hb").textContent=last?`updated ${Math.round((Date.now()-last)/1000)}s ago`:"—";
+}
+function render(s){
+ const p=s.progress||{}, d=p.detail||{};
+ const cp=p.config||{};
+ $("curTxt").textContent=p.current
+   ? `${p.current} — ${cp.stage||d.stage||"starting"}`
+   : "idle";
+ $("curPct").textContent=cp.n_target
+   ? `${cp.stage==="scoring"?cp.scored:cp.synthesized}/${cp.n_target} ${cp.stage||""} (${cp.pct}%)`
+   : (d.total?`${d.done}/${d.total} (${d.pct}%)`:"—");
+ $("curBar").style.width=Math.max(cp.pct||d.pct||0,0.5)+"%";
+ $("cfgDone").textContent=`${p.n_completed||0} of ${p.n_total||8}`;
+ const sy=p.synthesis||{};
+ $("synth").textContent=sy.artifacts!=null
+   ? `${sy.artifacts.toLocaleString()} clips generated${sy.per_min!=null?` · ${sy.per_min}/min`:""}`
+   : "—";
+ const sc=p.scoring||{};
+ $("score").textContent=sc.transcribe_calls!=null
+   ? `${sc.transcribe_calls.toLocaleString()} transcriptions scored`
+   : "—";
+ $("cfgBar").style.width=(100*(p.n_completed||0)/(p.n_total||8))+"%";
+
+ const engs=Object.entries(s.engines||{}).sort((a,b)=>a[1].order-b[1].order);
+ $("engines").textContent=engs.map(([k,v])=>v.label).join("  ·  ");
+ const M=s.metrics||{}, mat=s.matrix||{}, order=["wer","cer","sentence_error_rate","mos","speech_rate_deviation","rtfx","ttfb_ms"];
+ let html="";
+ for(const [cfg,meta] of Object.entries(s.languages||{})){
+   const row=mat[cfg]||{};
+   const have=engs.filter(([k])=>row[k]);
+   html+=`<div class="langsec"><div class="langtitle">${meta.name}
+     <span class="badge">${meta.code}</span>
+     ${have.length?`<span class="badge">${have.length} of ${engs.length} models scored</span>`:'<span class="badge">pending</span>'}</div>`;
+   html+=`<div class="card" style="margin-bottom:4px"><table><thead><tr><th>Metric</th>`;
+   engs.forEach(([k,v])=>html+=`<th class="num">${v.label}</th>`);
+   html+=`<th class="num">Δ vs base</th></tr></thead><tbody>`;
+   for(const m of order){
+     if(!M[m]) continue;
+     const vals=engs.map(([k])=>row[k]?.[m]);
+     if(vals.every(v=>v==null)) continue;
+     const hib=M[m].higher_is_better;
+     const best=vals.filter(v=>v!=null).length>1
+       ? (hib?Math.max(...vals.filter(v=>v!=null)):Math.min(...vals.filter(v=>v!=null))) : null;
+     html+=`<tr><td class="metric">${M[m].label} ${hib?"↑":"↓"}<span class="help">${M[m].help}</span></td>`;
+     vals.forEach(v=>{
+       const win=(best!=null&&v!=null&&v===best)?" win":"";
+       html+=`<td class="num${win}">${v==null?'<span class="pend">pending</span>':fmt(m,v)}</td>`;});
+     const b=vals[0], other=vals.slice(1).find(v=>v!=null);
+     let delta='<span class="pend">—</span>';
+     if(b!=null&&other!=null&&b!==0){
+       const pc=100*(other-b)/Math.abs(b);
+       const good=hib?pc>0:pc<0;
+       delta=`<span class="${Math.abs(pc)<1?'same':(good?'better':'worse')}">${pc>0?"+":""}${pc.toFixed(1)}%</span>`;
+     }
+     html+=`<td class="num">${delta}</td></tr>`;
+   }
+   html+=`</tbody></table></div></div>`;
+ }
+ $("langs").innerHTML=html;
+ $("glossary").innerHTML=order.filter(m=>M[m]).map(m=>
+   `<tr><td class="metric" style="width:170px">${M[m].label} ${M[m].higher_is_better?"↑ higher better":"↓ lower better"}</td>
+    <td style="color:var(--dim)">${M[m].help}</td></tr>`).join("");
+ $("note").textContent=s.note||"";
+ $("upd").textContent=s.updated_utc?new Date(s.updated_utc*1000).toISOString().replace("T"," ").slice(0,19)+" UTC":"—";
+}
+tick();setInterval(tick,8000);
+</script></body></html>

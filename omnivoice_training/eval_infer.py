@@ -124,23 +124,23 @@ def main():
 
 def _score_with_tts_bench(gen, asr_url, asr_model):
     """WER/CER over the eval generations, using tts-bench's own scorer."""
-    import io as _io
-    import soundfile as _sf
+    from tts_bench.core.audio import AudioBuffer
     from tts_bench.metrics.asr import get_asr
-    from tts_bench.metrics.shared import text_norm as _tn  # noqa: F401
 
     asr = get_asr("vllm", base_url=asr_url, model=asr_model)
     refs, hyps, langs = [], [], []
     for ref, wav, sr, lang in gen:
-        buf = _io.BytesIO()
-        _sf.write(buf, wav, sr, format="WAV", subtype="PCM_16")
-        try:
-            hyp = asr.transcribe(buf.getvalue(), language=lang)
-        except TypeError:
-            hyp = asr.transcribe(buf.getvalue())
+        buf = AudioBuffer.from_array(np.asarray(wav, dtype=np.float32), int(sr))
+        hyp = asr.transcribe(buf, language=lang, expected_text=ref)
         hyps.append(hyp if isinstance(hyp, str) else (hyp or {}).get("text", ""))
         refs.append(ref)
         langs.append(lang)
+
+    mos_vals = []
+    try:
+        mos_vals = _predict_mos([(w, sr) for _, w, sr, _ in gen])
+    except Exception as e:
+        print(f"  MOS unavailable: {e!r}", flush=True)
 
     import jiwer
     def _norm(t):
@@ -161,6 +161,65 @@ def _score_with_tts_bench(gen, asr_url, asr_model):
             out[f"wer_{lg}"] = float(jiwer.wer(rr, hh))
         except Exception:
             pass
+    if mos_vals:
+        out["mos"] = float(sum(mos_vals) / len(mos_vals))
+    out.update(_composite(out))
+    return out
+
+
+def _predict_mos(clips):
+    """Reference-free naturalness (DistillMOS), same predictor tts-bench uses."""
+    import torch
+    import distillmos
+    import librosa
+
+    model = _predict_mos._m if hasattr(_predict_mos, "_m") else None
+    if model is None:
+        model = distillmos.ConvTransformerSQAModel()
+        model.eval()
+        _predict_mos._m = model
+    scores = []
+    with torch.no_grad():
+        for wav, sr in clips:
+            x = np.asarray(wav, dtype=np.float32)
+            if sr != 16000:
+                x = librosa.resample(x, orig_sr=sr, target_sr=16000,
+                                     res_type="soxr_hq")
+            t = torch.from_numpy(x).float().unsqueeze(0)
+            scores.append(float(model(t).squeeze().item()))
+    return scores
+
+
+# Weights for the composite. WER dominates because for TTS the first question
+# is whether the words come out right; MOS carries real weight because a model
+# can be intelligible and still sound wrong.
+COMPOSITE_W = {"wer": 0.40, "cer": 0.20, "sentence_error_rate": 0.15, "mos": 0.25}
+
+
+def _composite(m):
+    """One 0-1 quality score (higher better) from the tts-bench metrics.
+
+    This is NOT a training objective - it is not differentiable and costs
+    seconds per sample. It is a model-selection signal: eval loss proved a poor
+    proxy for quality (it barely moved while WER halved), so checkpoints are
+    chosen on this instead.
+    """
+    parts, used = {}, 0.0
+    if m.get("wer") is not None:
+        parts["wer"] = max(0.0, 1.0 - float(m["wer"]))
+    if m.get("cer") is not None:
+        parts["cer"] = max(0.0, 1.0 - float(m["cer"]))
+    if m.get("sentence_error_rate") is not None:
+        parts["sentence_error_rate"] = max(0.0, 1.0 - float(m["sentence_error_rate"]))
+    if m.get("mos") is not None:
+        parts["mos"] = min(1.0, max(0.0, (float(m["mos"]) - 1.0) / 4.0))  # 1-5 -> 0-1
+    if not parts:
+        return {}
+    total_w = sum(COMPOSITE_W[k] for k in parts)
+    score = sum(COMPOSITE_W[k] * v for k, v in parts.items()) / total_w
+    out = {f"score_{k}": v for k, v in parts.items()}
+    out["composite"] = score
+    out["composite_coverage"] = total_w      # 1.0 when every component present
     return out
 
 

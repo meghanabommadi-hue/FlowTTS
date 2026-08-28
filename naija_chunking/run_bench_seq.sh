@@ -7,6 +7,11 @@ cd /home/jovyan/tts-bench
 export HF_TOKEN=$(cat /home/jovyan/omnivoice-train/token.read)
 export PYTHONPATH=/home/jovyan/omnivoice-train/OmniVoice-src:${PYTHONPATH:-}
 export TOKENIZERS_PARALLELISM=false
+# Leave room for training on the same card. tts-bench caches synthesis by
+# content hash, so a restart re-uses already-generated audio rather than
+# redoing it.
+export TTS_BENCH_VRAM_FRACTION=${TTS_BENCH_VRAM_FRACTION:-0.28}
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 mkdir -p /home/jovyan/bench_logs
 PY=/home/jovyan/omnivoice-train/.venv/bin/python
 for CFG in "$@"; do

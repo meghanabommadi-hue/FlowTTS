@@ -32,11 +32,40 @@ SR = 16_000
 # NaijaVox language tags -> whisper language codes it was trained with
 # NaijaVox defines <|ig|> and <|pcm|> natively, so use them directly.
 LANG_MAP = {"ig": "ig", "yo": "yo", "ha": "ha", "pcm": "pcm", "en": "en"}
+# ig and pcm exist only as NaijaVox-added tokens, so they must be passed in
+# token form; ha/yo are standard Whisper languages and take either.
+TOKEN_LANGS = {"ig", "pcm"}
+
+
+def _lang_arg(lang):
+    return f"<|{lang}|>" if lang in TOKEN_LANGS else lang
+
+
+def _run_pipe(pipe, wav, lang, max_new_tokens=440, greedy=False, **kw):
+    """Run the pipeline, degrading language spec rather than failing."""
+    for attempt in (_lang_arg(lang), lang, None):
+        try:
+            gk = {"task": "transcribe", "max_new_tokens": max_new_tokens}
+            if greedy:
+                # single pass, no temperature ladder - short clips do not need
+                # the fallback and it multiplies latency by ~6x
+                gk["temperature"] = 0.0
+                gk["do_sample"] = False
+            if attempt is not None:
+                gk["language"] = attempt
+            return pipe(wav, generate_kwargs=gk, **kw)
+        except ValueError as e:
+            if "Unsupported language" not in str(e):
+                raise
+            print(f"  language {attempt!r} rejected; falling back", flush=True)
+    raise HTTPException(500, f"no usable language spec for {lang!r}")
 
 app = FastAPI(title="naijavox-align")
 _model = None
 _proc = None
-_lock = threading.Lock()
+_lock = threading.Lock()          # long-form alignment: exclusive
+_sem = threading.Semaphore(int(os.environ.get("ASR_CONCURRENCY", "3")))
+_counts = {"align": 0, "transcribe": 0, "started": time.time()}
 
 
 BASE_ID = os.environ.get("WHISPER_BASE", "openai/whisper-large-v3")
@@ -83,9 +112,23 @@ def load():
     global _model, _proc
     if _model is None:
         t0 = time.time()
+        frac = float(os.environ.get("ALIGN_VRAM_FRACTION", "0.42"))
+        if DEVICE.startswith("cuda") and frac > 0:
+            torch.cuda.set_per_process_memory_fraction(frac, 0)
+            tot = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"aligner capped at {frac:.0%} of {tot:.0f} GB = "
+                  f"{frac*tot:.0f} GB", flush=True)
         _proc = WhisperProcessor.from_pretrained(MODEL_ID)
-        _model = WhisperForConditionalGeneration.from_pretrained(
-            MODEL_ID, dtype=DTYPE).to(DEVICE).eval()
+        # NOTE: kept configurable, but word timestamps force eager regardless.
+        attn = os.environ.get("ALIGN_ATTN", "eager")
+        try:
+            _model = WhisperForConditionalGeneration.from_pretrained(
+                MODEL_ID, dtype=DTYPE, attn_implementation=attn).to(DEVICE).eval()
+            print(f"attn_implementation={attn}", flush=True)
+        except Exception as e:
+            print(f"{attn} unavailable ({e!r}); falling back to eager", flush=True)
+            _model = WhisperForConditionalGeneration.from_pretrained(
+                MODEL_ID, dtype=DTYPE).to(DEVICE).eval()
         _fix_generation_config(_model, _proc)
         print(f"loaded {MODEL_ID} on {DEVICE} in {time.time()-t0:.0f}s", flush=True)
     return _model, _proc
@@ -106,7 +149,7 @@ def _pipeline():
             chunk_length_s=30, stride_length_s=5,
             device=0 if DEVICE.startswith("cuda") else -1,
             dtype=DTYPE,
-            batch_size=int(os.environ.get("ALIGN_BATCH", "8")),
+            batch_size=int(os.environ.get("ALIGN_BATCH", "1")),
         )
     return _pipe
 
@@ -123,8 +166,15 @@ def health():
     m, _ = load()
     free, total = (torch.cuda.mem_get_info() if DEVICE.startswith("cuda")
                    else (0, 0))
+    reserved = (torch.cuda.memory_reserved() if DEVICE.startswith("cuda") else 0)
     return {"ok": True, "model": MODEL_ID, "device": DEVICE,
-            "vram_free_gb": round(free / 1e9, 1), "vram_total_gb": round(total / 1e9, 1)}
+            "align_calls": _counts["align"],
+            "asr_concurrency": int(os.environ.get("ASR_CONCURRENCY", "3")),
+            "transcribe_calls": _counts["transcribe"],
+            "uptime_s": round(time.time() - _counts["started"]),
+            "vram_free_gb": round(free / 1e9, 1),
+            "vram_total_gb": round(total / 1e9, 1),
+            "vram_reserved_by_me_gb": round(reserved / 1e9, 1)}
 
 
 def _decode_audio(b64: str, sr: int):
@@ -148,16 +198,23 @@ def align(req: AlignReq):
         raise HTTPException(400, f"audio decode failed: {e!r}")
     if wav.size < SR // 2:
         raise HTTPException(400, "audio shorter than 0.5s")
+    max_len = float(os.environ.get("ALIGN_MAX_SEC", "900"))
+    if wav.size / SR > max_len:
+        raise HTTPException(413, f"audio {wav.size/SR:.0f}s exceeds "
+                                 f"ALIGN_MAX_SEC={max_len:.0f}s")
 
     lang = LANG_MAP.get(req.language, "en")
     pipe = _pipeline()
-    with _lock:
-        out = pipe(
-            wav,
-            return_timestamps="word",
-            generate_kwargs={"language": lang, "task": "transcribe",
-                             "max_new_tokens": 440},
-        )
+    try:
+        with _lock:
+            out = _run_pipe(pipe, wav, lang, return_timestamps="word")
+    except torch.OutOfMemoryError as e:
+        if DEVICE.startswith("cuda"):
+            torch.cuda.empty_cache()
+        raise HTTPException(507, f"OOM aligning {wav.size/SR:.0f}s audio: {e}"[:200])
+
+    if DEVICE.startswith("cuda"):
+        torch.cuda.empty_cache()      # give cached blocks back to the trainer
 
     words = []
     for ch in out.get("chunks", []) or []:
@@ -169,6 +226,7 @@ def align(req: AlignReq):
         end = float(ts[1]) if ts[1] is not None else start
         words.append({"w": txt, "start": round(start, 3), "end": round(end, 3)})
 
+    _counts["align"] += 1
     return {"duration": len(wav) / SR, "language": lang,
             "n_words": len(words), "words": words,
             "asr_text": (out.get("text") or "").strip(),
@@ -204,10 +262,16 @@ async def transcriptions(
 
     lang = LANG_MAP.get((language or "en").lower().split("-")[0], "en")
     pipe = _pipeline()
-    with _lock:
-        out = pipe(wav, return_timestamps=False,
-                   generate_kwargs={"language": lang, "task": "transcribe",
-                                    "max_new_tokens": 440})
+    # Budget the token count to the clip: ~4 tokens/sec of speech is generous
+    # for these languages, floored/capped for safety.
+    dur = wav.size / SR
+    budget = int(min(220, max(48, dur * 6)))
+    with _sem:
+        out = _run_pipe(pipe, wav, lang, max_new_tokens=budget, greedy=True,
+                        return_timestamps=False)
+    if DEVICE.startswith("cuda"):
+        torch.cuda.empty_cache()
+    _counts["transcribe"] += 1
     return {"text": (out.get("text") or "").strip(), "language": lang}
 
 
