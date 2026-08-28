@@ -106,6 +106,7 @@ def _pipeline():
             chunk_length_s=30, stride_length_s=5,
             device=0 if DEVICE.startswith("cuda") else -1,
             dtype=DTYPE,
+            batch_size=int(os.environ.get("ALIGN_BATCH", "8")),
         )
     return _pipe
 
@@ -170,7 +171,8 @@ def align(req: AlignReq):
 
     return {"duration": len(wav) / SR, "language": lang,
             "n_words": len(words), "words": words,
-            "asr_text": (out.get("text") or "").strip()}
+            "asr_text": (out.get("text") or "").strip(),
+            "batch_size": int(os.environ.get("ALIGN_BATCH", "8"))}
 
 
 # ---- OpenAI-compatible transcription -------------------------------------- #

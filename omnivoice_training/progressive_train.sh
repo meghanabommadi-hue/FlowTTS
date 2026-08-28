@@ -18,10 +18,11 @@ SRC=$BASE/OmniVoice-src
 PY=$BASE/.venv/bin/python
 ACC=$BASE/.venv/bin/accelerate
 DEV_LST=${DEV_LST:-$BASE/run/tokens/dev/data.lst}
+BASE_LST=${BASE_LST:-$BASE/run/tokens/train/data.lst}
 EVAL_SET=${EVAL_SET:-$BASE/run/eval_set.json}
 
-CYCLE_HOURS=${CYCLE_HOURS:-10}
-STEPS_PER_CYCLE=${STEPS_PER_CYCLE:-2000}
+CYCLE_HOURS=${CYCLE_HOURS:-3}
+STEPS_PER_CYCLE=${STEPS_PER_CYCLE:-5000}
 # Training must leave room for the producer (~14GB while aligning), so this is
 # deliberately well under what the GPU could take on its own.
 BATCH_TOKENS=${BATCH_TOKENS:-3072}
@@ -44,6 +45,15 @@ export OHUN_ASR_URL=${OHUN_ASR_URL:-http://127.0.0.1:8899}
 export OHUN_ASR_MODEL=${OHUN_ASR_MODEL:-Axiveri/NaijaVox-2.0}
 
 mkdir -p "$PROG"/{logs,exp,eval_wav}
+PIDFILE="$PROG/progressive.pid"
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "progressive trainer already running as $(cat "$PIDFILE")"; exit 1
+fi
+echo $$ > "$PIDFILE"
+# SIGKILL on a CUDA process leaks its VRAM until every holder exits, so shut
+# the child down politely.
+cleanup(){ [ -n "${CHILD:-}" ] && kill -TERM "$CHILD" 2>/dev/null; rm -f "$PIDFILE"; }
+trap cleanup EXIT INT TERM
 plog(){ echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$PROG/logs/progressive.log"; }
 
 produced_hours(){
@@ -69,18 +79,22 @@ latest_ckpt(){
 
 plog "=== progressive trainer: +${CYCLE_HOURS}h per cycle, ${STEPS_PER_CYCLE} steps, batch_tokens=${BATCH_TOKENS} ==="
 plog "    seed=$SEED_MODEL  push->$OHUN_HF_REPO  dev=$DEV_LST"
+plog "    mix_base=${MIX_BASE:-1} base=$BASE_LST new_repeat=${NEW_REPEAT:-3}"
 
 trained_at=0
 cycle=0
 while [ "$cycle" -lt "$MAX_CYCLES" ]; do
-  # wait for enough NEW data
-  while :; do
-    have=$(manifest_hours)
-    need=$(awk "BEGIN{print $trained_at + $CYCLE_HOURS}")
-    if awk "BEGIN{exit !($have >= $need)}"; then break; fi
-    plog "waiting for data: ${have}h produced, need ${need}h (cycle $((cycle+1)))"
-    sleep 300
-  done
+  # wait for enough NEW data - except the first cycle, which has the base
+  # corpus to work with and should not leave the GPU idle for hours
+  if [ "$cycle" -gt 0 ] || [ "${MIX_BASE:-1}" != "1" ]; then
+    while :; do
+      have=$(manifest_hours)
+      need=$(awk "BEGIN{print $trained_at + $CYCLE_HOURS}")
+      if awk "BEGIN{exit !($have >= $need)}"; then break; fi
+      plog "waiting for data: ${have}h produced, need ${need}h (cycle $((cycle+1)))"
+      sleep 300
+    done
+  fi
 
   cycle=$((cycle+1))
   have=$(manifest_hours)
@@ -88,12 +102,27 @@ while [ "$cycle" -lt "$MAX_CYCLES" ]; do
   LOG="$PROG/logs/train-c${cycle}-$ts.log"
   plog "=== cycle $cycle: training on ${have}h of new chunks -> $LOG"
 
-  cat > "$PROG/data_config.json" <<JSON
+  # BASE_LST is the 239h already-trained corpus; PROG manifest is the new
+  # chunks. `repeat` oversamples the new data so it carries weight while it is
+  # still small, without discarding the distribution the model already learned.
+  if [ "${MIX_BASE:-1}" = "1" ] && [ -s "$BASE_LST" ]; then
+    cat > "$PROG/data_config.json" <<JSON
+{
+  "train": [
+    {"manifest_path": ["$BASE_LST"]},
+    {"manifest_path": ["$PROG/tokens/train/data.lst"], "repeat": ${NEW_REPEAT:-3}}
+  ],
+  "dev":   [{"manifest_path": ["$DEV_LST"]}]
+}
+JSON
+  else
+    cat > "$PROG/data_config.json" <<JSON
 {
   "train": [{"manifest_path": ["$PROG/tokens/train/data.lst"]}],
   "dev":   [{"manifest_path": ["$DEV_LST"]}]
 }
 JSON
+  fi
 
   ck=$(latest_ckpt)
   $PY - "$PKG/configs/train_a100_40gb.json" "$PROG/train_config.json" \
@@ -125,12 +154,15 @@ PY
   "$ACC" launch --num_processes 1 --mixed_precision bf16 \
       "$PKG/train_ohun.py" --train_config "$PROG/train_config.json" \
       --data_config "$PROG/data_config.json" --output_dir "$PROG/exp" \
-      >> "$LOG" 2>&1
+      >> "$LOG" 2>&1 &
+  CHILD=$!
+  wait "$CHILD"
   rc=$?
+  CHILD=""
   plog "cycle $cycle exited rc=$rc (checkpoint $(latest_ckpt))"
 
   if [ "$rc" -ne 0 ]; then
-    if grep -qE "CUDA out of memory|OutOfMemoryError" "$LOG"; then
+    if grep -qiE "CUDA out of memory|CUDA error: out of memory|OutOfMemoryError|cudaErrorMemoryAllocation" "$LOG"; then
       BATCH_TOKENS=$(( BATCH_TOKENS * 3 / 4 ))
       [ "$BATCH_TOKENS" -lt 1024 ] && BATCH_TOKENS=1024
       plog "  OOM -> batch_tokens reduced to $BATCH_TOKENS"
