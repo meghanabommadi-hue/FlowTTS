@@ -29,7 +29,10 @@ def try_tokens(base_cfg, data_cfg, n, workdir, env, steps=6):
     e = dict(env)
     e.pop("OHUN_EVAL_SET", None)     # no audio previews while probing
     e.pop("OHUN_HF_REPO", None)      # and definitely no pushes
-    cmd = ["accelerate", "launch", "--num_processes", "1", "--mixed_precision",
+    acc = os.environ.get("ACC", os.path.join(os.path.dirname(sys.executable), "accelerate"))
+    if not os.path.exists(acc):
+        acc = "accelerate"
+    cmd = [acc, "launch", "--num_processes", "1", "--mixed_precision",
            cfg.get("mixed_precision", "bf16"),
            os.path.join(HERE, "train_ohun.py"),
            "--train_config", p, "--data_config", data_cfg, "--output_dir", out]

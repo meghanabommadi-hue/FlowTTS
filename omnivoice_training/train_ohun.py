@@ -75,14 +75,15 @@ class HookedTrainer(OmniTrainer):
         except OSError:
             pass
 
-    def _snapshot(self):
+    def _snapshot(self, step=None):
         """Write an inference-loadable copy of the current weights.
 
         Only save_pretrained + tokenizer - no optimizer state. Written to a temp
         dir and renamed so a crash mid-write can never leave a half-snapshot
         that from_pretrained would choke on.
         """
-        dst = os.path.join(self.config.output_dir, "eval_snapshot")
+        step = self.global_step if step is None else step
+        dst = os.path.join(self.config.output_dir, f"eval_snapshot-{step}")
         tmp = dst + ".tmp"
         shutil.rmtree(tmp, ignore_errors=True)
         os.makedirs(tmp, exist_ok=True)
@@ -95,6 +96,18 @@ class HookedTrainer(OmniTrainer):
                 print(f"[hook] tokenizer save skipped: {e!r}", flush=True)
         shutil.rmtree(dst, ignore_errors=True)
         os.rename(tmp, dst)
+        # retire older snapshots, but never the two most recent (one may still
+        # be uploading in the push thread)
+        try:
+            snaps = sorted(
+                (d for d in os.listdir(self.config.output_dir)
+                 if d.startswith("eval_snapshot-") and not d.endswith(".tmp")),
+                key=lambda d: int(d.rsplit("-", 1)[1]))
+            for old in snaps[:-2]:
+                shutil.rmtree(os.path.join(self.config.output_dir, old),
+                              ignore_errors=True)
+        except (OSError, ValueError):
+            pass
         return dst
 
     def _audio_preview(self, snap):
@@ -184,6 +197,25 @@ class HookedTrainer(OmniTrainer):
         except Exception:
             pass
         return metrics
+
+
+    def train(self):
+        """Run training, then let any in-flight Hub upload finish.
+
+        The push runs on a daemon thread so it never blocks the training loop -
+        but that means process exit would kill an upload mid-flight, which is
+        exactly what happens at the end of a run. Join it here.
+        """
+        try:
+            super().train()
+        finally:
+            t = self._push_thread
+            if t and t.is_alive():
+                print("[hook] waiting up to 10 min for the final HF push …",
+                      flush=True)
+                t.join(timeout=600)
+                print(f"[hook] final push {'done' if not t.is_alive() else 'still running - abandoned'}",
+                      flush=True)
 
 
 def main():

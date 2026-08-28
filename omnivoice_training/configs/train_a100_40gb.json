@@ -31,7 +31,7 @@
   "max_batch_size": 64,
   "max_sample_tokens": 2000,
   "min_sample_tokens": 50,
-  "num_workers": 8,
+  "num_workers": 4,
 
   "mixed_precision": "bf16",
   "allow_tf32": true,

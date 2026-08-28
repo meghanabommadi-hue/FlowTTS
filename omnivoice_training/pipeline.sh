@@ -20,6 +20,10 @@ MIN_SEC=${MIN_SEC:-1.5}
 OHUN_STATUS_URL=${OHUN_STATUS_URL:-http://205.147.102.70/ohun/status.json}
 WAIT_FOR_DATA=${WAIT_FOR_DATA:-1}
 DATA_REPO=${DATA_REPO:-kapturecx/ohun}
+# FROM_SOURCES=1 reads the upstream Africanvoice corpora (already complete and
+# byte-identical to what ohun repackages) so the GPU need not wait on the merge.
+FROM_SOURCES=${FROM_SOURCES:-0}
+SRC_FLAG=""; [ "$FROM_SOURCES" = "1" ] && SRC_FLAG="--from-sources"
 
 mkdir -p "$RUN"/{stage,logs,prep,tokens,exp,eval_wav}
 export PYTHONPATH="$SRC:${PYTHONPATH:-}"
@@ -47,15 +51,34 @@ if [ "$WAIT_FOR_DATA" = "1" ] && ! done_stage wait; then
 fi
 
 # ---------------------------------------------------------------- 1: prepare
+# One process per language, in parallel. A single sequential reader is
+# latency-bound (~1.8 MB/s of parquet); the languages are independent, so
+# running them concurrently multiplies throughput on the same link.
 if ! done_stage prepare; then
-  log "stage 1: preparing ${HOURS_PER_LANG}h/language from $DATA_REPO"
-  $PY "$PKG/ohun_prepare.py" --repo "$DATA_REPO" --out "$RUN/prep" \
-      --hours-per-lang "$HOURS_PER_LANG" --dev-minutes-per-lang "$DEV_MINUTES" \
-      --min-sec "$MIN_SEC" --max-sec "$MAX_SEC" \
-      --status "$RUN/ui/prepare_status.json" \
-      >> "$RUN/logs/prepare.log" 2>&1 || { log "prepare FAILED"; exit 1; }
+  log "stage 1: preparing ${HOURS_PER_LANG}h/language (4 languages in parallel)"
+  pids=""; langs="ibo yor hau pcm"
+  for lg in $langs; do
+    $PY "$PKG/ohun_prepare.py" --repo "$DATA_REPO" --out "$RUN/prep" \
+        --langs "$lg" --hours-per-lang "$HOURS_PER_LANG" \
+        --dev-minutes-per-lang "$DEV_MINUTES" \
+        --min-sec "$MIN_SEC" --max-sec "$MAX_SEC" \
+        --status "$RUN/ui/prepare_$lg.json" $SRC_FLAG \
+        >> "$RUN/logs/prepare_$lg.log" 2>&1 &
+    pids="$pids $!"
+    log "  [$lg] pid $!"
+  done
+  fail=0
+  for p in $pids; do wait "$p" || fail=1; done
+  if [ "$fail" = "1" ]; then
+    log "at least one prepare worker failed; see $RUN/logs/prepare_*.log"
+    # Continue anyway if we got usable data from the others - a missing
+    # language is far better than no training run at all.
+    n=$(cat "$RUN"/prep/*_train.jsonl 2>/dev/null | wc -l)
+    [ "$n" -lt 500 ] && { log "only $n train utterances total - aborting"; exit 1; }
+    log "  continuing with $n train utterances from the successful languages"
+  fi
   mark prepare
-  log "  prepare done: $(du -sh "$RUN/prep" | cut -f1)"
+  log "  prepare done: $(du -sh "$RUN/prep" | cut -f1), $(cat "$RUN"/prep/*_train.jsonl 2>/dev/null | wc -l) train utts"
 fi
 
 # ---------------------------------------------------------------- 2: eval set

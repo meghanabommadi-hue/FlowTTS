@@ -19,8 +19,21 @@ from dataclasses import dataclass, asdict
 import numpy as np
 import soundfile as sf
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hf_parquet import iter_rows  # noqa: E402
+
 # ohun config name -> OmniVoice canonical language id (verified in LANG_IDS)
 LANG_MAP = {"ibo": "ig", "yor": "yo", "hau": "ha", "pcm": "pcm"}
+
+# The upstream corpora that `ohun` repackages. ohun re-registers the SAME
+# parquet objects, so these are byte-identical sources - useful when the ohun
+# upload is still in flight and the GPU would otherwise sit idle.
+SOURCE_REPOS = {
+    "ibo": "Africanvoice/African_voices_igbo",
+    "yor": "Africanvoice/African_voices_yoruba",
+    "hau": "Africanvoice/African_voices_hausa",
+    "pcm": "Africanvoice/African_voices_naija",
+}
 TARGET_SR = 24_000  # HIGGS_INPUT_SAMPLE_RATE (extract_audio_tokens.py:72)
 
 
@@ -74,9 +87,12 @@ def main():
     ap.add_argument("--max-sec", type=float, default=25.0)
     ap.add_argument("--token", default=os.environ.get("HF_TOKEN"))
     ap.add_argument("--status", default=None, help="json status file for the UI")
+    ap.add_argument("--shuffle-seed", type=int, default=17,
+                    help="shard order seed - avoids taking every clip from one speaker")
+    ap.add_argument("--from-sources", action="store_true",
+                    help="read the upstream Africanvoice corpora instead of the "
+                         "merged ohun repo (identical audio, already complete)")
     a = ap.parse_args()
-
-    from datasets import load_dataset
 
     os.makedirs(a.out, exist_ok=True)
     langs = [l.strip() for l in a.langs.split(",") if l.strip()]
@@ -96,9 +112,15 @@ def main():
         dev_p = os.path.join(a.out, f"{cfg}_dev.jsonl")
         st = Stats()
 
-        print(f"[{cfg}->{lang_id}] streaming {a.repo}:{cfg}/{a.split} "
+        print(f"[{cfg}->{lang_id}] streaming {'sources' if a.from_sources else a.repo}:{cfg}/{a.split} "
               f"budget={a.hours_per_lang}h (+{a.dev_minutes_per_lang}m dev)", flush=True)
-        ds = load_dataset(a.repo, cfg, split=a.split, streaming=True, token=a.token)
+        repo = SOURCE_REPOS[cfg] if a.from_sources else a.repo
+        # Only the columns we need - the audio blob dominates, so pulling the
+        # rest costs nothing, but naming them keeps the read explicit.
+        cols = ["audio_id", "speaker_id", "transcript", "language",
+                "audio_path", "audio"]
+        ds = iter_rows(repo, a.split, columns=cols, token=a.token,
+                       shuffle_seed=a.shuffle_seed)
 
         ftr = open(train_p, "w", encoding="utf-8")
         fdv = open(dev_p, "w", encoding="utf-8")
