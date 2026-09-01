@@ -964,9 +964,10 @@ _TTS_TEST_PAGE = r"""<!doctype html>
     <h2>Live console</h2>
     <div class="console">
       <label for="text">Text</label>
-      <textarea id="text" spellcheck="false" rows="4">[angry] Hello sir, your EMI payment is due 3 days now.
-[neutral] I hope you pay today.
-[sad] I know you don't have the money,
+      <textarea id="text" spellcheck="false" rows="5">[neutral] Hello sir!
+[angry] your EMI payment is due 3 days now.
+[neutral] I hope you pay today as it's the last day.
+[sad] I know you don't have the money, and lost your job,
 [neutral] but still pay it.</textarea>
       <p class="muted" style="margin-top: 8px;">Put each line in its own <code>[tag]</code> &mdash; every segment keeps its own voice and plays back-to-back as soon as it's ready.</p>
       <div class="chip-row" id="chips">
