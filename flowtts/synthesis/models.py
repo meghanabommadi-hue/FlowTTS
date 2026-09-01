@@ -45,10 +45,10 @@ logger = structlog.get_logger(__name__)
 # beyond a dict lookup (no re-encoding on the hot path).
 _EMOTIONS_DIR = Path(__file__).resolve().parent.parent.parent / "sample_files" / "emotions_simran"
 EMOTION_REF_AUDIO: dict[str, Path] = {
-    "angry": _EMOTIONS_DIR / "angry_neutral_1.75x.mp3",
+    "angry": _EMOTIONS_DIR / "angry_neutral.mp3",
     "angrier": _EMOTIONS_DIR / "angry_simran.mp3",
     "sad": _EMOTIONS_DIR / "sad_simran.mp3",
-    "happy": _EMOTIONS_DIR / "excited_simran.mp3",
+    "happy": _EMOTIONS_DIR / "happy_simran.mp3",
 }
 
 # Matches a leading "[tag]" (case-insensitive), e.g. "[angry] Hi how are you"

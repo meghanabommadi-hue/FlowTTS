@@ -65,6 +65,7 @@ from flowtts.core.config import settings
 from flowtts.decoder.decoder import tensor_to_wav, SAMPLE_RATE
 from flowtts.monitoring.metrics import record_call, record_ws_connection_open, record_ws_connection_close, record_ws_error, record_ws_done, ws_log_snapshot, record_port_change
 from flowtts.processing.audio_processing import crossfade, fade_out  # noqa: F401 (kept for future use)
+from flowtts.processing.emotion import detect_tag
 from flowtts.processing.text_normalize import normalize_text
 from flowtts.synthesis.models import FlowTtsSynthesizer
 
@@ -631,12 +632,22 @@ async def _run_control_api(ctrl_port: int) -> None:
 # ---------------------------------------------------------------------------
 # Public HTTP TTS API  (aiohttp, bound 0.0.0.0 — reachable externally)
 # ---------------------------------------------------------------------------
+_RE_LEADING_TAG = re.compile(r"^\s*\[[^\]]*\]\s*")
+
+
 async def _http_tts(req: web.Request) -> web.Response:
     """POST /tts  {"text": "[angry] Hi how are you"}  → audio/wav bytes.
 
     Recognized emotion tags (preloaded at startup, no extra latency to
     switch): angry, angrier, sad, happy. No tag (or an unrecognized one)
     falls back to the default reference voice.
+
+    Auto-detect: if the text has no leading [tag] at all, a multilingual
+    emotion classifier (tabularisai/multilingual-emotion-classification)
+    picks one for you from the text itself — works across the 23 languages
+    it supports, including Hindi/English code-mixed text. Pass
+    {"auto_emotion": false} to disable this and always use the default voice
+    when no tag is given.
     """
     try:
         body = await req.json()
@@ -646,6 +657,17 @@ async def _http_tts(req: web.Request) -> web.Response:
     text = (body.get("text") or "").strip()
     if not text:
         return web.Response(status=400, text="Missing or empty 'text'")
+
+    auto_emotion = bool(body.get("auto_emotion", True))
+    detected_tag = ""
+    if auto_emotion and not _RE_LEADING_TAG.match(text):
+        try:
+            detected_tag = detect_tag(text)
+        except Exception as e:
+            print(f"[{_ts()}] :http/tts  emotion detection failed: {e}", flush=True)
+            detected_tag = ""
+        if detected_tag:
+            text = f"[{detected_tag}] {text}"
 
     synth = await _get_synthesizer()
     text = normalize_text(text)
@@ -659,6 +681,7 @@ async def _http_tts(req: web.Request) -> web.Response:
         total_s = time.perf_counter() - t0
         print(
             f"[{_ts()}] :http/tts  {text[:60]!r}"
+            f"  auto_tag={detected_tag or '-'}"
             f"  llm={round(llm_s*1000)}ms  total={round(total_s*1000)}ms"
             f"  wav={len(decoded.wav_bytes)}B",
             flush=True,
@@ -670,7 +693,10 @@ async def _http_tts(req: web.Request) -> web.Response:
     return web.Response(
         body=decoded.wav_bytes,
         content_type="audio/wav",
-        headers={"X-LLM-Seconds": f"{llm_s:.4f}"},
+        headers={
+            "X-LLM-Seconds": f"{llm_s:.4f}",
+            "X-Detected-Emotion-Tag": detected_tag,
+        },
     )
 
 
@@ -938,7 +964,11 @@ _TTS_TEST_PAGE = r"""<!doctype html>
     <h2>Live console</h2>
     <div class="console">
       <label for="text">Text</label>
-      <textarea id="text" spellcheck="false">[angry] Hello sir, you EMI payment is due 3 days now.</textarea>
+      <textarea id="text" spellcheck="false" rows="4">[angry] Hello sir, your EMI payment is due 3 days now.
+[neutral] I hope you pay today.
+[sad] I know you don't have the money,
+[neutral] but still pay it.</textarea>
+      <p class="muted" style="margin-top: 8px;">Put each line in its own <code>[tag]</code> &mdash; every segment keeps its own voice and plays back-to-back as soon as it's ready.</p>
       <div class="chip-row" id="chips">
         <button type="button" class="chip" data-tag="angry">angry</button>
         <button type="button" class="chip" data-tag="angrier">angrier</button>
@@ -991,20 +1021,25 @@ _TTS_TEST_PAGE = r"""<!doctype html>
   textEl.addEventListener('input', syncChips);
   syncChips();
 
-  // Split on full stops into individual sentences, re-applying the leading
-  // [tag] (if any) to every sentence so each one clones the same voice.
+  // Split into individual [tag] segments, one per "[tag] text" run (each
+  // typically its own line). Each segment keeps its own tag — unlike a
+  // single leading tag cloned onto every sentence. A segment with no [tag]
+  // prefix keeps whatever tag preceded it (falls through to neutral if
+  // none yet), so plain continuation lines don't need to repeat a tag.
+  // Falls back to splitting on '.' when the text has no [tag] markers at
+  // all, so plain untagged text still works.
   function splitSentences(text) {
-    const m = text.match(/^\s*(\[[^\]]*\]\s*)/);
-    const tagPrefix = m ? m[1] : '';
-    const body = m ? text.slice(m[0].length) : text;
+    const matches = [...text.matchAll(/\[([^\]]*)\]\s*([^\[]+)/g)];
 
-    const sentences = body
-      .split('.')
-      .map(s => s.trim())
-      .filter(Boolean);
+    if (matches.length === 0) {
+      // No [tag] markers anywhere — fall back to full-stop splitting.
+      const sentences = text.split('.').map(s => s.trim()).filter(Boolean);
+      return sentences.map(s => s + '.');
+    }
 
-    if (sentences.length === 0) return [];
-    return sentences.map(s => tagPrefix + s + '.');
+    return matches
+      .map(([, tag, body]) => `[${tag.trim()}] ${body.trim()}`)
+      .filter(s => s.length > 0);
   }
 
   function playClip(blob) {
