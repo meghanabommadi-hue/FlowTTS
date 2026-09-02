@@ -56,8 +56,8 @@ class TtsModelSettings(BaseModel):
     else:
         model_dir: str = f"{_MODELS_DIR}/Shubhangi7-mira_hindi_second_round"
         warmup_sentence: str = "नमस्ते. मैं बजाज finance से वाणी बोल रही हूं, एक recorded line के माध्यम से. क्या मैं customer name से बात कर रही हूं?"
-        # ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
-        ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
+        ref_audio: str = f"{_SAMPLE_FILES_DIR}/simran.wav"
+        #ref_audio: str = "/home/ubuntu/FlowTTS/sample_files/angry_tara_slow_17.wav"
         
     
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
