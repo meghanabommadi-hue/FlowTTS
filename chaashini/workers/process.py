@@ -363,6 +363,17 @@ class ProcessWorker(Worker):
             return
         enh_rows = [c for c in cand if c["status"] == "enhance"]
         if enh_rows:
+            queued = self.conn.execute("SELECT COALESCE(SUM(audio_seconds),0) s FROM gpu_jobs WHERE kind='enhance' AND status IN ('queued','running')").fetchone()["s"]
+            if queued > self.cfg.quality.enhance.max_queue_s:
+                # the enhancer must never hold the pipeline hostage: skip it for this recording
+                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='enhance_skipped', updated_at=? WHERE video_id=? AND status='enhance'", (time.time(), vid))
+                stats["enhance"] = {"skipped_backpressure": len(enh_rows), "queue_s": round(queued)}
+                enh_rows = []
+                cand = [c for c in cand if c["status"] == "candidate"]
+                if not cand:
+                    self._finish_video(v, [], stats)
+                    return
+        if enh_rows:
             tar_path = self._write_enhance_payload(wd, v, enh_rows)
             secs = sum(c["dur_ms"] for c in enh_rows) / 1000.0
             D.enqueue_job(self.conn, "enhance", vid, str(tar_path), payload_bytes=tar_path.stat().st_size, audio_seconds=secs, n_items=len(enh_rows))

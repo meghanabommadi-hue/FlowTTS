@@ -120,6 +120,7 @@ quality:
     max_fraction_per_video: 0.2
     max_chunks_per_video: 60
     min_chunk_ms: 4000
+    max_queue_s: 1800
     mode: enhance              # enhance | denoise
     nfe: 16
     solver: midpoint
@@ -140,7 +141,7 @@ workers:
   torch_threads: 5
   heartbeat_s: 10
   lease_s: 3600
-  max_videos_in_flight: 96
+  max_videos_in_flight: 128
 
 api:
   host: 127.0.0.1

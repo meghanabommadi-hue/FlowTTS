@@ -149,6 +149,7 @@ class EnhanceGateCfg(BaseModel):
     max_fraction_per_video: float = 0.2
     max_chunks_per_video: int = 60
     min_chunk_ms: int = 4000             # short borderline clips are not worth GPU time (acceptance after enhancement < 25 %)
+    max_queue_s: int = 1800              # backpressure: when this much audio is already queued for the enhancer, new recordings skip it
     mode: str = "enhance"                # enhance | denoise
     nfe: int = 16
     solver: str = "midpoint"
