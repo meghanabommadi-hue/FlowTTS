@@ -345,7 +345,8 @@ def release_all_video_leases(conn: sqlite3.Connection) -> dict[str, int]:
 
 def requeue_worker_jobs(conn: sqlite3.Connection, worker: str) -> int:
     """A GPU worker (re)started: whatever it had running is gone; make it claimable again."""
-    cur = conn.execute("UPDATE gpu_jobs SET status='queued', worker=NULL, leased_until=NULL, started_at=NULL WHERE status='running' AND worker=?", (worker,))
+    cur = conn.execute("UPDATE gpu_jobs SET status='queued', worker=NULL, leased_until=NULL, started_at=NULL, attempts=MAX(0, attempts-1) "
+                       "WHERE status='running' AND worker=?", (worker,))
     return cur.rowcount
 
 

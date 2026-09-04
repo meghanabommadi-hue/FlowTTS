@@ -499,7 +499,7 @@ class ProcessWorker(Worker):
                 reasons[reason] = reasons.get(reason, 0) + 1
                 self.conn.execute("UPDATE chunks SET status='rejected', reject_reason=?, text=?, updated_at=? WHERE id=?", (reason, text, time.time(), cid))
                 continue
-            texts_ok[cid] = (text, cps)
+            texts_ok[cid] = (text, cps, aconf)
             lids[cid] = identify(text, expected=v["lang_hint"], prior_weight=self.cfg.lid.prior_weight, code_mix_threshold=self.cfg.lid.code_mix_threshold)
         # ---- source-level consensus: majority script and language, weighted by duration
         from collections import Counter
@@ -541,7 +541,7 @@ class ProcessWorker(Worker):
             cid = c["id"]
             if cid not in texts_ok:
                 continue
-            text, cps = texts_ok[cid]
+            text, cps, aconf = texts_ok[cid]
             lid = lids[cid]
             dur_s = c["dur_ms"] / 1000.0
             reason = None
