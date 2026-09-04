@@ -57,6 +57,7 @@ class ProcessWorker(Worker):
         torch.set_num_threads(self.cfg.workers.torch_threads)
         self.stats = {"decoded": 0, "segmented": 0, "rescored": 0, "finalized": 0, "chunks_accepted": 0, "chunks_rejected": 0,
                       "accepted_sec": 0.0, "videos_rejected": 0}
+        self._enabled_codes = {l.code for l in self.cfg.enabled_languages()}
         self.dnsmos = get_dnsmos(self.cfg.paths.models_dir / "dnsmos", threads=2)
         self.tagger = get_tagger(threads=self.cfg.workers.torch_threads)
 
@@ -625,6 +626,8 @@ class ProcessWorker(Worker):
             other_scripts = sum(sh for sk, sh in lid.scripts.items() if sk not in ("latin", star_script))
             if lid.lang == "und" or lid.lang not in LANGUAGES or star_lang is None:
                 reason = "lid_unknown"
+            elif lid.lang not in self._enabled_codes:
+                reason = "lang_not_collected"   # e.g. a script the recogniser is not trained for
             elif lid.script_key != star_script:
                 reason = "script_outlier"          # transcript is in a different script than the recording: ASR unreliable here
             elif other_scripts >= 0.1 or (other_scripts > 0 and lid.n_tokens <= 6):

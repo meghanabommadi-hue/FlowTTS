@@ -124,8 +124,11 @@ class DownloadWorker(Worker):
                 v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (pick,))
                 if v:
                     break
-        if not v:
-            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s)
+        if not v and langs:
+            codes = [l.code for l in langs]
+            qs = ",".join("?" * len(codes))
+            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s,
+                              f"AND lang_hint IN ({qs})", codes)
         if not v:
             return False
         vid = v["id"]
@@ -185,8 +188,16 @@ class DownloadWorker(Worker):
         info = dl.info
         lang_hint = v["lang_hint"]
         declared = (dl.orig_lang or "").split("-")[0].lower()
+        enabled = {l.code for l in self.cfg.enabled_languages()}
         if declared and declared in LANGUAGES and declared != lang_hint:
-            lang_hint = declared
+            if declared in enabled:
+                lang_hint = declared
+            else:
+                # the source declares a language we deliberately do not collect (unsupported by the recogniser)
+                D.set_video_status(self.conn, vid, "rejected", error=f"declared language not enabled: {declared}")
+                self.stats["skipped"] += 1
+                _rm(out_dir)
+                return True
         D.kv_set(self.conn, "source_cooldown_level", 0)
         D.kv_set(self.conn, f"cooldown_level:{label}", 0)
         dup = duplicate_upload(self.conn, vid, info.get("title") or v["title"], dur)
