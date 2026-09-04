@@ -160,6 +160,14 @@ CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT
 );
+CREATE TABLE IF NOT EXISTS clip_fps (
+  chunk_id TEXT PRIMARY KEY,
+  dur_ms INTEGER NOT NULL,
+  fp TEXT NOT NULL,
+  source TEXT NOT NULL,          -- 'local' | 'hub'
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_clip_fps_dur ON clip_fps(dur_ms);
 CREATE TABLE IF NOT EXISTS channels (
   id TEXT PRIMARY KEY,
   name TEXT,

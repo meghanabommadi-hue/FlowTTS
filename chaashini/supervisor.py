@@ -54,6 +54,12 @@ def main() -> None:
     setup_logging("supervisor", cfg.paths.logs_dir)
     for p in (cfg.paths.data_dir, cfg.paths.work_dir, cfg.paths.staging_dir, cfg.paths.shards_dir, cfg.paths.samples_dir, cfg.paths.logs_dir):
         p.mkdir(parents=True, exist_ok=True)
+    if cfg.hf.token:
+        try:
+            from .backup import restore_db_if_missing
+            restore_db_if_missing(cfg.paths.db_path, cfg.hf.token, cfg.hf.state_repo_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("state restore check failed: %s", e)
     conn = D.connect(cfg.paths.db_path)
     D.init_schema(conn)
     released = D.release_all_video_leases(conn)

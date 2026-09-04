@@ -64,3 +64,63 @@ def duplicate_audio(conn: sqlite3.Connection, video_id: str, fp: str, duration_s
         if fingerprint_similarity(fp, r["fp"]) >= threshold:
             return r["id"]
     return None
+
+
+# ----------------------------------------------------------------------------- clip level
+CLIP_BINS = 32
+
+
+def clip_fingerprint(x: np.ndarray, sr: int) -> str:
+    """32 x 4-bit quantised RMS envelope of one clip (duration-normalised), as hex."""
+    x = np.asarray(x, dtype=np.float32)
+    if x.size < sr // 4:
+        return ""
+    n = (x.size // CLIP_BINS) * CLIP_BINS
+    env = np.log(np.sqrt((x[:n].reshape(CLIP_BINS, -1) ** 2).mean(axis=1) + 1e-9) + 1e-6)
+    lo, hi = np.percentile(env, 5), np.percentile(env, 95)
+    q = np.clip(((env - lo) / max(hi - lo, 1e-6) * 15).round(), 0, 15).astype(np.uint8)
+    return "".join(f"{v:x}" for v in q)
+
+
+def duplicate_clip(conn: sqlite3.Connection, fp: str, dur_ms: int, threshold: float = 0.92, tol_ms: int = 300) -> str | None:
+    """Return the id of an already-kept clip (local or on the Hub) with the same length and envelope."""
+    if not fp:
+        return None
+    for r in conn.execute("SELECT chunk_id, fp FROM clip_fps WHERE dur_ms BETWEEN ? AND ?", (dur_ms - tol_ms, dur_ms + tol_ms)):
+        if fingerprint_similarity(fp, r["fp"]) >= threshold:
+            return r["chunk_id"]
+    return None
+
+
+def remember_clip(conn: sqlite3.Connection, chunk_id: str, fp: str, dur_ms: int, source: str = "local") -> None:
+    if fp:
+        conn.execute("INSERT OR REPLACE INTO clip_fps(chunk_id, dur_ms, fp, source, created_at) VALUES (?,?,?,?,?)",
+                     (chunk_id, dur_ms, fp, source, __import__("time").time()))
+
+
+def seed_clip_fingerprints_from_hub(cfg) -> int:
+    """Download every shard already published and index its clips, so a rebuilt state database still
+    refuses to push the same audio twice."""
+    import io
+    import soundfile as sf
+    from huggingface_hub import HfApi, hf_hub_download
+    import pyarrow.parquet as pq
+    from . import db as D
+    api = HfApi(token=cfg.hf.token)
+    files = [f for f in api.list_repo_files(cfg.hf.repo_id, repo_type="dataset") if f.endswith(".parquet")]
+    conn = D.connect(cfg.paths.db_path)
+    D.init_schema(conn)
+    n = 0
+    for f in files:
+        p = hf_hub_download(cfg.hf.repo_id, f, repo_type="dataset", token=cfg.hf.token)
+        t = pq.read_table(p, columns=["id", "audio", "duration_s"])
+        with D.tx(conn):
+            for row in t.to_pylist():
+                if conn.execute("SELECT 1 FROM clip_fps WHERE chunk_id=?", (row["id"],)).fetchone():
+                    continue
+                x, sr = sf.read(io.BytesIO(row["audio"]["bytes"]), dtype="float32")
+                if x.ndim > 1:
+                    x = x[:, 0]
+                remember_clip(conn, row["id"], clip_fingerprint(x, sr), int(round(row["duration_s"] * 1000)), source="hub")
+                n += 1
+    return n

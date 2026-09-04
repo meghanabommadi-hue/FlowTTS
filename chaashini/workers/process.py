@@ -22,7 +22,7 @@ import soundfile as sf
 
 from .. import db as D
 from ..audio import decode_to_wav, peak_normalize, read_wav_int16, resample
-from ..dedup import duplicate_audio, fingerprint
+from ..dedup import clip_fingerprint, duplicate_audio, duplicate_clip, fingerprint, remember_clip
 from ..export import stage_chunk
 from ..languages import LANGUAGES
 from ..lid import identify
@@ -664,6 +664,14 @@ class ProcessWorker(Worker):
                                   (text, D.j(m), time.time(), cid))
                 continue
             audio = peak_normalize(audio, -0.5)
+            cfp = clip_fingerprint(audio, export_sr)
+            dup = duplicate_clip(self.conn, cfp, int(len(audio) * 1000 / export_sr))
+            if dup:
+                n_rej += 1
+                reasons["duplicate_clip"] = reasons.get("duplicate_clip", 0) + 1
+                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='duplicate_clip', text=?, updated_at=? WHERE id=?", (text, time.time(), cid))
+                continue
+            remember_clip(self.conn, cid, cfp, int(len(audio) * 1000 / export_sr))
             meta = {
                 "id": cid, "source_id": v["source_hash"], "segment_index": c["idx"], "duration_s": round(len(audio) / export_sr, 3),
                 "sample_rate": export_sr, "format": fmt, "text": text, "lang": lid.lang, "lang_name": LANGUAGES[lid.lang].name,

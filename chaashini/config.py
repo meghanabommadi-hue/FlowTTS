@@ -57,6 +57,8 @@ class HFCfg(BaseModel):
     shard_target_mb: int = 400
     max_retries: int = 8
     dataset_name: str = "Chaashini"
+    state_repo_id: str = "kapturecx/chaashini-state"   # PRIVATE repo holding hourly state backups
+    backup_interval_s: int = 3600
 
 
 class SourceCfg(BaseModel):

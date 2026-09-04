@@ -25,6 +25,9 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("lang")
     a.add_argument("url")
     a.add_argument("--priority", type=int, default=10)
+    sub.add_parser("backup", help="upload a state backup now")
+    sub.add_parser("restore", help="restore the state database from the latest backup if none exists locally")
+    sub.add_parser("seed-fps", help="seed the clip-fingerprint index from the shards already on the Hub")
     t = sub.add_parser("test-lid")
     t.add_argument("text")
     args = ap.parse_args(argv)
@@ -102,6 +105,21 @@ def main(argv: list[str] | None = None) -> None:
                             "VALUES (?,?,?,?,?,?,?,?,'discovered',?,?,?)", (f.id, source_hash(f.id, salt), args.lang, f.channel_id, f.channel, f.title, f.duration, f.view_count, t, t, args.priority))
             n += cur.rowcount
         print(f"queued {n} new items for {args.lang}")
+    elif args.cmd == "backup":
+        from .backup import backup_db
+        from .config import get_config
+        cfg = get_config()
+        print(backup_db(cfg.paths.db_path, cfg.hf.token, cfg.hf.state_repo_id))
+    elif args.cmd == "restore":
+        from .backup import restore_db_if_missing
+        from .config import get_config
+        cfg = get_config()
+        print("restored" if restore_db_if_missing(cfg.paths.db_path, cfg.hf.token, cfg.hf.state_repo_id) else "nothing restored")
+    elif args.cmd == "seed-fps":
+        from .dedup import seed_clip_fingerprints_from_hub
+        from .config import get_config
+        cfg = get_config()
+        print("seeded", seed_clip_fingerprints_from_hub(cfg), "clip fingerprints from the Hub")
     elif args.cmd == "test-lid":
         from .lid import identify
         print(json.dumps(identify(args.text).as_dict(), ensure_ascii=False, indent=2))

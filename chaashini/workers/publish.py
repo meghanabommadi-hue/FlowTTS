@@ -25,6 +25,7 @@ class PublishWorker(Worker):
         super().__init__(name, cfg)
         self.stats = {"pushes": 0, "shards": 0, "pushed_hours": 0.0, "failures": 0}
         self._last_check = 0.0
+        self._last_backup = time.time()
         self._card_done = bool(D.kv_get(self.conn, "card_initialized"))
         # a push interrupted by a restart never finished: its shards are still 'built' and will be retried
         n = self.conn.execute("UPDATE pushes SET status='failed', finished_at=?, error='interrupted by restart' WHERE status='running'", (time.time(),)).rowcount
@@ -186,6 +187,15 @@ class PublishWorker(Worker):
             except Exception as e:  # noqa: BLE001
                 log.warning("card init failed: %s", e)
         now = time.time()
+        if self.cfg.hf.token and now - self._last_backup >= self.cfg.hf.backup_interval_s:
+            self._last_backup = now
+            try:
+                from ..backup import backup_db
+                url = backup_db(self.cfg.paths.db_path, self.cfg.hf.token, self.cfg.hf.state_repo_id)
+                self.event("system", f"state backup uploaded to {self.cfg.hf.state_repo_id}", data={"url": url})
+            except Exception as e:  # noqa: BLE001
+                self.event("system", f"state backup failed: {str(e)[:160]}", level="error")
+                log.warning("state backup failed: %s", e)
         if now - self._last_check < self.cfg.hf.push_check_interval_s and not D.kv_get(self.conn, "force_push"):
             return False
         self._last_check = now
