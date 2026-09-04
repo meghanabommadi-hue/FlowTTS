@@ -46,7 +46,7 @@ class ProcessWorker(Worker):
         torch.set_num_threads(self.cfg.workers.torch_threads)
         self.stats = {"decoded": 0, "segmented": 0, "rescored": 0, "finalized": 0, "chunks_accepted": 0, "chunks_rejected": 0,
                       "accepted_sec": 0.0, "videos_rejected": 0}
-        self.dnsmos = get_dnsmos(self.cfg.paths.models_dir / "dnsmos", threads=2)
+        self.dnsmos = get_dnsmos(self.cfg.paths.models_dir / "dnsmos", threads=4)
         self.tagger = get_tagger(threads=self.cfg.workers.torch_threads)
 
     def idle_sleep(self) -> float:
@@ -279,7 +279,6 @@ class ProcessWorker(Worker):
         xf = x16.astype(np.float32) / 32768.0
         t = time.time()
         rows = []
-        n_enh = 0
         max_enh = min(self.cfg.quality.enhance.max_chunks_per_video, int(self.cfg.quality.enhance.max_fraction_per_video * len(chunks)) + 1)
         counts = {"accepted": 0, "enhance": 0, "rejected": 0}
         reasons: dict[str, int] = {}
@@ -292,22 +291,25 @@ class ProcessWorker(Worker):
             m["speaker_dominance"] = round(c.dominance, 3)
             m["diar_coverage"] = round(c.diar_coverage, 3)
             status, reason = self._decide(m, {"dominance": c.dominance, "diar_coverage": c.diar_coverage, "vad_ratio": c.vad_ratio})
-            if status == "enhance":
-                if n_enh >= max_enh:
-                    status = "rejected"
-                else:
-                    n_enh += 1
             if status == "accepted":
                 status = "candidate"
             cid = f"{v['source_hash']}_{i:04d}"
-            counts["accepted" if status == "candidate" else status] += 1
-            if status == "rejected":
-                reasons[reason] = reasons.get(reason, 0) + 1
-            rows.append((cid, vid, i, c.start_ms, c.end_ms, c.dur_ms, c.speaker, status, reason if status == "rejected" else (reason or None),
-                         D.j(m), time.time(), time.time()))
+            rows.append([cid, vid, i, c.start_ms, c.end_ms, c.dur_ms, c.speaker, status, reason, D.j(m), time.time(), time.time()])
             if i % 50 == 0:
                 self.heartbeat("segmenting", f"{vid} chunk {i}/{len(chunks)}")
                 D.touch_lease(self.conn, vid, self.cfg.workers.lease_s)
+        # enhancement budget: keep the longest borderline chunks (most audio per GPU second), reject the rest
+        enh_idx = sorted((k for k, r in enumerate(rows) if r[7] == "enhance"), key=lambda k: -rows[k][5])
+        for k in enh_idx[max_enh:]:
+            rows[k][7] = "rejected"
+        for r in rows:
+            st = r[7]
+            counts["accepted" if st == "candidate" else st] += 1
+            if st == "rejected":
+                reasons[r[8]] = reasons.get(r[8], 0) + 1
+            else:
+                r[8] = r[8] or None
+        rows = [tuple(r) for r in rows]
         with D.tx(self.conn):
             self.conn.execute("DELETE FROM chunks WHERE video_id=?", (vid,))
             self.conn.executemany(

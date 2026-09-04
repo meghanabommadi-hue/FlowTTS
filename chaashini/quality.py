@@ -70,16 +70,16 @@ class DNSMOS:
         p_bak = np.poly1d([-0.13166888, 1.60915514, -0.39604546])
         return float(p_sig(sig)), float(p_bak(bak)), float(p_ovr(ovr))
 
-    def score(self, audio: np.ndarray, sr: int = 16000, max_windows: int = 6) -> DNSMOSScore:
+    def score(self, audio: np.ndarray, sr: int = 16000, max_windows: int = 3) -> DNSMOSScore:
         assert sr == DNSMOS_SR
         x = audio.astype(np.float32)
         if x.size == 0:
             return DNSMOSScore(1.0, 1.0, 1.0, 1.0)
         need = int(DNSMOS_LEN * sr)
+        short = len(x) < need
         while len(x) < need:                       # tile short clips, as the reference implementation does
             x = np.concatenate([x, x])
-        n_hops = int(math.floor(len(x) / sr) - DNSMOS_LEN) + 1
-        n_hops = max(1, n_hops)
+        n_hops = 1 if short else max(1, int(math.floor(len(x) / sr) - DNSMOS_LEN) + 1)
         # spread at most `max_windows` windows over the clip
         if n_hops > max_windows:
             starts = np.linspace(0, n_hops - 1, max_windows).round().astype(int)
@@ -208,7 +208,7 @@ def signal_metrics(x16: np.ndarray, sr16: int, vad_probs: np.ndarray | None, hop
     x = x16.astype(np.float32)
     peak = float(np.max(np.abs(x))) if x.size else 0.0
     rms = float(np.sqrt(np.mean(x ** 2) + 1e-12)) if x.size else 0.0
-    clip = float(np.mean(np.abs(x) >= 0.985)) if x.size else 0.0
+    clip = clipping_ratio(x)
     dc = float(np.mean(x)) if x.size else 0.0
     r = frame_rms(x, hop)
     snr = 0.0
@@ -229,6 +229,20 @@ def signal_metrics(x16: np.ndarray, sr16: int, vad_probs: np.ndarray | None, hop
         snr = float(min(max(snr, -10.0), 70.0))
     bw = bandwidth_hz(x_hi if x_hi is not None else x, sr_hi or sr16)
     return SignalMetrics(dbfs(rms), dbfs(peak), clip, dc, snr, bw)
+
+
+def clipping_ratio(x: np.ndarray, thresh: float = 0.985, min_run: int = 3) -> float:
+    """Fraction of samples that sit inside flat-topped runs (>= `min_run` consecutive samples at
+    full scale). Lone peaks from loudness limiting do not count; real digital clipping does."""
+    if x.size == 0:
+        return 0.0
+    hot = np.abs(x) >= thresh
+    if not hot.any():
+        return 0.0
+    d = np.diff(np.concatenate([[0], hot.view(np.int8), [0]]))
+    starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
+    runs = ends - starts
+    return float(runs[runs >= min_run].sum() / x.size)
 
 
 def bandwidth_hz(x: np.ndarray, sr: int, drop_db: float = 55.0) -> float:
@@ -253,7 +267,7 @@ _tagger: Tagger | None = None
 _lock = threading.Lock()
 
 
-def get_dnsmos(model_dir: str | Path, threads: int = 2) -> DNSMOS:
+def get_dnsmos(model_dir: str | Path, threads: int = 4) -> DNSMOS:
     global _dnsmos
     with _lock:
         if _dnsmos is None:
