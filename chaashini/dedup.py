@@ -7,16 +7,19 @@
 """
 from __future__ import annotations
 
-import re
 import sqlite3
+import unicodedata
 
 import numpy as np
 
-_WS = re.compile(r"[\s\W_]+", re.UNICODE)
-
 
 def normalize_title(t: str | None) -> str:
-    return _WS.sub(" ", (t or "").lower()).strip()[:200]
+    """Lower-case; keep letters, combining marks (Indic vowel signs!) and digits; everything else is a space."""
+    out = []
+    for ch in unicodedata.normalize("NFC", (t or "").lower()):
+        cat = unicodedata.category(ch)
+        out.append(ch if cat[0] in ("L", "M", "N") else " ")
+    return " ".join("".join(out).split())[:200]
 
 
 def duplicate_upload(conn: sqlite3.Connection, video_id: str, title: str | None, duration_s: float | None) -> str | None:
