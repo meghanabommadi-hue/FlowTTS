@@ -34,6 +34,15 @@ from .base import Worker, free_gb
 log = logging.getLogger("chaashini.process")
 
 
+def _cpu_percent() -> float:
+    """Box-wide CPU utilisation over a short window (psutil), 0 if unavailable."""
+    try:
+        import psutil
+        return float(psutil.cpu_percent(interval=0.5))
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -47,7 +56,7 @@ class ProcessWorker(Worker):
         torch.set_num_threads(self.cfg.workers.torch_threads)
         self.stats = {"decoded": 0, "segmented": 0, "rescored": 0, "finalized": 0, "chunks_accepted": 0, "chunks_rejected": 0,
                       "accepted_sec": 0.0, "videos_rejected": 0}
-        self.dnsmos = get_dnsmos(self.cfg.paths.models_dir / "dnsmos", threads=4)
+        self.dnsmos = get_dnsmos(self.cfg.paths.models_dir / "dnsmos", threads=2)
         self.tagger = get_tagger(threads=self.cfg.workers.torch_threads)
 
     def idle_sleep(self) -> float:
@@ -58,6 +67,10 @@ class ProcessWorker(Worker):
         fg = free_gb(self.cfg.paths.data_dir)
         if fg < self.cfg.storage.min_free_gb * 0.5:
             self.heartbeat("paused: low disk", f"{fg:.0f} GB free", force=True)
+            return False
+        cpu = _cpu_percent()
+        if cpu > self.cfg.workers.cpu_max_percent:
+            self.heartbeat("paused: cpu buffer", f"box at {cpu:.0f}%", force=True)
             return False
         lease = self.cfg.workers.lease_s
         for from_s, to_s, fn in (("transcribed", "finalizing", self.finalize), ("enhanced", "rescoring", self.rescore),

@@ -179,7 +179,8 @@ class WorkersCfg(BaseModel):
     download: int = 4
     process: int = 6
     publish: int = 1
-    torch_threads: int = 8
+    torch_threads: int = 4
+    cpu_max_percent: float = 78.0        # box-wide CPU above this: process workers stop claiming new work (leaves a buffer for other tenants)
     heartbeat_s: int = 10
     lease_s: int = 3600
     max_videos_in_flight: int = 40

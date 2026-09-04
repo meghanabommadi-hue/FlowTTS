@@ -136,9 +136,10 @@ quality:
 workers:
   discover: 1
   download: 8
-  process: 12
+  process: 10
   publish: 1
-  torch_threads: 5
+  torch_threads: 4
+  cpu_max_percent: 78          # box-wide CPU ceiling; keeps >= 20% free for the other services on this box
   heartbeat_s: 10
   lease_s: 3600
   max_videos_in_flight: 128

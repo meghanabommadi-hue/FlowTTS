@@ -21,7 +21,7 @@ start() {
   # watchdog loop: restarts the supervisor if it ever dies
   setsid nohup bash -c '
     while true; do
-      cd '"$APP"' && '"$VENV"'/bin/python -m chaashini run >> '"$LOGS"'/supervisor.out 2>&1
+      cd '"$APP"' && nice -n 10 '"$VENV"'/bin/python -m chaashini run >> '"$LOGS"'/supervisor.out 2>&1
       echo "[$(date -u +%FT%TZ)] supervisor exited rc=$?; restarting in 5s" >> '"$LOGS"'/supervisor.out
       [ -f '"$ROOT"'/run/stop ] && exit 0
       sleep 5
