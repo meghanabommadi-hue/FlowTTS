@@ -50,6 +50,7 @@ class LIDResult:
     script_key: str = "unknown"    # internal key of the dominant script
     code_mixed: bool = False
     n_tokens: int = 0
+    mixed_tokens: int = 0          # tokens whose letters come from two or more scripts (ASR artefacts like "ch্যnel")
     matches_expected: bool | None = None
     consensus: bool = False        # label was aligned to the source-level majority
 
@@ -59,7 +60,7 @@ class LIDResult:
             "composition": {k: round(v, 4) for k, v in self.composition.items()},
             "scripts": {k: round(v, 4) for k, v in self.scripts.items()},
             "script": self.script, "code_mixed": self.code_mixed, "n_tokens": self.n_tokens,
-            "matches_expected": self.matches_expected, "consensus": self.consensus,
+            "matches_expected": self.matches_expected, "consensus": self.consensus, "mixed_tokens": self.mixed_tokens,
         }
 
 
@@ -70,6 +71,17 @@ def token_script(tok: str) -> str | None:
         if n > best_n:
             best, best_n = name, n
     return best
+
+
+def token_is_mixed(tok: str) -> bool:
+    """True when a single token carries letters of two or more scripts (e.g. Latin letters inside a Bengali word)."""
+    seen = 0
+    for rx in _SCRIPT_RE.values():
+        if rx.search(tok):
+            seen += 1
+            if seen >= 2:
+                return True
+    return False
 
 
 def _disambiguate(script: str, tokens: list[str], expected: str | None, prior_weight: float) -> tuple[str, float]:
@@ -134,6 +146,8 @@ def identify(text: str, expected: str | None = None, prior_weight: float = 0.15,
         s = token_script(t)
         if s:
             by_script.setdefault(s, []).append(t)
+        if token_is_mixed(t):
+            res.mixed_tokens += 1
     n_scripted = sum(len(v) for v in by_script.values())
     if n_scripted == 0:
         return res

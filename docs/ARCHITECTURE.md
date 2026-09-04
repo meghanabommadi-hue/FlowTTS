@@ -139,7 +139,8 @@ prior for the language the source was discovered under. Output: dominant languag
 **Source-level consensus.** A recording is (almost always) monolingual apart from English
 code-mixing, so after every chunk is identified the duration-weighted majority script and
 language of the recording are computed. Chunks whose transcript is in another script
-(`script_outlier`) or that contain stray letters from other scripts (`script_mix`) are rejected:
+(`script_outlier`), that contain stray letters from other scripts, or that have words mixing two scripts
+inside a single token (both `script_mix`) are rejected:
 these are the cases where the ASR was unreliable, and a regex LID on such text would otherwise
 tag them confidently but wrongly. Same-script sibling labels (Bengali/Assamese, Hindi/Marathi,
 ...) snap to the recording's majority. The detected language also overrides the discovery hint

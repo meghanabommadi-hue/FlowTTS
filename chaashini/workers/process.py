@@ -537,6 +537,8 @@ class ProcessWorker(Worker):
                 reason = "script_outlier"          # transcript is in a different script than the recording: ASR unreliable here
             elif other_scripts >= 0.1 or (other_scripts > 0 and lid.n_tokens <= 6):
                 reason = "script_mix"              # stray letters from other scripts: ASR unreliable here
+            elif lid.mixed_tokens >= 2 or lid.mixed_tokens / max(1, lid.n_tokens) > 0.08:
+                reason = "script_mix"              # letters of two scripts inside single words: garbled ASR output
             else:
                 if lid.lang != star_lang and lid.lang in siblings:
                     # same-script sibling (bn/as, hi/mr, ...): a recording is monolingual, follow the majority
