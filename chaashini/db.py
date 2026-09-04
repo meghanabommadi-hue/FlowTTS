@@ -361,7 +361,7 @@ def release_stale(conn: sqlite3.Connection) -> dict[str, int]:
             if cur.rowcount:
                 out[working] = cur.rowcount
         cur = conn.execute("UPDATE videos SET status='failed', error='attempt budget exhausted', updated_at=? "
-                           "WHERE status NOT IN ('done','rejected','failed') AND attempts > 4", (t,))
+                           "WHERE status NOT IN ('done','rejected','failed') AND attempts > 8", (t,))
         if cur.rowcount:
             out["failed_attempts"] = cur.rowcount
     return out

@@ -108,8 +108,7 @@ def build_shards(staging_dir: Path, shards_dir: Path, lang: str, next_index: int
         fname = f"{name}-{lang}-{next_index:05d}.parquet"
         path = out_dir / fname
         tmp = out_dir / (fname + ".tmp")
-        ds = Dataset.from_list(rows, features=features())
-        ds.to_parquet(str(tmp))
+        write_parquet(rows, tmp)
         os.replace(tmp, path)
         with open(path, "rb") as f:
             os.fsync(f.fileno())
