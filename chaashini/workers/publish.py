@@ -135,6 +135,33 @@ class PublishWorker(Worker):
                     continue
                 if (r is None and age > 3600) or (r and r["status"] in D.TERMINAL) or (r and age > ttl):
                     shutil.rmtree(d, ignore_errors=True)
+        # library caches that could grow silently (datasets arrow cache, yt-dlp cache, stale HF downloads)
+        for cache in (Path.home() / ".cache" / "huggingface" / "datasets", Path.home() / ".cache" / "yt-dlp", Path("/tmp")):
+            try:
+                for p in cache.glob("*"):
+                    if (p.name.startswith("chaashini") or cache.name in ("datasets", "yt-dlp")) and time.time() - p.stat().st_mtime > 86400:
+                        shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        # stdout capture files of the watchdog: keep them bounded
+        for out in self.cfg.paths.logs_dir.glob("*.out"):
+            try:
+                if out.stat().st_size > 200 << 20:
+                    with open(out, "rb") as f:
+                        f.seek(-(50 << 20), 2)
+                        tail = f.read()
+                    with open(out, "wb") as f:
+                        f.write(tail)
+            except OSError:
+                pass
+        # orphaned staging sidecars / audio (partner file missing)
+        if self.cfg.paths.staging_dir.exists():
+            for lang_dir in self.cfg.paths.staging_dir.iterdir():
+                if not lang_dir.is_dir():
+                    continue
+                for p in lang_dir.glob("*.tmp"):
+                    if time.time() - p.stat().st_mtime > 3600:
+                        p.unlink(missing_ok=True)
         # discovered backlog hygiene: drop very old undownloaded items so the queue stays fresh
         self.conn.execute("DELETE FROM videos WHERE status='discovered' AND created_at < ?", (time.time() - 14 * 86400,))
         released = D.release_stale(self.conn)

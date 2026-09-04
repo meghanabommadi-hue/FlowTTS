@@ -130,7 +130,7 @@ class AcceptCfg(BaseModel):
     music_prob_max: float = 0.15
     speech_prob_min: float = 0.5
     snr_db_min: float = 20.0
-    rms_dbfs_min: float = -34.0
+    rms_dbfs_min: float = -40.0
     rms_dbfs_max: float = -6.0
     clipping_max: float = 0.001
     bandwidth_hz_min: float = 6000.0

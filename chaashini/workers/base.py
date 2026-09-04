@@ -27,9 +27,10 @@ def setup_logging(name: str, logs_dir: Path, level: int = logging.INFO) -> None:
     fh = RotatingFileHandler(logs_dir / f"{name}.log", maxBytes=50 << 20, backupCount=5, encoding="utf-8")
     fh.setFormatter(fmt)
     root.addHandler(fh)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    root.addHandler(sh)
+    if sys.stdout.isatty() or os.environ.get("CHAASHINI_LOG_STDOUT") == "1":
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
     for noisy in ("httpx", "httpcore", "urllib3", "numba", "filelock", "huggingface_hub", "datasets", "fsspec"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

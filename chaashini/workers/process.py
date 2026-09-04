@@ -25,10 +25,10 @@ from ..audio import cut_to_array, decode_to_wav, peak_normalize, read_wav_int16,
 from ..export import stage_chunk
 from ..languages import LANGUAGES
 from ..lid import identify
-from ..quality import (get_dnsmos, get_tagger, noise_floor_from_vad, signal_metrics, window_stat, bandwidth_hz)
+from ..quality import (get_dnsmos, get_tagger, noise_floor_from_vad, signal_metrics, window_stat, bandwidth_hz, clipping_ratio)
 from ..segment import diar_frames, make_chunks
 from ..vad import VADFrames, run_vad, speech_regions
-from .base import Worker
+from .base import Worker, free_gb
 
 log = logging.getLogger("chaashini.process")
 
@@ -54,6 +54,10 @@ class ProcessWorker(Worker):
 
     # ------------------------------------------------------------------ dispatch
     def step(self) -> bool:
+        fg = free_gb(self.cfg.paths.data_dir)
+        if fg < self.cfg.storage.min_free_gb * 0.5:
+            self.heartbeat("paused: low disk", f"{fg:.0f} GB free", force=True)
+            return False
         lease = self.cfg.workers.lease_s
         for from_s, to_s, fn in (("transcribed", "finalizing", self.finalize), ("enhanced", "rescoring", self.rescore),
                                  ("diarized", "segmenting", self.segment), ("downloaded", "decoding", self.decode)):
@@ -139,9 +143,13 @@ class ProcessWorker(Worker):
         music_mean = float(np.mean(tags["music"])) if len(tags["music"]) else 0.0
         music_frac = float(np.mean(tags["music"] > 0.5)) if len(tags["music"]) else 0.0
         speech_mean = float(np.mean(tags["speech"])) if len(tags["speech"]) else 0.0
+        clip_src = clipping_ratio(xf)
         gate = {"speech_ratio": round(speech_ratio, 3), "music_mean": round(music_mean, 3), "music_frac": round(music_frac, 3),
-                "speech_mean": round(speech_mean, 3)}
+                "speech_mean": round(speech_mean, 3), "clipping_ratio": round(clip_src, 5)}
         self.stats["decoded"] += 1
+        if clip_src > self.cfg.quality.accept.clipping_max * 3:
+            self._reject_video(v, f"clipped_source ({100 * clip_src:.2f}% flat-topped samples)")
+            return
         if music_frac >= self.cfg.quality.video_music_gate:
             self._reject_video(v, f"mostly_music ({music_frac:.0%} of windows)")
             return

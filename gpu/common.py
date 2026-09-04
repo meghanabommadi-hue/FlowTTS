@@ -19,12 +19,14 @@ log = logging.getLogger("chaashini.gpu")
 
 def setup_logging(name: str, log_dir: str | None = None) -> None:
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    handlers: list[logging.Handler] = []
+    if sys.stdout.isatty() or os.environ.get("CHAASHINI_LOG_STDOUT") == "1":
+        handlers.append(logging.StreamHandler(sys.stdout))
     if log_dir:
         from logging.handlers import RotatingFileHandler
         Path(log_dir).mkdir(parents=True, exist_ok=True)
         handlers.append(RotatingFileHandler(Path(log_dir) / f"{name}.log", maxBytes=50 << 20, backupCount=5))
-    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers)
+    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers or [logging.NullHandler()])
     for noisy in ("httpx", "httpcore", "urllib3", "nemo_logger", "lightning", "pytorch_lightning"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
