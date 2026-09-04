@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Chaashini orchestrator control (CPU box).  Usage: chaashinictl {start|stop|restart|status|logs [name]|nginx|tail}
+set -uo pipefail
+ROOT=/opt/chaashini
+APP=$ROOT/app
+VENV=$ROOT/venv
+PIDFILE=$ROOT/run/supervisor.pid
+WATCHPID=$ROOT/run/watchdog.pid
+LOGS=$ROOT/logs
+mkdir -p $ROOT/run $LOGS
+export PATH=/usr/local/bin:$PATH
+export CHAASHINI_CONFIG=$APP/configs/chaashini.yaml
+export PYTHONUNBUFFERED=1
+export HF_HUB_ENABLE_HF_TRANSFER=1
+[ -f $ROOT/chaashini.env ] && set -a && . $ROOT/chaashini.env && set +a
+
+alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
+start() {
+  if alive $WATCHPID; then echo "already running (watchdog pid $(cat $WATCHPID))"; return; fi
+  # watchdog loop: restarts the supervisor if it ever dies
+  setsid nohup bash -c '
+    while true; do
+      cd '"$APP"' && '"$VENV"'/bin/python -m chaashini run >> '"$LOGS"'/supervisor.out 2>&1
+      echo "[$(date -u +%FT%TZ)] supervisor exited rc=$?; restarting in 5s" >> '"$LOGS"'/supervisor.out
+      [ -f '"$ROOT"'/run/stop ] && exit 0
+      sleep 5
+    done' > /dev/null 2>&1 < /dev/null &
+  echo $! > $WATCHPID
+  rm -f $ROOT/run/stop
+  echo "started (watchdog pid $(cat $WATCHPID))"
+}
+stop() {
+  touch $ROOT/run/stop
+  if alive $WATCHPID; then kill "$(cat $WATCHPID)" 2>/dev/null; fi
+  pkill -TERM -f "python -m chaashini run" 2>/dev/null
+  sleep 2
+  pkill -TERM -f "python -m chaashini (worker|api)" 2>/dev/null
+  sleep 3
+  pkill -KILL -f "python -m chaashini" 2>/dev/null
+  rm -f $WATCHPID
+  echo "stopped"
+}
+status() {
+  if alive $WATCHPID; then echo "watchdog: running (pid $(cat $WATCHPID))"; else echo "watchdog: NOT running"; fi
+  pgrep -af "python -m chaashini" | sed 's/^/  /'
+  cd $APP && $VENV/bin/python -m chaashini status 2>/dev/null | head -60
+}
+case "${1:-status}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) status ;;
+  logs) tail -n 200 -f $LOGS/${2:-supervisor}.log ;;
+  tail) tail -n 50 $LOGS/*.log | tail -200 ;;
+  nginx) nginx -t && nginx -s reload && echo reloaded ;;
+  *) echo "usage: $0 {start|stop|restart|status|logs [name]|tail|nginx}"; exit 1 ;;
+esac

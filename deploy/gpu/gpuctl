@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Chaashini GPU workers control (GPU box).  Usage: gpuctl {start|stop|restart|status|logs [asr|enhance]}
+set -uo pipefail
+ROOT=/opt/chaashini
+APP=$ROOT/app
+LOGS=$ROOT/logs
+RUN=$ROOT/run
+mkdir -p $LOGS $RUN
+export PYTHONUNBUFFERED=1
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+[ -f $ROOT/gpu.env ] && set -a && . $ROOT/gpu.env && set +a
+
+alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+launch() {  # name venv script
+  local name=$1 venv=$2 script=$3
+  if alive $RUN/$name.pid; then echo "$name already running"; return; fi
+  setsid nohup bash -c '
+    while true; do
+      '"$ROOT/$venv"'/bin/python '"$APP/gpu/$script"' >> '"$LOGS/$name"'.out 2>&1
+      echo "[$(date -u +%FT%TZ)] '"$name"' exited rc=$?; restarting in 10s" >> '"$LOGS/$name"'.out
+      [ -f '"$RUN"'/stop ] && exit 0
+      sleep 10
+    done' > /dev/null 2>&1 < /dev/null &
+  echo $! > $RUN/$name.pid
+  echo "started $name (watchdog pid $(cat $RUN/$name.pid))"
+}
+start() { rm -f $RUN/stop; launch asr venv-asr asr_worker.py; launch enhance venv-enhance enhance_worker.py; }
+stop() {
+  touch $RUN/stop
+  for n in asr enhance; do alive $RUN/$n.pid && kill "$(cat $RUN/$n.pid)" 2>/dev/null; rm -f $RUN/$n.pid; done
+  pkill -TERM -f "gpu/(asr|enhance)_worker.py" 2>/dev/null; sleep 3; pkill -KILL -f "gpu/(asr|enhance)_worker.py" 2>/dev/null
+  echo stopped
+}
+status() {
+  for n in asr enhance; do alive $RUN/$n.pid && echo "$n watchdog: running" || echo "$n watchdog: NOT running"; done
+  pgrep -af "gpu/(asr|enhance)_worker.py" | sed 's/^/  /'
+  nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader
+}
+case "${1:-status}" in
+  start) start ;; stop) stop ;; restart) stop; start ;; status) status ;;
+  logs) tail -n 200 -f $LOGS/${2:-asr}_worker.log ;;
+  *) echo "usage: $0 {start|stop|restart|status|logs [asr|enhance]}"; exit 1 ;;
+esac

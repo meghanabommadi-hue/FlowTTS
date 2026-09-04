@@ -1,3 +1,13 @@
 __pycache__/
 *.pyc
 .DS_Store
+.venv/
+venv*/
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+configs/local.yaml
+configs/cookies.txt
+.env

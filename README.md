@@ -1,120 +1,83 @@
-# TTS GPU Monitor
+# Chaashini (चाशनी) — pristine Indian-language speech corpus builder
 
-A lightweight real-time dashboard for monitoring a fleet of TTS (Text-to-Speech) GPU inference servers. Scrapes Prometheus metrics directly from each node and displays them in a clean browser UI — no Grafana required.
+A two-box, always-on pipeline that discovers publicly available long-form spoken-word audio in
+Indian languages, strips everything that is not clean single-speaker speech, transcribes and
+language-tags what survives, and pushes the result to the Hugging Face Hub every 10 hours of
+newly accepted audio — with a live dashboard showing the whole machine.
 
-![Dashboard](https://img.shields.io/badge/stack-Python%20%7C%20aiohttp%20%7C%20Chart.js-blue)
-![Nodes](https://img.shields.io/badge/nodes-67%20GPUs-green)
+* Dataset: [`kapturecx/Chaashini`](https://huggingface.co/datasets/kapturecx/Chaashini)
+* Dashboard: `http://101.53.139.186/chaashini/`
+* Docs: [architecture + diagrams](docs/ARCHITECTURE.md) · [operations runbook](docs/OPERATIONS.md)
 
----
+## What it does
 
-## Features
+```
+discover (LLM queries, channel crawl) → download original audio track → decode + VAD + source gate
+→ diarize (GPU) → single-speaker chunks 0.5–30 s at pauses → DNSMOS + music/noise tagger + SNR/level/clipping
+→ borderline chunks: enhance (GPU) + re-score → ASR (GPU) → text sanity → regex LID + code-mix composition
+→ 24 kHz FLAC + rich metadata → parquet shards → Hugging Face every 10 h
+```
 
-- **Summary panel** — avg active WebSockets, avg TTFT, avg requests, nodes up/down at a glance
-- **Per-node WebSocket grid** — all 64 nodes in a compact chip layout, live counts
-- **Node cards** — per-node breakdown: requests, errors, latency, WebSocket utilization, per-voice stats
-- **Charts tab** — bar and line charts for requests, E2E/LLM/decode latency, WebSockets over time
-- **Auto-refresh** every 10 seconds
-- **CORS proxy** — fetches metrics server-side, no browser CORS issues
+Rejection is the default; every accept has to clear every gate. See the gate table in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#quality-gates-defaults-configschaashiniyaml).
 
----
+## Components
 
-## Stack
+| piece | where | what |
+|---|---|---|
+| `chaashini/` | CPU box | orchestrator package: workers, SQLite state, quality scoring, LID, packer, pusher, FastAPI + UI |
+| `gpu/` | GPU box | pull-workers: `asr_worker.py` (diarization + ASR), `enhance_worker.py` (speech enhancement) |
+| `ui/` | CPU box | single-file dashboard, 5 s polling, audio previews |
+| `deploy/` | both | bootstrap scripts, control scripts (`chaashinictl`, `gpuctl`), nginx config, sync |
+| `configs/chaashini.yaml` | CPU box | all tunables |
 
-| Component | Purpose |
-|-----------|---------|
-| `server.py` | aiohttp server — serves the dashboard + proxies `/metrics` requests |
-| `dashboard.html` | Single-file frontend (Chart.js, no build step) |
-| `docker-compose.yml` | Optional Prometheus + Grafana stack |
-| `prometheus/prometheus.yml` | Prometheus scrape config (all 64 GPU IPs) |
-| `generate_prometheus_config.py` | Regenerates Prometheus config from `ips.txt` |
+Models (GPU box): a streaming multilingual Indic ASR (transformers custom code), NVIDIA streaming
+Sortformer diarization (NeMo), Resemble Enhance (own venv, old torch pins). CPU box: TenVAD, DNSMOS
+(ONNX), AudioSet CNN14 tagger, yt-dlp + Deno, ffmpeg.
 
----
-
-## Quick Start
-
-### 1. Install dependencies
+## Deploy
 
 ```bash
-pip install aiohttp
+# once per box (installs uv, Python 3.11 venvs, models, Deno, libc++)
+ssh root@101.53.139.186 'bash -s' < deploy/setup_cpu.sh
+ssh root@101.53.138.193 'bash -s' < deploy/gpu/setup_gpu.sh     # needs /opt/chaashini/.hf_token_models (gated ASR repo)
+
+# every code change
+deploy/sync.sh all
+
+# CPU box: secrets + nginx + start
+ssh root@101.53.139.186
+  cp /opt/chaashini/app/deploy/chaashini.env.example /opt/chaashini/chaashini.env   # HF_TOKEN, CHAASHINI_INTERNAL_TOKEN
+  /opt/chaashini/app/deploy/install_nginx.sh
+  chaashinictl start && chaashinictl status
+
+# GPU box: env + start
+ssh root@101.53.138.193
+  cp /opt/chaashini/app/deploy/gpu/gpu.env.example /opt/chaashini/gpu.env            # same internal token
+  gpuctl start && gpuctl status
 ```
 
-### 2. Start the dashboard server
+## Source-site requirements (what you need for volume)
+
+* **Deno** — yt-dlp needs a JavaScript runtime for the source's player challenges; installed by `setup_cpu.sh`.
+* **Python ≥ 3.11** for yt-dlp (the venvs use 3.11 via uv).
+* **Cookies** (`configs/cookies.txt`, Netscape format from a logged-in browser) — datacenter IPs get
+  "confirm you're not a bot" checks under load; cookies from a throw-away account lift most of it.
+* **Rotating residential proxy** (`source.proxy`) and/or a **PO-token provider** plugin for real scale.
+  The pipeline backs off globally (5 min → 1 h) whenever it is throttled, so it degrades instead of breaking.
+* Only the **original** audio track is taken (auto-dubbed tracks are refused), music/gaming/film
+  categories and live streams are skipped before download, and the per-channel cap keeps speaker diversity.
+
+## Configuration highlights
+
+* `languages:` list with weights (discovery effort share); Urdu/Kashmiri disabled (unsupported by the ASR).
+* `quality.accept` / `quality.enhance` thresholds; `quality.video_music_gate`.
+* `vad.*` chunking: 0.5–30 s, split at the quietest pause near 15 s.
+* `hf.push_every_hours: 10`, `hf.shard_target_mb: 400`.
+* `workers.*` process counts; `storage.min_free_gb` pause threshold.
+
+## Tests
 
 ```bash
-python3 server.py
-```
-
-Open **http://localhost:8080** in your browser.
-
----
-
-## Managing GPU IPs
-
-All IPs live in `ips.txt` (one per line, `#` for comments).
-
-To update the node list:
-
-```bash
-# Edit ips.txt, then regenerate configs:
-python3 generate_prometheus_config.py --file ips.txt
-
-# Or pass IPs inline:
-python3 generate_prometheus_config.py --ips 1.2.3.4 1.2.3.5
-```
-
-Also update the `NODES` array at the top of `dashboard.html` to match.
-
----
-
-## Optional: Prometheus + Grafana
-
-If you want long-term metric storage and Grafana dashboards:
-
-```bash
-docker compose up -d
-```
-
-| Service    | URL                   | Credentials   |
-|------------|-----------------------|---------------|
-| Grafana    | http://localhost:3000 | admin / admin |
-| Prometheus | http://localhost:9090 | —             |
-
-The GPU Cluster Monitor dashboard is pre-loaded in Grafana automatically.
-
----
-
-## Metrics
-
-Each GPU node exposes a Prometheus endpoint at `:8764/metrics`. Key metrics tracked:
-
-| Metric | Description |
-|--------|-------------|
-| `tts_requests_total` | Total successful TTS requests (by voice) |
-| `tts_e2e_ms_total` | End-to-end latency total (ms) |
-| `tts_llm_ms_total` | LLM inference time total (ms) — used as TTFT proxy |
-| `tts_decode_ms_total` | Decoder time total (ms) |
-| `tts_active_websockets` | Currently active WebSocket connections |
-| `tts_open_ports` | Currently open WebSocket ports |
-| `tts_errors_total` | Failed TTS requests |
-| `tts_short_audio_total` | Suspiciously short audio generations |
-| `tts_engine_info` | Engine config (backend, GPU IDs, tensor parallelism) |
-
----
-
-## File Reference
-
-```
-monitor/
-├── dashboard.html                        # Browser UI (single file)
-├── server.py                             # Local proxy + static server
-├── ips.txt                               # One GPU IP per line
-├── generate_prometheus_config.py         # Regenerates prometheus.yml from ips.txt
-├── update_ips.sh                         # Shell alternative to Python script
-├── commands.md                           # Common commands reference
-├── docker-compose.yml                    # Prometheus + Grafana stack
-├── prometheus/
-│   └── prometheus.yml                    # Scrape targets (auto-generated)
-└── grafana/
-    ├── provisioning/                     # Auto-wires datasource + dashboard
-    └── dashboards/gpu_cluster.json       # Pre-built Grafana dashboard
+cd /opt/chaashini/app && ../venv/bin/python -m pytest -q tests
 ```

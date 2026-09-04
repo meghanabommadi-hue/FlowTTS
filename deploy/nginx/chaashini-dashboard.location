@@ -1,0 +1,16 @@
+# ---- Chaashini dashboard (additive; appended inside the port-80 default server block) ----
+#   ^~ wins over the regex .json location the site already has.
+#   The trailing slash on proxy_pass strips /chaashini/ so the app runs unprefixed; the UI
+#   only uses relative URLs, so it works under any prefix.
+location ^~ /chaashini/ {
+    proxy_pass http://127.0.0.1:8978/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Prefix /chaashini;
+    proxy_read_timeout 60s;
+    add_header Cache-Control "no-store, must-revalidate";
+    expires -1;
+}
+location = /chaashini { return 301 /chaashini/; }
+# ---- end Chaashini dashboard ----
