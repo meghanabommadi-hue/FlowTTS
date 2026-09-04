@@ -65,21 +65,36 @@ class Models:
         return out, p.astype(np.float16)
 
     # ------------------------------------------------------------------ ASR (batched streaming)
+    TAIL_SILENCE_S = 2.4   # > lookahead (1.04 s) + one chunk (1.12 s): flushes the last word of every clip
+
     def transcribe_batch(self, wavs: list[np.ndarray]) -> list[str]:
+        """Batched cache-aware streaming decode.
+
+        Every clip gets `TAIL_SILENCE_S` of digital silence appended so the encoder's right
+        context is satisfied for the final frames (the stock single-stream path silently drops
+        the last ~1 s of speech). Tokens are cut once the stream has passed the clip's real end
+        plus lookahead + one chunk, so nothing decoded from padding leaks into the transcript.
+        """
         torch = self.torch
         m = self.asr
         cfg = m.config
         if not wavs:
             return []
-        lens = [len(w) for w in wavs]
+        sr = cfg.sample_rate
+        sil = int(self.TAIL_SILENCE_S * sr)
+        real = [len(w) for w in wavs]
+        lens = [n + sil for n in real]
         B, L = len(wavs), max(lens)
         batch = torch.zeros(B, L, dtype=torch.float32)
         for i, w in enumerate(wavs):
             batch[i, : len(w)] = torch.as_tensor(w, dtype=torch.float32)
         feats, flen = m.extract_features(batch, torch.tensor(lens))
+        hop = int(m._p["hop_length"])
+        la_frames = int(cfg.att_context_size[1]) * int(cfg.subsampling_factor)
+        stop_at = [n // hop + la_frames + cfg.chunk_size for n in real]
         T = int(flen.max().item())
         state = m.new_stream(B)
-        cut = [None] * B
+        cut: list[int | None] = [None] * B
         idx = 0
         while idx < T:
             n_new = min(cfg.chunk_size, T - idx)
@@ -89,14 +104,19 @@ class Models:
             m.stream_features(state, x, torch.full((B,), x.shape[-1], dtype=torch.long))
             idx += cfg.shift_size
             for b in range(B):
-                if cut[b] is None and idx >= int(flen[b].item()):
+                if cut[b] is None and idx >= stop_at[b]:
                     cut[b] = len(state.tokens[b])
         tok = m._get_tokenizer()
         out = []
         for b in range(B):
             toks = state.tokens[b] if cut[b] is None else state.tokens[b][: cut[b]]
-            out.append(tok.decode(toks))
+            out.append(tok.decode(toks).strip())
         return out
+
+    def transcribe_single(self, wav: np.ndarray) -> str:
+        sr = self.asr.config.sample_rate
+        padded = np.concatenate([wav.astype(np.float32), np.zeros(int(self.TAIL_SILENCE_S * sr), dtype=np.float32)])
+        return self.asr.transcribe([padded])[0].strip()
 
     def transcribe_many(self, items: list[tuple[str, np.ndarray]], batch_size: int = 16) -> dict[str, str]:
         order = sorted(range(len(items)), key=lambda i: len(items[i][1]))
@@ -111,7 +131,7 @@ class Models:
                 texts = []
                 for w in wavs:
                     try:
-                        texts.append(self.asr.transcribe([w])[0])
+                        texts.append(self.transcribe_single(w))
                     except Exception as e2:  # noqa: BLE001
                         log.warning("single failed: %s", e2)
                         texts.append("")
