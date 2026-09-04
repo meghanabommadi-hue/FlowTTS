@@ -33,11 +33,12 @@ start() {
 stop() {
   touch $ROOT/run/stop
   if alive $WATCHPID; then kill "$(cat $WATCHPID)" 2>/dev/null; fi
-  pkill -TERM -f "python -m chaashini run" 2>/dev/null
+  # anchored to the venv interpreter so an ssh/bash command line that merely mentions chaashini is never matched
+  pkill -TERM -f "^$VENV/bin/python -m chaashini run" 2>/dev/null
   sleep 2
-  pkill -TERM -f "python -m chaashini (worker|api)" 2>/dev/null
+  pkill -TERM -f "^$VENV/bin/python -m chaashini (worker|api)" 2>/dev/null
   sleep 3
-  pkill -KILL -f "python -m chaashini" 2>/dev/null
+  pkill -KILL -f "^$VENV/bin/python -m chaashini" 2>/dev/null
   rm -f $WATCHPID
   echo "stopped"
 }

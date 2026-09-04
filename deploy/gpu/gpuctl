@@ -29,7 +29,8 @@ start() { rm -f $RUN/stop; launch asr venv-asr asr_worker.py; launch enhance ven
 stop() {
   touch $RUN/stop
   for n in asr enhance; do alive $RUN/$n.pid && kill "$(cat $RUN/$n.pid)" 2>/dev/null; rm -f $RUN/$n.pid; done
-  pkill -TERM -f "gpu/(asr|enhance)_worker.py" 2>/dev/null; sleep 3; pkill -KILL -f "gpu/(asr|enhance)_worker.py" 2>/dev/null
+  pkill -TERM -f "^$ROOT/venv-(asr|enhance)/bin/python $APP/gpu/(asr|enhance)_worker.py" 2>/dev/null; sleep 3
+  pkill -KILL -f "^$ROOT/venv-(asr|enhance)/bin/python $APP/gpu/(asr|enhance)_worker.py" 2>/dev/null
   echo stopped
 }
 status() {
