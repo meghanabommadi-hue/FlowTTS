@@ -440,7 +440,10 @@ class ProcessWorker(Worker):
         accepted = []
         n_rej = 0
         reasons: dict[str, int] = {}
-        for i, c in enumerate(cand):
+        # ---- pass 1: text sanity + per-chunk LID
+        lids: dict[str, object] = {}
+        texts_ok: dict[str, tuple[str, float]] = {}
+        for c in cand:
             cid = c["id"]
             text = (texts.get(cid) or "").strip()
             dur_s = c["dur_ms"] / 1000.0
@@ -452,16 +455,76 @@ class ProcessWorker(Worker):
                 reason = "asr_rate_low"
             elif cps > T.max_chars_per_sec:
                 reason = "asr_rate_high"
-            lid = identify(text, expected=v["lang_hint"], prior_weight=self.cfg.lid.prior_weight, code_mix_threshold=self.cfg.lid.code_mix_threshold) if not reason else None
-            if not reason:
-                if lid.lang == "und" or lid.lang not in LANGUAGES:
-                    reason = "lid_unknown"
-                elif lid.confidence < T.min_lang_conf:
-                    reason = "lid_lowconf"
             if reason:
                 n_rej += 1
                 reasons[reason] = reasons.get(reason, 0) + 1
                 self.conn.execute("UPDATE chunks SET status='rejected', reject_reason=?, text=?, updated_at=? WHERE id=?", (reason, text, time.time(), cid))
+                continue
+            texts_ok[cid] = (text, cps)
+            lids[cid] = identify(text, expected=v["lang_hint"], prior_weight=self.cfg.lid.prior_weight, code_mix_threshold=self.cfg.lid.code_mix_threshold)
+        # ---- source-level consensus: majority script and language, weighted by duration
+        from collections import Counter
+        from ..languages import SCRIPT_LANGS
+        w_script: Counter = Counter()
+        w_lang: Counter = Counter()
+        cert_w: dict[str, float] = {}
+        cert_n: dict[str, float] = {}
+        durs = {c["id"]: c["dur_ms"] / 1000.0 for c in cand}
+        for cid, lid in lids.items():
+            if lid.lang == "und":
+                continue
+            w_script[lid.script_key] += durs[cid]
+            if lid.confidence >= 0.6:
+                w_lang[lid.lang] += durs[cid]
+                cert_w[lid.lang] = cert_w.get(lid.lang, 0.0) + lid.confidence * durs[cid]
+                cert_n[lid.lang] = cert_n.get(lid.lang, 0.0) + durs[cid]
+        star_script = w_script.most_common(1)[0][0] if w_script else None
+        siblings = set(SCRIPT_LANGS.get(star_script, ())) if star_script else set()
+        cands_lang = {l: w for l, w in w_lang.items() if l in siblings}
+        if not cands_lang:
+            for cid, lid in lids.items():
+                if lid.lang in siblings:
+                    cands_lang[lid.lang] = cands_lang.get(lid.lang, 0.0) + durs[cid]
+        star_lang = max(cands_lang, key=cands_lang.get) if cands_lang else None
+        star_cert = (cert_w[star_lang] / cert_n[star_lang]) if star_lang in cert_n else 0.7
+        # ---- pass 2: align every chunk to the consensus, reject script outliers, then export
+        for i, c in enumerate(cand):
+            cid = c["id"]
+            if cid not in texts_ok:
+                continue
+            text, cps = texts_ok[cid]
+            lid = lids[cid]
+            dur_s = c["dur_ms"] / 1000.0
+            reason = None
+            other_scripts = sum(sh for sk, sh in lid.scripts.items() if sk not in ("latin", star_script))
+            if lid.lang == "und" or lid.lang not in LANGUAGES or star_lang is None:
+                reason = "lid_unknown"
+            elif lid.script_key != star_script:
+                reason = "script_outlier"          # transcript is in a different script than the recording: ASR unreliable here
+            elif other_scripts >= 0.1 or (other_scripts > 0 and lid.n_tokens <= 6):
+                reason = "script_mix"              # stray letters from other scripts: ASR unreliable here
+            else:
+                if lid.lang != star_lang and lid.lang in siblings:
+                    # same-script sibling (bn/as, hi/mr, ...): a recording is monolingual, follow the majority
+                    share = lid.composition.pop(lid.lang, 0.0)
+                    lid.composition[star_lang] = lid.composition.get(star_lang, 0.0) + share
+                    lid.composition = dict(sorted(lid.composition.items(), key=lambda kv: -kv[1]))
+                    lid.lang = star_lang
+                    lid.confidence = max(lid.confidence, star_cert)
+                    lid.consensus = True
+                elif lid.lang == star_lang and lid.confidence < star_cert:
+                    lid.confidence = max(lid.confidence, min(star_cert, lid.confidence + 0.3))
+                    lid.consensus = True
+                lid.dominance = float(lid.composition.get(lid.lang, 0.0))
+                if lid.confidence < T.min_lang_conf:
+                    reason = "lid_lowconf"
+                elif lid.dominance < 0.4:
+                    reason = "lid_too_mixed"
+            if reason:
+                n_rej += 1
+                reasons[reason] = reasons.get(reason, 0) + 1
+                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason=?, text=?, lang=?, lang_json=?, updated_at=? WHERE id=?",
+                                  (reason, text, lid.lang if lid.lang != "und" else None, D.j(lid.as_dict()), time.time(), cid))
                 continue
             # render audio at the export rate
             if c["enhanced"] and (enh_dir / f"{cid}.wav").exists():
@@ -496,6 +559,13 @@ class ProcessWorker(Worker):
                 self.heartbeat("finalizing", f"{vid} {i}/{len(cand)}")
         self._keep_samples(accepted)
         stats = D.uj(v["stats_json"], {}) or {}
+        if star_lang:
+            stats["lang_detected"] = star_lang
+            stats["lang_certainty"] = round(star_cert, 3)
+            if star_lang != v["lang_hint"]:
+                self.conn.execute("UPDATE videos SET lang_hint=? WHERE id=?", (star_lang, v["id"]))
+                v = dict(v)
+                v["lang_hint"] = star_lang
         acc_sec = sum(a[2] for a in accepted)
         stats.update({"finalize": {"accepted": len(accepted), "rejected": n_rej, "reasons": reasons}, "accepted_sec": round(acc_sec, 1),
                       "accepted_chunks": len(accepted), "yield": round(acc_sec / (v["duration_s"] or 1), 4)})

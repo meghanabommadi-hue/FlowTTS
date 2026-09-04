@@ -42,21 +42,24 @@ _ASSAMESE_ONLY = re.compile(r"[ৰৱ]")   # ৰ ৱ never occur in Bengali
 @dataclass
 class LIDResult:
     lang: str = "und"
-    confidence: float = 0.0
+    confidence: float = 0.0        # how sure we are that `lang` is the right label for the dominant script
+    dominance: float = 0.0         # share of tokens belonging to `lang` (1.0 = monolingual)
     composition: dict[str, float] = field(default_factory=dict)   # lang -> token share
-    scripts: dict[str, float] = field(default_factory=dict)       # script -> token share
-    script: str = "unknown"
+    scripts: dict[str, float] = field(default_factory=dict)       # script key -> token share
+    script: str = "unknown"        # display name of the dominant script
+    script_key: str = "unknown"    # internal key of the dominant script
     code_mixed: bool = False
     n_tokens: int = 0
     matches_expected: bool | None = None
+    consensus: bool = False        # label was aligned to the source-level majority
 
     def as_dict(self) -> dict:
         return {
-            "lang": self.lang, "confidence": round(self.confidence, 4),
+            "lang": self.lang, "confidence": round(self.confidence, 4), "dominance": round(self.dominance, 4),
             "composition": {k: round(v, 4) for k, v in self.composition.items()},
             "scripts": {k: round(v, 4) for k, v in self.scripts.items()},
             "script": self.script, "code_mixed": self.code_mixed, "n_tokens": self.n_tokens,
-            "matches_expected": self.matches_expected,
+            "matches_expected": self.matches_expected, "consensus": self.consensus,
         }
 
 
@@ -86,8 +89,11 @@ def _disambiguate(script: str, tokens: list[str], expected: str | None, prior_we
     if script == "bengali":
         joined = " ".join(tokens)
         n_as = len(_ASSAMESE_ONLY.findall(joined))
+        n_bn = joined.count("র") + joined.count("ব")
         if n_as:
-            scores["as"] = scores.get("as", 0) + 3.0 * n_as
+            scores["as"] = scores.get("as", 0) + (3.0 * n_as if n_as >= n_bn else 0.3 * n_as)
+            if n_bn > n_as:
+                scores["bn"] = scores.get("bn", 0) + 1.0
     if script == "devanagari":
         joined = " ".join(tokens)
         n_lla = joined.count("ळ")          # ळ : Marathi (and Konkani) marker
@@ -141,9 +147,11 @@ def identify(text: str, expected: str | None = None, prior_weight: float = 0.15,
     res.composition = dict(sorted(comp.items(), key=lambda kv: -kv[1]))
     primary = next(iter(res.composition))
     res.lang = primary
-    res.script = SCRIPT_NAMES.get(max(res.scripts, key=res.scripts.get), "unknown")
+    res.script_key = max(res.scripts, key=res.scripts.get)
+    res.script = SCRIPT_NAMES.get(res.script_key, "unknown")
     share = res.composition[primary]
-    res.confidence = float(share * certainty.get(primary, 1.0))
+    res.dominance = float(share)
+    res.confidence = float(certainty.get(primary, 1.0))
     others = [v for k, v in res.composition.items() if k != primary]
     res.code_mixed = bool(others and max(others) >= code_mix_threshold)
     if expected:

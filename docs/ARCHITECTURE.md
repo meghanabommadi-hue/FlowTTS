@@ -133,8 +133,17 @@ Unicode-script regexes classify every token (Devanagari, Bengali–Assamese, Gur
 Odia, Tamil, Telugu, Kannada, Malayalam, Perso-Arabic, Ol Chiki, Meetei Mayek, Latin). Script
 shares give the *composition*; scripts shared by several languages are disambiguated with
 function-word lists plus script-specific characters (e.g. Assamese ৰ/ৱ, Marathi ळ) and a small
-prior for the language the source was discovered under. Output: dominant language, confidence,
-composition, `code_mixed` flag.
+prior for the language the source was discovered under. Output: dominant language, confidence
+(how sure the label is), dominance (share of the dominant language), composition, `code_mixed` flag.
+
+**Source-level consensus.** A recording is (almost always) monolingual apart from English
+code-mixing, so after every chunk is identified the duration-weighted majority script and
+language of the recording are computed. Chunks whose transcript is in another script
+(`script_outlier`) or that contain stray letters from other scripts (`script_mix`) are rejected:
+these are the cases where the ASR was unreliable, and a regex LID on such text would otherwise
+tag them confidently but wrongly. Same-script sibling labels (Bengali/Assamese, Hindi/Marathi,
+...) snap to the recording's majority. The detected language also overrides the discovery hint
+for channel expansion.
 
 ## Publishing
 
