@@ -19,6 +19,7 @@ class Language:
     query_names: tuple[str, ...] = ()       # how people refer to the language in searches
     regions: tuple[str, ...] = ()           # geography flavour for query generation
     asr_supported: bool = True              # the multilingual ASR in use can transcribe it
+    query_hint: str = ""                    # extra instructions for the query generator
 
 
 def _sw(s: str) -> frozenset[str]:
@@ -115,9 +116,17 @@ _add(Language("ks", "Kashmiri", "کٲشُر", ("arabic", "devanagari"),
     ("Kashmiri", "کٲشُر", "kashmiri"), ("Srinagar", "Kashmir"), asr_supported=False))
 
 _add(Language("sat", "Santali", "ᱥᱟᱱᱛᱟᱲᱤ", ("ol_chiki",), _sw(""), ("Santali", "ᱥᱟᱱᱛᱟᱲᱤ", "santali", "santhali"), ("Jharkhand", "Odisha", "West Bengal")))
-_add(Language("en", "English", "English", ("latin",),
+_add(Language("en", "English", "Indian English", ("latin",),
     _sw("the a an and or of to in is are was were be been it this that with for on as at by from not you i we they he she"),
-    ("Indian English", "English", "english"), ("India", "Bangalore", "Mumbai", "Delhi")))
+    ("Indian English",), ("Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Pune", "Kolkata", "Ahmedabad"),
+    query_hint=(
+        "INDIAN ENGLISH ONLY. Every query must target content spoken by Indians in India: Indian podcasters, founders, "
+        "professors (IIT, IIM, IISc, AIIMS, DU), civil servants (IAS/IPS, UPSC preparation), doctors, lawyers (Supreme Court, "
+        "High Court), chartered accountants, cricketers, journalists of Indian English news channels, ISRO/DRDO scientists, "
+        "Indian authors, Indian-startup ecosystem, NEET/JEE/CAT coaching in English, Indian history and policy talks. Anchor "
+        "each query with explicit Indian markers (India, Indian, Bharat, city names, institutions, rupees, Lok Sabha, NITI Aayog, "
+        "Nifty, RBI, SEBI). NEVER target American, British, Australian or generic international creators, and never Indian-"
+        "diaspora-abroad content. Plain-English topics without an Indian anchor are forbidden.")))
 _add(Language("lus", "Mizo", "Mizo ṭawng", ("latin",),
     _sw("a leh chu hi nge te an kan in ka i lo tih chuan"),
     ("Mizo", "mizo"), ("Aizawl", "Mizoram")))

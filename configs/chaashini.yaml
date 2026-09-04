@@ -60,7 +60,7 @@ languages:
   - {code: awa, weight: 0.2}
   - {code: mag, weight: 0.2}
   - {code: bgc, weight: 0.2}
-  - {code: en, weight: 0.0, enabled: false}   # Indian English: this ASR's English transcripts are too rough
+  - {code: en, weight: 0.8}          # INDIAN English only (query anchoring + LLM creator check + transcript cue check)
   - {code: ur, weight: 0.0, enabled: false}   # ASR does not support Urdu / Kashmiri yet
   - {code: ks, weight: 0.0, enabled: false}
 

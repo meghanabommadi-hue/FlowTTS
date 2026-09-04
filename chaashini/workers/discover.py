@@ -159,7 +159,10 @@ class DiscoverWorker(Worker):
     def run_query(self, q) -> int:
         try:
             ck, px, _ = identity(self.cfg.source, self.stats["queries_run"])
-            found = search(self.cfg.source, q["query"], self.cfg.source.search_results_per_query, cookies_file=ck, proxy=px)
+            qtext = q["query"]
+            if q["lang"] == "en" and not any(k in qtext.lower() for k in ("india", "indian", "bharat")):
+                qtext = qtext + " India"
+            found = search(self.cfg.source, qtext, self.cfg.source.search_results_per_query, cookies_file=ck, proxy=px)
         except RateLimited as e:
             self.rate_limited(str(e))
             return 0

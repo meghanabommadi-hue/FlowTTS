@@ -203,8 +203,12 @@ class Downloaded:
     asr: int | None
 
 
-def _match_filter_factory(cfg: SourceCfg, allowed_langs: set[str] | None):
+def _match_filter_factory(cfg: SourceCfg, allowed_langs: set[str] | None, extra_check=None):
     def f(info: dict, *, incomplete: bool = False):
+        if extra_check is not None and not incomplete:
+            why = extra_check(info)
+            if why:
+                return why
         d = info.get("duration")
         if d is not None:
             if d < cfg.min_duration_s:
@@ -227,7 +231,7 @@ def _match_filter_factory(cfg: SourceCfg, allowed_langs: set[str] | None):
 
 
 def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: set[str] | None = None,
-             cookies_file: str | None = None, proxy: str | None = None) -> Downloaded:
+             cookies_file: str | None = None, proxy: str | None = None, extra_check=None) -> Downloaded:
     """Download the original-language audio track for `video_id` into out_dir/<id>.<ext>."""
     import yt_dlp
     out_dir = Path(out_dir)
@@ -236,7 +240,7 @@ def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: 
     opts.update({
         "format": select_audio_format,
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
-        "match_filter": _match_filter_factory(cfg, allowed_langs),
+        "match_filter": _match_filter_factory(cfg, allowed_langs, extra_check),
         "sleep_interval": cfg.sleep_interval, "max_sleep_interval": cfg.sleep_interval * 2,
         "concurrent_fragment_downloads": 2,
         "overwrites": True, "continuedl": True,

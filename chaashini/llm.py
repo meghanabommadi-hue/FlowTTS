@@ -65,6 +65,7 @@ def generate_queries(llm: LLM, lang: Language, n: int, known: list[str], good: l
     domains = random.sample(DISCOVERY_DOMAINS, k=min(10, len(DISCOVERY_DOMAINS)))
     formats = random.sample(DISCOVERY_GENRES, k=min(8, len(DISCOVERY_GENRES)))
     regions = ", ".join(lang.regions[:4]) if lang.regions else "India"
+    hint_line = f"SPECIAL RULE FOR THIS LANGUAGE: {lang.query_hint}\n" if lang.query_hint else ""
     sys_prompt = (
         "You help build a clean, topically broad speech corpus. You write search queries that surface LONG-FORM SPOKEN-WORD "
         "videos in a given Indian language: podcasts, interviews, audiobooks, narrated stories, lectures, talks, explainers, "
@@ -84,6 +85,7 @@ def generate_queries(llm: LLM, lang: Language, n: int, known: list[str], good: l
         f"Domains to cover this round: {', '.join(domains)}.\n"
         f"Spoken formats to combine with them: {', '.join(formats)}.\n"
         f"Give {n} NEW, diverse queries.\n"
+        f"{hint_line}"
         f"Queries already used (do not repeat or trivially rephrase): {json.dumps(known[-60:], ensure_ascii=False)}\n"
         f"Queries that yielded excellent clean speech (make more like these, different topics): {json.dumps(good[:15], ensure_ascii=False)}\n"
         f"Queries that yielded music/noise (avoid these patterns): {json.dumps(bad[:15], ensure_ascii=False)}\n"
@@ -110,3 +112,49 @@ def generate_queries(llm: LLM, lang: Language, n: int, known: list[str], good: l
             seen.add(k)
             out.append(it)
     return out[:n]
+
+
+_INDIA_CUES = (
+    "india", "indian", "bharat", "delhi", "mumbai", "bombay", "bangalore", "bengaluru", "chennai", "madras", "kolkata", "calcutta",
+    "hyderabad", "pune", "ahmedabad", "jaipur", "lucknow", "kochi", "kerala", "tamil", "telugu", "kannada", "marathi", "gujarat",
+    "punjab", "bengal", "bihar", "rajasthan", "odisha", "assam", "goa", "kashmir", "ladakh", "rupee", "rupees", "lakh", "lakhs",
+    "crore", "crores", "iit", "iim", "iisc", "aiims", "upsc", "ias", "ips", "neet", "jee", "cat exam", "isro", "drdo", "rbi",
+    "sebi", "nifty", "sensex", "lok sabha", "rajya sabha", "niti aayog", "modi", "gandhi", "nehru", "ambedkar", "bollywood",
+    "cricket", "ipl", "bcci", "kohli", "dhoni", "sachin", "diwali", "holi", "hindu", "hindi", "sanskrit", "ayurveda", "yoga",
+    "chai", "dal", "roti", "biryani", "auto rickshaw", "aadhaar", "upi", "paytm", "jio", "tata", "reliance", "infosys", "wipro",
+    "hdfc", "icici", "sbi", "zomato", "swiggy", "flipkart", "ola", "startup india", "make in india", "panchayat", "gram", "sarkar",
+    "ji", "yaar", "na", "achha", "bhai", "didi", "beta", "prepone", "timepass", "itself", "only", "do the needful", "kindly",
+)
+
+
+def india_cue_count(text: str) -> int:
+    """Number of Indian-context cue words in a transcript (case-insensitive, whole words)."""
+    words = set(re.findall(r"[a-z]+", (text or "").lower()))
+    n = 0
+    for cue in _INDIA_CUES:
+        if " " in cue:
+            if cue in (text or "").lower():
+                n += 1
+        elif cue in words:
+            n += 1
+    return n
+
+
+def judge_indian_english(llm: "LLM", title: str, channel: str, description: str, tags: list[str] | None = None) -> tuple[bool, float, str]:
+    """Ask the LLM whether this English-language video is spoken by Indian speakers (Indian English).
+    Returns (indian, confidence 0-1, reason). Errors default to (False, 0, 'llm error') so nothing slips through."""
+    sys_prompt = (
+        "You classify videos for a speech corpus that must contain INDIAN ENGLISH only: English spoken by people from India "
+        "(Indian accent), typically Indian creators, professionals, academics, journalists or public figures based in India. "
+        "American, British, Australian, Canadian, other non-Indian speakers, and Indian-diaspora creators based abroad do NOT qualify. "
+        "Judge from the title, channel name, description and tags. Output ONLY JSON: {\"indian\": true|false, \"confidence\": 0.0-1.0, \"reason\": \"...\"}."
+    )
+    user = f"Title: {title[:200]}\nChannel: {channel[:100]}\nTags: {', '.join((tags or [])[:20])[:300]}\nDescription: {(description or '')[:1200]}"
+    try:
+        text = llm.chat([{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}], temperature=0.0, max_tokens=200, retries=2)
+        m = re.search(r"\{.*\}", text, re.S)
+        o = json.loads(m.group(0)) if m else {}
+        return bool(o.get("indian")), float(o.get("confidence", 0.0) or 0.0), str(o.get("reason", ""))[:200]
+    except Exception as e:  # noqa: BLE001
+        log.warning("indian-english judge failed: %s", e)
+        return False, 0.0, "llm error"

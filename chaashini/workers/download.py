@@ -10,6 +10,7 @@ from pathlib import Path
 from .. import db as D
 from ..audio import probe_duration_sr
 from ..dedup import duplicate_upload, normalize_title
+from ..llm import LLM, judge_indian_english
 from ..languages import LANGUAGES
 from ..ytsource import RateLimited, SkipVideo, Transient, cookie_files, download, identity, slim_info
 from .base import Worker, free_gb
@@ -32,6 +33,29 @@ class DownloadWorker(Worker):
         except ValueError:
             self.slot = 0
         self.rotation = 0
+        self.llm = LLM(self.cfg.llm)
+
+    def indian_english_check(self, v):
+        """Pre-download gate for English items: the creator must be Indian (LLM verdict, cached per channel)."""
+        def check(info: dict):
+            ch = info.get("channel_id") or v["channel_id"]
+            if ch:
+                r = self.conn.execute("SELECT india_verdict, india_conf FROM channels WHERE id=?", (ch,)).fetchone()
+                if r and r["india_verdict"] == "yes" and (r["india_conf"] or 0) >= 0.7:
+                    return None
+                if r and r["india_verdict"] == "no":
+                    return f"not Indian English (channel verdict: no)"
+            ok, conf, why = judge_indian_english(self.llm, info.get("title") or v["title"] or "", info.get("channel") or v["channel"] or "",
+                                                 info.get("description") or "", info.get("tags") or [])
+            verdict = "yes" if ok and conf >= 0.7 else ("no" if (not ok and conf >= 0.7) else "unsure")
+            if ch:
+                self.conn.execute("INSERT INTO channels(id, name, lang_hint, updated_at, india_verdict, india_conf) VALUES (?,?,?,?,?,?) "
+                                  "ON CONFLICT(id) DO UPDATE SET india_verdict=excluded.india_verdict, india_conf=excluded.india_conf, updated_at=excluded.updated_at",
+                                  (ch, info.get("channel") or v["channel"], "en", time.time(), verdict, conf))
+            if verdict != "yes":
+                return f"not Indian English ({verdict}, {conf:.2f}: {why[:80]})"
+            return None
+        return check
 
     def n_identities(self) -> int:
         proxies = [p for p in self.cfg.source.proxies if p] or ([self.cfg.source.proxy] if self.cfg.source.proxy else [])
@@ -111,7 +135,8 @@ class DownloadWorker(Worker):
         out_dir = self.cfg.paths.work_dir / vid
         t0 = time.time()
         try:
-            dl = download(self.cfg.source, vid, out_dir, allowed_langs=self.allowed, cookies_file=ck, proxy=px)
+            extra = self.indian_english_check(v) if v["lang_hint"] == "en" else None
+            dl = download(self.cfg.source, vid, out_dir, allowed_langs=self.allowed, cookies_file=ck, proxy=px, extra_check=extra)
         except SkipVideo as e:
             self.stats["skipped"] += 1
             D.set_video_status(self.conn, vid, "rejected", error=f"source: {str(e)[:200]}")

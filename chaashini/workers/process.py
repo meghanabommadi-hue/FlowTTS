@@ -26,6 +26,7 @@ from ..dedup import duplicate_audio, fingerprint
 from ..export import stage_chunk
 from ..languages import LANGUAGES
 from ..lid import identify
+from ..llm import india_cue_count
 from ..quality import (get_dnsmos, get_tagger, noise_floor_from_vad, signal_metrics, window_stat, bandwidth_hz, clipping_ratio)
 from ..segment import diar_frames, make_chunks
 from ..vad import VADFrames, run_vad, speech_regions
@@ -575,6 +576,19 @@ class ProcessWorker(Worker):
             for cid in texts_ok:
                 self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='latin_unexpected', text=?, updated_at=? WHERE id=?", (texts_ok[cid][0], time.time(), cid))
             texts_ok = {}
+        # English recordings must be INDIAN English: a long recording with no Indian context at all is not what we want
+        if star_lang == "en" and texts_ok:
+            cues = sum(india_cue_count(t[0]) for t in texts_ok.values())
+            total_s = sum(durs[cid] for cid in texts_ok)
+            stats_prev = D.uj(v["stats_json"], {}) or {}
+            stats_prev["india_cues"] = cues
+            self.conn.execute("UPDATE videos SET stats_json=? WHERE id=?", (D.j(stats_prev), v["id"]))
+            if cues == 0 and total_s >= 600:
+                for cid in texts_ok:
+                    self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='not_indian_english', text=?, updated_at=? WHERE id=?", (texts_ok[cid][0], time.time(), cid))
+                reasons["not_indian_english"] = reasons.get("not_indian_english", 0) + len(texts_ok)
+                n_rej += len(texts_ok)
+                texts_ok = {}
         # ---- pass 2: align every chunk to the consensus, reject script outliers, then export
         for i, c in enumerate(cand):
             cid = c["id"]

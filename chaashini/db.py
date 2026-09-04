@@ -212,6 +212,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
     if "norm_title" not in cols:
         conn.execute("ALTER TABLE videos ADD COLUMN norm_title TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_norm_title ON videos(norm_title)")
+    ccols = {r["name"] for r in conn.execute("PRAGMA table_info(channels)")}
+    if "india_verdict" not in ccols:
+        conn.execute("ALTER TABLE channels ADD COLUMN india_verdict TEXT")
+        conn.execute("ALTER TABLE channels ADD COLUMN india_conf REAL")
 
 
 @contextmanager
