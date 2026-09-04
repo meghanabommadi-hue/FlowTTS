@@ -147,6 +147,9 @@ def judge_indian_english(llm: "LLM", title: str, channel: str, description: str,
         "You classify videos for a speech corpus that must contain INDIAN ENGLISH only: English spoken by people from India "
         "(Indian accent), typically Indian creators, professionals, academics, journalists or public figures based in India. "
         "American, British, Australian, Canadian, other non-Indian speakers, and Indian-diaspora creators based abroad do NOT qualify. "
+        "EVERY main speaker must be Indian: if a featured guest, co-host or interviewee is non-Indian (for example an American scientist "
+        "or a British author interviewed by an Indian host), answer false, because most of the audio would be a non-Indian accent. "
+        "Panel shows, reaction videos to foreign content, and dubbed or narrated foreign material also do not qualify. "
         "Judge from the title, channel name, description and tags. Output ONLY JSON: {\"indian\": true|false, \"confidence\": 0.0-1.0, \"reason\": \"...\"}."
     )
     user = f"Title: {title[:200]}\nChannel: {channel[:100]}\nTags: {', '.join((tags or [])[:20])[:300]}\nDescription: {(description or '')[:1200]}"
