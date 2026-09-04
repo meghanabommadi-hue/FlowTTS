@@ -78,7 +78,7 @@ flowchart TD
   G -- yes --> H[GPU enhance] --> I[re-score] --> J{passes accept gates?}
   J -- no --> R3[reject: enhance_insufficient]
   J -- yes --> F
-  F --> K[GPU ASR] --> L{text plausible?<br/>chars/s in range}
+  F --> K[GPU ASR, batched] --> L{text plausible?<br/>chars/s in range<br/>token posterior ≥ 0.8}
   L -- no --> R4[reject: asr_empty / asr_rate]
   L -- yes --> M[regex LID + composition] --> N{conf ≥ 0.55}
   N -- no --> R5[reject: lid_lowconf]
@@ -101,6 +101,7 @@ flowchart TD
 | effective bandwidth | ≥ 4.5 kHz (rejects narrowband/telephone audio) | — |
 | VAD speech ratio | ≥ 0.6 | — |
 | speaker dominance | ≥ 0.9 | — |
+| ASR confidence (mean token posterior) | ≥ 0.8 | — |
 
 Source-level gate: a recording is dropped whole if ≥ 50 % of 24 sampled windows are music, if the
 speech tag averages < 0.3, or if VAD finds < 15 % speech. Enhancement is capped at 40 % of a
@@ -140,7 +141,8 @@ prior for the language the source was discovered under. Output: dominant languag
 code-mixing, so after every chunk is identified the duration-weighted majority script and
 language of the recording are computed. Chunks whose transcript is in another script
 (`script_outlier`), that contain stray letters from other scripts, or that have words mixing two scripts
-inside a single token (both `script_mix`) are rejected:
+inside a single token (both `script_mix`) are rejected, as is a Latin-script majority in a recording that
+was not expected to be English (`latin_unexpected`):
 these are the cases where the ASR was unreliable, and a regex LID on such text would otherwise
 tag them confidently but wrongly. Same-script sibling labels (Bengali/Assamese, Hindi/Marathi,
 ...) snap to the recording's majority. The detected language also overrides the discovery hint

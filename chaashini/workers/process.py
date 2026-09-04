@@ -462,7 +462,9 @@ class ProcessWorker(Worker):
         res = wd / "transcribe_result.json"
         if not res.exists():
             raise RuntimeError("transcription result missing")
-        texts = json.loads(res.read_text(encoding="utf-8")).get("texts", {})
+        asr_res = json.loads(res.read_text(encoding="utf-8"))
+        texts = asr_res.get("texts", {})
+        confs = asr_res.get("confs", {}) or {}
         cand = self.conn.execute("SELECT * FROM chunks WHERE video_id=? AND status='candidate' ORDER BY idx", (vid,)).fetchall()
         T, A = self.cfg.quality.text, self.cfg.quality.accept
         export_sr = self.cfg.audio.export_sr
@@ -483,8 +485,11 @@ class ProcessWorker(Worker):
             dur_s = c["dur_ms"] / 1000.0
             cps = len(text) / dur_s if dur_s > 0 else 0.0
             reason = None
+            aconf = confs.get(cid)
             if len(text) < T.min_chars:
                 reason = "asr_empty"
+            elif aconf is not None and aconf < T.min_asr_conf:
+                reason = "asr_lowconf"
             elif cps < T.min_chars_per_sec:
                 reason = "asr_rate_low"
             elif cps > T.max_chars_per_sec:
@@ -521,6 +526,16 @@ class ProcessWorker(Worker):
                     cands_lang[lid.lang] = cands_lang.get(lid.lang, 0.0) + durs[cid]
         star_lang = max(cands_lang, key=cands_lang.get) if cands_lang else None
         star_cert = (cert_w[star_lang] / cert_n[star_lang]) if star_lang in cert_n else 0.7
+        # A Latin-script majority is only believable when the recording was expected to be English
+        # (discovery hint or declared language); otherwise the ASR failed on the whole recording.
+        declared = ((v["orig_lang"] or "").split("-")[0].lower()) if "orig_lang" in v.keys() else ""
+        if star_script == "latin" and v["lang_hint"] != "en" and declared != "en":
+            star_lang = None
+            reasons["latin_unexpected"] = reasons.get("latin_unexpected", 0) + len(texts_ok)
+            n_rej += len(texts_ok)
+            for cid in texts_ok:
+                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='latin_unexpected', text=?, updated_at=? WHERE id=?", (texts_ok[cid][0], time.time(), cid))
+            texts_ok = {}
         # ---- pass 2: align every chunk to the consensus, reject script outliers, then export
         for i, c in enumerate(cand):
             cid = c["id"]
@@ -578,6 +593,8 @@ class ProcessWorker(Worker):
                 self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='export_empty', text=?, updated_at=? WHERE id=?", (text, time.time(), cid))
                 continue
             m = D.uj(c["metrics_json"], {}) or {}
+            if aconf is not None:
+                m["asr_conf"] = round(float(aconf), 4)
             bw = bandwidth_hz(audio, export_sr)
             m["bandwidth_hz"] = round(bw, 0)
             if bw < A.bandwidth_hz_min:
@@ -621,7 +638,7 @@ class ProcessWorker(Worker):
         sd = self.cfg.paths.samples_dir
         sd.mkdir(parents=True, exist_ok=True)
         keep = self.cfg.storage.keep_accepted_samples
-        for cid, path, _ in accepted[:: max(1, len(accepted) // 6 or 1)][:6]:
+        for cid, path, _ in accepted:          # every fresh clip is playable on the dashboard; rotation keeps the dir bounded
             try:
                 shutil.copyfile(path, sd / f"{cid}.flac")
             except OSError:

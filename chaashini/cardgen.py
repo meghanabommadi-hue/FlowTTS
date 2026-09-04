@@ -83,7 +83,7 @@ lectures, podcasts and similar long-form speech). Each recording then passes thr
    an SNR estimate, loudness, clipping and effective bandwidth. Clips outside strict thresholds are rejected;
    borderline clips are passed through a speech enhancer and **re-scored** (never accepted blindly) — such clips are flagged `enhanced=true`.
 5. **Transcription** – a multilingual Indic ASR system transcribes each accepted clip; clips with implausible
-   character rates (empty, hallucinated or clipped transcripts) are rejected.
+   character rates (empty, hallucinated or clipped transcripts) or low recogniser confidence are rejected.
 6. **Language identification** – script-aware identification on the transcript gives the language, a
    confidence, and the full **language composition** of the clip (code-mixing is common in Indian speech and is
    preserved, not filtered; `language` is the dominant language and `language_mix` holds the shares).
@@ -116,6 +116,7 @@ lectures, podcasts and similar long-form speech). Each recording then passes thr
 | `vad_speech_ratio` | float | fraction of the clip that is active speech |
 | `speaker_dominance` | float | fraction of speaker-labelled frames belonging to the clip's speaker |
 | `chars_per_sec` | float | transcript characters per second |
+| `asr_confidence` | float | mean posterior of the recogniser's emitted tokens (0–1); low values flag hard audio |
 | `genre` | string | coarse content genre of the source (talk, narration, interview, …) |
 | `created_at` | string | ISO-8601 timestamp when the clip was accepted |
 

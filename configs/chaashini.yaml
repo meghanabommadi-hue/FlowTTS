@@ -127,6 +127,7 @@ quality:
     min_chars_per_sec: 1.2
     max_chars_per_sec: 32.0
     min_lang_conf: 0.55
+    min_asr_conf: 0.8
 
 workers:
   discover: 1

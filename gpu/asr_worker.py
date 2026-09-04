@@ -72,13 +72,17 @@ class Models:
     # ------------------------------------------------------------------ ASR (batched streaming)
     TAIL_SILENCE_S = 2.4   # > lookahead (1.04 s) + one chunk (1.12 s): flushes the last word of every clip
 
-    def transcribe_batch(self, wavs: list[np.ndarray]) -> list[str]:
-        """Batched cache-aware streaming decode.
+    def transcribe_batch(self, wavs: list[np.ndarray]) -> list[tuple[str, float]]:
+        """Batched cache-aware streaming decode returning (text, confidence) per clip.
 
         Every clip gets `TAIL_SILENCE_S` of digital silence appended so the encoder's right
         context is satisfied for the final frames (the stock single-stream path silently drops
         the last ~1 s of speech). Tokens are cut once the stream has passed the clip's real end
         plus lookahead + one chunk, so nothing decoded from padding leaks into the transcript.
+
+        Confidence = mean posterior of the argmax token over non-blank CTC frames of the clip's
+        real audio. Garbled output on unintelligible/noisy audio has a markedly lower value,
+        independent of language.
         """
         torch = self.torch
         m = self.asr
@@ -100,13 +104,34 @@ class Models:
         T = int(flen.max().item())
         state = m.new_stream(B)
         cut: list[int | None] = [None] * B
+        conf_sum = [0.0] * B
+        conf_n = [0] * B
+        blank = cfg.blank_id
+        dev = m._anchor.device
         idx = 0
         while idx < T:
             n_new = min(cfg.chunk_size, T - idx)
             if n_new < cfg.min_sampling_frames:
                 break
             x, _ = m._chunk_with_cache(feats[:, :, :T], idx)
-            m.stream_features(state, x, torch.full((B,), x.shape[-1], dtype=torch.long))
+            feat_len = torch.full((B,), x.shape[-1], dtype=torch.long)
+            # -- same as m.stream_features(), but keeping the CTC posteriors for the confidence
+            enc, enc_len, ch_next, t_next, len_next = m.encoder(
+                x.to(dev).to(m._io_dtype), feat_len.to(dev).to(torch.int64),
+                state.cache_last_channel, state.cache_last_time, state.cache_last_channel_len)
+            state.cache_last_channel, state.cache_last_time, state.cache_last_channel_len = ch_next, t_next, len_next
+            state.step += 1
+            log_probs = m.ctc_decoder(enc).float()
+            maxp, ids = log_probs.exp().max(dim=-1)
+            for b in range(B):
+                n = int(enc_len[b].item())
+                if cut[b] is None:
+                    ids_b = ids[b, :n]
+                    nb = ids_b != blank
+                    if nb.any():
+                        conf_sum[b] += float(maxp[b, :n][nb].sum().item())
+                        conf_n[b] += int(nb.sum().item())
+                m._greedy_chunk_ctc(ids_b.tolist() if cut[b] is None else [], state, b)
             idx += cfg.shift_size
             for b in range(B):
                 if cut[b] is None and idx >= stop_at[b]:
@@ -115,7 +140,8 @@ class Models:
         out = []
         for b in range(B):
             toks = state.tokens[b] if cut[b] is None else state.tokens[b][: cut[b]]
-            out.append(tok.decode(toks).strip())
+            conf = conf_sum[b] / conf_n[b] if conf_n[b] else 0.0
+            out.append((tok.decode(toks).strip(), round(conf, 4)))
         return out
 
     def transcribe_single(self, wav: np.ndarray) -> str:
@@ -123,9 +149,9 @@ class Models:
         padded = np.concatenate([wav.astype(np.float32), np.zeros(int(self.TAIL_SILENCE_S * sr), dtype=np.float32)])
         return self.asr.transcribe([padded])[0].strip()
 
-    def transcribe_many(self, items: list[tuple[str, np.ndarray]], batch_size: int = 16) -> dict[str, str]:
+    def transcribe_many(self, items: list[tuple[str, np.ndarray]], batch_size: int = 16) -> dict[str, tuple[str, float | None]]:
         order = sorted(range(len(items)), key=lambda i: len(items[i][1]))
-        res: dict[str, str] = {}
+        res: dict[str, tuple[str, float | None]] = {}
         for i in range(0, len(order), batch_size):
             ids = order[i: i + batch_size]
             wavs = [items[k][1] for k in ids]
@@ -136,10 +162,10 @@ class Models:
                 texts = []
                 for w in wavs:
                     try:
-                        texts.append(self.transcribe_single(w))
+                        texts.append((self.transcribe_single(w), None))
                     except Exception as e2:  # noqa: BLE001
                         log.warning("single failed: %s", e2)
-                        texts.append("")
+                        texts.append(("", None))
             for k, t in zip(ids, texts):
                 res[items[k][0]] = t
         return res
@@ -178,7 +204,7 @@ def handle_transcribe(models: Models, payload: Path, tmp: Path, batch: int) -> P
             log.warning("bad item %s: %s", it, e)
     res = models.transcribe_many(items, batch)
     out = tmp / "transcribe_result.json"
-    out.write_text(json.dumps({"texts": res}, ensure_ascii=False))
+    out.write_text(json.dumps({"texts": {k: v[0] for k, v in res.items()}, "confs": {k: v[1] for k, v in res.items()}}, ensure_ascii=False))
     return out
 
 

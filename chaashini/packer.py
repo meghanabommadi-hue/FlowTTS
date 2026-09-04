@@ -18,7 +18,7 @@ COLUMNS = [
     "duration_s", "sample_rate", "speaker_id", "source_id", "segment_index", "enhanced",
     "dnsmos_sig", "dnsmos_bak", "dnsmos_ovrl", "dnsmos_p808", "music_prob", "speech_prob", "noise_prob",
     "snr_db", "rms_dbfs", "peak_dbfs", "clipping_ratio", "bandwidth_hz", "vad_speech_ratio", "speaker_dominance",
-    "chars_per_sec", "genre", "created_at",
+    "chars_per_sec", "asr_confidence", "genre", "created_at",
 ]
 
 
@@ -33,7 +33,7 @@ def features():
         "music_prob": Value("float32"), "speech_prob": Value("float32"), "noise_prob": Value("float32"),
         "snr_db": Value("float32"), "rms_dbfs": Value("float32"), "peak_dbfs": Value("float32"), "clipping_ratio": Value("float32"),
         "bandwidth_hz": Value("float32"), "vad_speech_ratio": Value("float32"), "speaker_dominance": Value("float32"),
-        "chars_per_sec": Value("float32"), "genre": Value("string"), "created_at": Value("string"),
+        "chars_per_sec": Value("float32"), "asr_confidence": Value("float32"), "genre": Value("string"), "created_at": Value("string"),
     })
 
 
@@ -46,7 +46,7 @@ def arrow_schema():
         ("speaker_id", s), ("source_id", s), ("segment_index", i32), ("enhanced", b),
         ("dnsmos_sig", f32), ("dnsmos_bak", f32), ("dnsmos_ovrl", f32), ("dnsmos_p808", f32), ("music_prob", f32), ("speech_prob", f32),
         ("noise_prob", f32), ("snr_db", f32), ("rms_dbfs", f32), ("peak_dbfs", f32), ("clipping_ratio", f32), ("bandwidth_hz", f32),
-        ("vad_speech_ratio", f32), ("speaker_dominance", f32), ("chars_per_sec", f32), ("genre", s), ("created_at", s),
+        ("vad_speech_ratio", f32), ("speaker_dominance", f32), ("chars_per_sec", f32), ("asr_confidence", f32), ("genre", s), ("created_at", s),
     ])
 
 
@@ -78,7 +78,7 @@ def _row(meta: dict, audio_bytes: bytes, fname: str) -> dict:
         "noise_prob": float(q.get("noise_prob", 0)), "snr_db": float(q.get("snr_db", 0)), "rms_dbfs": float(q.get("rms_dbfs", 0)),
         "peak_dbfs": float(q.get("peak_dbfs", 0)), "clipping_ratio": float(q.get("clipping_ratio", 0)), "bandwidth_hz": float(q.get("bandwidth_hz", 0)),
         "vad_speech_ratio": float(q.get("vad_speech_ratio", 0)), "speaker_dominance": float(q.get("speaker_dominance", 0)),
-        "chars_per_sec": float(meta.get("chars_per_sec", 0)), "genre": meta.get("genre", "") or "", "created_at": meta.get("created_at", ""),
+        "chars_per_sec": float(meta.get("chars_per_sec", 0)), "asr_confidence": float(q.get("asr_conf", 0) or 0), "genre": meta.get("genre", "") or "", "created_at": meta.get("created_at", ""),
     }
 
 

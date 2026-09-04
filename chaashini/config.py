@@ -158,6 +158,7 @@ class TextCfg(BaseModel):
     min_chars_per_sec: float = 1.2
     max_chars_per_sec: float = 32.0
     min_lang_conf: float = 0.55
+    min_asr_conf: float = 0.8            # mean CTC posterior of emitted tokens: clean speech 0.87-0.96, garbled output ~0.55-0.85
 
 
 class QualityCfg(BaseModel):
