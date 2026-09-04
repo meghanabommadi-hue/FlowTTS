@@ -15,7 +15,7 @@ import time
 from .. import db as D
 from ..languages import LANGUAGES
 from ..llm import LLM, generate_queries
-from ..ytsource import RateLimited, SkipVideo, Transient, channel_videos, playlist_videos, search, source_hash
+from ..ytsource import RateLimited, SkipVideo, Transient, channel_videos, identity, playlist_videos, search, source_hash
 from .base import Worker
 
 log = logging.getLogger("chaashini.discover")
@@ -82,7 +82,8 @@ class DiscoverWorker(Worker):
             if added >= budget or self.stop:
                 break
             try:
-                found = channel_videos(self.cfg.source, ch["id"], dc.channel_expand_max_items)
+                ck, px, _ = identity(self.cfg.source, self.stats["rounds"])
+                found = channel_videos(self.cfg.source, ch["id"], dc.channel_expand_max_items, cookies_file=ck, proxy=px)
             except RateLimited as e:
                 self.rate_limited(str(e))
                 break
@@ -109,7 +110,8 @@ class DiscoverWorker(Worker):
             if "|" in url:
                 lang, url = url.split("|", 1)
             try:
-                found = playlist_videos(self.cfg.source, url, 500)
+                ck, px, _ = identity(self.cfg.source, 0)
+                found = playlist_videos(self.cfg.source, url, 500, cookies_file=ck, proxy=px)
             except RateLimited as e:
                 self.rate_limited(str(e))
                 return added
@@ -156,7 +158,8 @@ class DiscoverWorker(Worker):
 
     def run_query(self, q) -> int:
         try:
-            found = search(self.cfg.source, q["query"], self.cfg.source.search_results_per_query)
+            ck, px, _ = identity(self.cfg.source, self.stats["queries_run"])
+            found = search(self.cfg.source, q["query"], self.cfg.source.search_results_per_query, cookies_file=ck, proxy=px)
         except RateLimited as e:
             self.rate_limited(str(e))
             return 0

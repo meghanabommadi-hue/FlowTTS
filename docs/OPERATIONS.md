@@ -46,10 +46,15 @@ Changes to YAML need `chaashinictl restart`. Changes to code: `deploy/sync.sh al
 
 The source site throttles datacenter IPs. Levers, in order:
 1. Keep `download_concurrency` at 4–6 and `sleep_requests` ≥ 0.5 s (defaults).
-2. Export cookies from a logged-in browser to `configs/cookies.txt` (`cookies_file` in YAML). Use a
-   throw-away account; never a personal one.
-3. For real scale, a rotating residential proxy (`proxy:` in YAML) and/or a PO-token provider plugin
-   for yt-dlp (`bgutil-ytdlp-pot-provider`) — see the yt-dlp wiki (EJS / PO Token guides).
+2. Export cookies from a logged-in browser (throw-away accounts only, never personal ones). One file goes
+   to `configs/cookies.txt` (`cookies_file`); additional accounts go to `configs/cookies/<name>.txt`
+   (`cookies_dir`). Download worker *i* uses identity *i*; an identity that gets throttled cools down on
+   its own (5 min doubling to 1 h) while the others keep going; only when all are cooling does the whole
+   source pause. Do not keep using an exported account in a browser at the same time: the session rotates
+   and the file goes stale.
+3. For IP-level limits add proxies in `source.proxies` (paired by index with the cookie files, so account
+   *i* always exits via proxy *i*), or a single `source.proxy`. A PO-token provider plugin for yt-dlp
+   (`bgutil-ytdlp-pot-provider`) is the next step if bot checks persist.
 4. Channel expansion is the biggest free lever: every well-yielding channel is crawled fully.
 
 ## Shared-GPU etiquette

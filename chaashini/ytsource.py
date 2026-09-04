@@ -67,17 +67,43 @@ class Found:
     url: str
 
 
-def _ydl_base(cfg: SourceCfg, quiet: bool = True) -> dict:
+def cookie_files(cfg: SourceCfg) -> list[str]:
+    """All usable cookie files: the single `cookies_file` plus every *.txt in `cookies_dir`."""
+    out: list[str] = []
+    if cfg.cookies_file and os.path.exists(cfg.cookies_file):
+        out.append(cfg.cookies_file)
+    if cfg.cookies_dir and os.path.isdir(cfg.cookies_dir):
+        for p in sorted(Path(cfg.cookies_dir).glob("*.txt")):
+            if str(p) not in out and p.stat().st_size > 0:
+                out.append(str(p))
+    return out
+
+
+def identity(cfg: SourceCfg, index: int) -> tuple[str | None, str | None, str]:
+    """(cookie_file, proxy, label) for slot `index`, pairing cookie i with proxy i when both lists exist."""
+    files = cookie_files(cfg)
+    proxies = [p for p in cfg.proxies if p] or ([cfg.proxy] if cfg.proxy else [])
+    n = max(len(files), len(proxies), 1)
+    i = index % n
+    ck = files[i % len(files)] if files else None
+    px = proxies[i % len(proxies)] if proxies else None
+    label = (Path(ck).stem if ck else "nocookie") + (f"@{i}" if proxies else "")
+    return ck, px, label
+
+
+def _ydl_base(cfg: SourceCfg, quiet: bool = True, cookies_file: str | None = None, proxy: str | None = None) -> dict:
     opts: dict = {
         "quiet": quiet, "no_warnings": True, "noprogress": True, "ignoreerrors": False,
         "socket_timeout": 30, "retries": 3, "fragment_retries": 5, "extractor_retries": 2,
         "sleep_interval_requests": cfg.sleep_requests,
         "noplaylist": True, "geo_bypass": True, "cachedir": str(Path.home() / ".cache" / "yt-dlp"),
     }
-    if cfg.cookies_file and os.path.exists(cfg.cookies_file):
-        opts["cookiefile"] = cfg.cookies_file
-    if cfg.proxy:
-        opts["proxy"] = cfg.proxy
+    ck = cookies_file if cookies_file is not None else (cfg.cookies_file or None)
+    if ck and os.path.exists(ck):
+        opts["cookiefile"] = ck
+    px = proxy if proxy is not None else (cfg.proxy or None)
+    if px:
+        opts["proxy"] = px
     return opts
 
 
@@ -87,10 +113,10 @@ def _entries(info: dict | None) -> list[dict]:
     return [e for e in (info.get("entries") or []) if e]
 
 
-def search(cfg: SourceCfg, query: str, n: int) -> list[Found]:
+def search(cfg: SourceCfg, query: str, n: int, cookies_file: str | None = None, proxy: str | None = None) -> list[Found]:
     import yt_dlp
     q = " ".join([query] + cfg.negative_terms)
-    opts = _ydl_base(cfg)
+    opts = _ydl_base(cfg, cookies_file=cookies_file, proxy=proxy)
     opts.update({"extract_flat": "in_playlist", "skip_download": True, "playlistend": n})
     out: list[Found] = []
     try:
@@ -106,9 +132,9 @@ def search(cfg: SourceCfg, query: str, n: int) -> list[Found]:
     return out
 
 
-def channel_videos(cfg: SourceCfg, channel_id: str, n: int) -> list[Found]:
+def channel_videos(cfg: SourceCfg, channel_id: str, n: int, cookies_file: str | None = None, proxy: str | None = None) -> list[Found]:
     import yt_dlp
-    opts = _ydl_base(cfg)
+    opts = _ydl_base(cfg, cookies_file=cookies_file, proxy=proxy)
     opts.update({"extract_flat": "in_playlist", "skip_download": True, "playlistend": n})
     url = f"https://www.youtube.com/channel/{channel_id}/videos"
     try:
@@ -125,9 +151,9 @@ def channel_videos(cfg: SourceCfg, channel_id: str, n: int) -> list[Found]:
     return out
 
 
-def playlist_videos(cfg: SourceCfg, url: str, n: int) -> list[Found]:
+def playlist_videos(cfg: SourceCfg, url: str, n: int, cookies_file: str | None = None, proxy: str | None = None) -> list[Found]:
     import yt_dlp
-    opts = _ydl_base(cfg)
+    opts = _ydl_base(cfg, cookies_file=cookies_file, proxy=proxy)
     opts.update({"extract_flat": "in_playlist", "skip_download": True, "playlistend": n})
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -200,12 +226,13 @@ def _match_filter_factory(cfg: SourceCfg, allowed_langs: set[str] | None):
     return f
 
 
-def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: set[str] | None = None) -> Downloaded:
+def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: set[str] | None = None,
+             cookies_file: str | None = None, proxy: str | None = None) -> Downloaded:
     """Download the original-language audio track for `video_id` into out_dir/<id>.<ext>."""
     import yt_dlp
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    opts = _ydl_base(cfg)
+    opts = _ydl_base(cfg, cookies_file=cookies_file, proxy=proxy)
     opts.update({
         "format": select_audio_format,
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),

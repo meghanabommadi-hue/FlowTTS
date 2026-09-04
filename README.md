@@ -61,8 +61,8 @@ ssh root@101.53.138.193
 
 * **Deno** — yt-dlp needs a JavaScript runtime for the source's player challenges; installed by `setup_cpu.sh`.
 * **Python ≥ 3.11** for yt-dlp (the venvs use 3.11 via uv).
-* **Cookies** (`configs/cookies.txt`, Netscape format from a logged-in browser) — datacenter IPs get
-  "confirm you're not a bot" checks under load; cookies from a throw-away account lift most of it.
+* **Cookies** (`configs/cookies.txt`, plus one file per extra throw-away account in `configs/cookies/`) — datacenter IPs get
+  "confirm you're not a bot" checks under load; accounts are rotated across download workers and cool down individually.
 * **Rotating residential proxy** (`source.proxy`) and/or a **PO-token provider** plugin for real scale.
   The pipeline backs off globally (5 min → 1 h) whenever it is throttled, so it degrades instead of breaking.
 * Audio format selection is a Python selector (`ytsource.select_audio_format`): DASH over HLS (HLS fragments

@@ -68,7 +68,9 @@ class SourceCfg(BaseModel):
     skip_categories: list[str] = ["Music", "Gaming", "Film & Animation", "Trailers"]
     download_concurrency: int = 4
     cookies_file: str = ""               # Netscape cookies.txt exported from a logged-in browser
+    cookies_dir: str = ""                # directory of cookies*.txt files (one per throw-away account); rotated across download workers
     proxy: str = ""                      # e.g. http://user:pass@host:port  (rotating residential recommended at scale)
+    proxies: list[str] = []              # optional list paired by index with the cookie files (account i always exits via proxy i)
     rate_limit: str = ""                 # e.g. "8M"
     sleep_requests: float = 0.75         # seconds between HTTP requests to the source
     sleep_interval: float = 2.0          # seconds between downloads

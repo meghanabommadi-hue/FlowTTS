@@ -145,6 +145,10 @@ class ProcessWorker(Worker):
         dur, sr = decode_to_wav(src, master, self.cfg.audio.analysis_sr)
         # export-rate master: every later cut is an exact array slice (no per-chunk container seeking)
         decode_to_wav(src, wd / f"audio{self.cfg.audio.export_sr // 1000}k.wav", self.cfg.audio.export_sr)
+        try:
+            os.remove(src)                     # both masters exist; the compressed source is dead weight from here on
+        except OSError:
+            pass
         x16, sr = self._load_master(wd)
         # VAD over the full file
         vad = run_vad(x16, sr, self.cfg.vad.hop, self.cfg.vad.threshold)
