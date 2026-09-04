@@ -75,7 +75,8 @@ class DiscoverWorker(Worker):
         """Enabled languages with less than `low_resource_hours` of accepted audio so far."""
         have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
             "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
-        return {l.code for l in self.cfg.enabled_languages() if have.get(l.code, 0.0) < self.cfg.discovery.low_resource_hours}
+        return {l.code for l in self.cfg.enabled_languages()
+                if l.weight >= 1.0 and have.get(l.code, 0.0) < self.cfg.discovery.low_resource_hours}
 
     def expand_channels(self, budget: int) -> int:
         dc = self.cfg.discovery
@@ -225,7 +226,9 @@ class DiscoverWorker(Worker):
         target = self.cfg.discovery.target_backlog_videos
         out = []
         for l in langs:
-            want = max(8, int(target * l.weight / tw))
+            # the floor scales with intent: a de-prioritised language keeps only a token backlog
+            floor = 8 if l.weight >= 1.0 else 2
+            want = max(floor, int(target * l.weight / tw))
             have = bl.get(l.code, 0)
             if have < want:
                 out.append((l.code, want - have))

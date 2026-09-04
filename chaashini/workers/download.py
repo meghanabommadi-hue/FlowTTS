@@ -119,7 +119,7 @@ class DownloadWorker(Worker):
             have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
                 "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
             lr = self.cfg.discovery.low_resource_hours
-            weights = [l.weight * (2.5 if have.get(l.code, 0.0) < lr else 1.0) for l in langs]
+            weights = [l.weight * (2.5 if (l.weight >= 1.0 and have.get(l.code, 0.0) < lr) else 1.0) for l in langs]
             for pick in {random.choices(langs, weights=weights, k=1)[0].code for _ in range(3)}:
                 v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (pick,))
                 if v:
