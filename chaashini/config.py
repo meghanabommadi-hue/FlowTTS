@@ -52,13 +52,13 @@ class LLMCfg(BaseModel):
 class HFCfg(BaseModel):
     repo_id: str = "kapturecx/Chaashini"
     token: str = ""                      # env HF_TOKEN
-    push_every_hours: float = 10.0       # push once this many hours of NEW accepted audio are staged
+    push_every_hours: float = 2.0        # push once this many hours of NEW accepted audio are staged
     push_check_interval_s: int = 300
     shard_target_mb: int = 400
     max_retries: int = 8
     dataset_name: str = "Chaashini"
     state_repo_id: str = "kapturecx/chaashini-state"   # PRIVATE repo holding hourly state backups
-    backup_interval_s: int = 3600
+    backup_interval_s: int = 1800
 
 
 class SourceCfg(BaseModel):

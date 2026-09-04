@@ -150,7 +150,7 @@ for channel expansion.
 
 ## Publishing
 
-Accepted chunks are staged as FLAC + JSON sidecars. Once ≥ `push_every_hours` (10 h) of new audio
+Accepted chunks are staged as FLAC + JSON sidecars. Once ≥ `push_every_hours` (2 h) of new audio
 is staged, the publish worker packs per-language parquet shards (HF `datasets` Audio feature,
 ~400 MB each), uploads them in one commit together with a refreshed dataset card, verifies the
 files are listed in the repo, and only then deletes local copies. Failures leave shards in

@@ -12,11 +12,11 @@ llm:
 hf:
   repo_id: kapturecx/Chaashini
   dataset_name: Chaashini
-  push_every_hours: 10          # push once this many hours of NEW accepted audio are staged
-  push_check_interval_s: 300
+  push_every_hours: 2           # push once this many hours of NEW accepted audio are staged (small window = small loss on a box reset)
+  push_check_interval_s: 120
   shard_target_mb: 400
   state_repo_id: kapturecx/chaashini-state   # private; hourly SQLite backups, restored on boot if the box is reset
-  backup_interval_s: 3600
+  backup_interval_s: 1800
 
 source:
   search_results_per_query: 40

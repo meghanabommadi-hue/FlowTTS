@@ -62,7 +62,7 @@ quality gate; the aim is purity over volume.
 * **Clip length:** 0.5 s – 30 s, cut at natural pauses
 * **Last refreshed:** {now}
 
-The corpus grows automatically: new shards are appended every ~10 hours of newly accepted audio.
+The corpus grows automatically: new shards are appended every ~2 hours of newly accepted audio.
 
 ## Languages
 

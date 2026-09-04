@@ -2,7 +2,7 @@
 
 A two-box, always-on pipeline that discovers publicly available long-form spoken-word audio in
 Indian languages, strips everything that is not clean single-speaker speech, transcribes and
-language-tags what survives, and pushes the result to the Hugging Face Hub every 10 hours of
+language-tags what survives, and pushes the result to the Hugging Face Hub every 2 hours of
 newly accepted audio — with a live dashboard showing the whole machine.
 
 * Dataset: [`kapturecx/Chaashini`](https://huggingface.co/datasets/kapturecx/Chaashini)
@@ -15,7 +15,7 @@ newly accepted audio — with a live dashboard showing the whole machine.
 discover (LLM queries, channel crawl) → download original audio track → decode + VAD + source gate
 → diarize (GPU) → single-speaker chunks 0.5–30 s at pauses → DNSMOS + music/noise tagger + SNR/level/clipping
 → borderline chunks: enhance (GPU) + re-score → ASR (GPU) → text sanity → regex LID + code-mix composition
-→ 24 kHz FLAC + rich metadata → parquet shards → Hugging Face every 10 h
+→ 24 kHz FLAC + rich metadata → parquet shards → Hugging Face every 2 h
 ```
 
 Rejection is the default; every accept has to clear every gate. See the gate table in
