@@ -156,20 +156,27 @@ class ProcessWorker(Worker):
 
     # ------------------------------------------------------------------ stage 1: decode + gate + VAD
     def decode(self, v) -> None:
+        """Decode the source to a 16 kHz analysis master and an export-rate master, then screen it.
+
+        Idempotent: a retry (lease expiry, restart) reuses masters that already exist, because the
+        compressed source is deleted once the video has moved on and cannot be decoded a second time.
+        """
         wd = self.wd(v)
         src = v["src_path"]
-        if not src or not os.path.exists(src):
-            D.set_video_status(self.conn, v["id"], "failed", error="source file missing")
-            self._cleanup(v)
-            return
         master = wd / "audio16k.wav"
-        dur, sr = decode_to_wav(src, master, self.cfg.audio.analysis_sr)
-        # export-rate master: every later cut is an exact array slice (no per-chunk container seeking)
-        decode_to_wav(src, wd / f"audio{self.cfg.audio.export_sr // 1000}k.wav", self.cfg.audio.export_sr)
-        try:
-            os.remove(src)                     # both masters exist; the compressed source is dead weight from here on
-        except OSError:
-            pass
+        export_master = wd / f"audio{self.cfg.audio.export_sr // 1000}k.wav"
+        have_masters = master.exists() and master.stat().st_size > 1000 and export_master.exists() and export_master.stat().st_size > 1000
+        if have_masters:
+            dur = sf.info(str(master)).duration
+            sr = self.cfg.audio.analysis_sr
+            log.info("decode %s: reusing masters from a previous attempt (%.0fs)", v["id"], dur)
+        else:
+            if not src or not os.path.exists(src):
+                D.set_video_status(self.conn, v["id"], "failed", error="source file missing and no usable masters")
+                self._cleanup(v)
+                return
+            dur, sr = decode_to_wav(src, master, self.cfg.audio.analysis_sr)
+            decode_to_wav(src, export_master, self.cfg.audio.export_sr)
         x16, sr = self._load_master(wd)
         fp = fingerprint(x16, sr)
         self.conn.execute("UPDATE videos SET fp=? WHERE id=?", (fp, v["id"]))
@@ -214,6 +221,11 @@ class ProcessWorker(Worker):
             return
         job = D.enqueue_job(self.conn, "diarize", v["id"], str(master), payload_bytes=master.stat().st_size, audio_seconds=dur, n_items=1)
         D.set_video_status(self.conn, v["id"], "diarize_queued", stats_json={"gate": gate, "duration_s": dur})
+        if src and os.path.exists(src):
+            try:
+                os.remove(src)      # only now: both masters exist and the state has advanced, so a retry cannot need it
+            except OSError:
+                pass
         log.info("decoded %s: %.0fs, VAD %.0f%%, music %.2f, speech %.2f -> diarize job %d", v["id"], dur, 100 * speech_ratio, music_mean, speech_mean, job)
 
     # ------------------------------------------------------------------ stage 2: segment + score
