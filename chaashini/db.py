@@ -205,6 +205,13 @@ def connect(db_path: str | os.PathLike) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(videos)")}
+    if "fp" not in cols:
+        conn.execute("ALTER TABLE videos ADD COLUMN fp TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_dur ON videos(duration_s)")
+    if "norm_title" not in cols:
+        conn.execute("ALTER TABLE videos ADD COLUMN norm_title TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_norm_title ON videos(norm_title)")
 
 
 @contextmanager

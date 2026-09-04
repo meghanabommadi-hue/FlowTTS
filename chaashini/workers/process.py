@@ -22,6 +22,7 @@ import soundfile as sf
 
 from .. import db as D
 from ..audio import decode_to_wav, peak_normalize, read_wav_int16, resample
+from ..dedup import duplicate_audio, fingerprint
 from ..export import stage_chunk
 from ..languages import LANGUAGES
 from ..lid import identify
@@ -150,6 +151,12 @@ class ProcessWorker(Worker):
         except OSError:
             pass
         x16, sr = self._load_master(wd)
+        fp = fingerprint(x16, sr)
+        self.conn.execute("UPDATE videos SET fp=? WHERE id=?", (fp, v["id"]))
+        dup = duplicate_audio(self.conn, v["id"], fp, dur)
+        if dup:
+            self._reject_video(v, f"duplicate_audio of {dup}")
+            return
         # VAD over the full file
         vad = run_vad(x16, sr, self.cfg.vad.hop, self.cfg.vad.threshold)
         np.save(wd / "vad.npy", vad.probs)

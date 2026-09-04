@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .. import db as D
 from ..audio import probe_duration_sr
+from ..dedup import duplicate_upload, normalize_title
 from ..languages import LANGUAGES
 from ..ytsource import RateLimited, SkipVideo, Transient, cookie_files, download, identity, slim_info
 from .base import Worker, free_gb
@@ -100,6 +101,12 @@ class DownloadWorker(Worker):
             return False
         ck, px, label, idx = ident
         self.stats["identity"] = label
+        dup = duplicate_upload(self.conn, vid, v["title"], v["duration_s"])
+        if dup:
+            D.set_video_status(self.conn, vid, "rejected", error=f"duplicate_upload of {dup}")
+            self.stats["skipped"] += 1
+            log.info("skip %s: duplicate upload of %s", vid, dup)
+            return True
         self.heartbeat("downloading", f"{vid} [{v['lang_hint']}] {(v['title'] or '')[:50]} via {label}", force=True)
         out_dir = self.cfg.paths.work_dir / vid
         t0 = time.time()
@@ -146,7 +153,13 @@ class DownloadWorker(Worker):
             lang_hint = declared
         D.kv_set(self.conn, "source_cooldown_level", 0)
         D.kv_set(self.conn, f"cooldown_level:{label}", 0)
+        dup = duplicate_upload(self.conn, vid, info.get("title") or v["title"], dur)
+        if dup:
+            D.set_video_status(self.conn, vid, "rejected", error=f"duplicate_upload of {dup}")
+            _rm(out_dir)
+            return True
         D.set_video_status(self.conn, vid, "downloaded", src_path=dl.path, src_sr=sr, duration_s=dur, work_dir=str(out_dir),
+                           norm_title=normalize_title(info.get("title") or v["title"]),
                            channel_id=info.get("channel_id") or v["channel_id"], channel=info.get("channel") or v["channel"],
                            title=info.get("title") or v["title"], view_count=info.get("view_count"), upload_date=info.get("upload_date"),
                            categories=",".join(dl.categories), orig_lang=dl.orig_lang, audio_track_lang=dl.audio_track_lang,

@@ -162,8 +162,8 @@ class PublishWorker(Worker):
                 for p in lang_dir.glob("*.tmp"):
                     if time.time() - p.stat().st_mtime > 3600:
                         p.unlink(missing_ok=True)
-        # discovered backlog hygiene: drop very old undownloaded items so the queue stays fresh
-        self.conn.execute("DELETE FROM videos WHERE status='discovered' AND created_at < ?", (time.time() - 14 * 86400,))
+        # NOTE: rows are never deleted: the videos table is also the "already seen" set that keeps
+        # any source from being discovered, downloaded or processed twice.
         released = D.release_stale(self.conn)
         if released:
             log.info("janitor released: %s", released)

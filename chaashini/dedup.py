@@ -1,0 +1,63 @@
+"""Duplicate-work guards.
+
+* id-level: `videos.id` is the primary key and rows persist forever (insert-or-ignore everywhere).
+* upload-level: same normalised title and same duration (+-1 s) as an item already taken -> re-upload / mirror.
+* content-level: a coarse loudness-envelope fingerprint of the decoded audio; two recordings of (almost)
+  the same length whose envelopes agree on >= 90 % of 64 coarse bins are the same audio.
+"""
+from __future__ import annotations
+
+import re
+import sqlite3
+
+import numpy as np
+
+_WS = re.compile(r"[\s\W_]+", re.UNICODE)
+
+
+def normalize_title(t: str | None) -> str:
+    return _WS.sub(" ", (t or "").lower()).strip()[:200]
+
+
+def duplicate_upload(conn: sqlite3.Connection, video_id: str, title: str | None, duration_s: float | None) -> str | None:
+    """Return the id of an earlier item with the same title and length (already downloaded or beyond), else None."""
+    nt = normalize_title(title)
+    if not nt or not duration_s:
+        return None
+    r = conn.execute(
+        "SELECT id FROM videos WHERE id != ? AND norm_title = ? AND duration_s BETWEEN ? AND ? "
+        "AND status NOT IN ('discovered','downloading','rejected','failed') LIMIT 1",
+        (video_id, nt, duration_s - 1.0, duration_s + 1.0)).fetchone()
+    return r["id"] if r else None
+
+
+def fingerprint(x16: np.ndarray, sr: int, bins: int = 64) -> str:
+    """64 x 4-bit quantised RMS envelope over the whole recording (duration-normalised) as hex."""
+    x = x16.astype(np.float32)
+    if x.size < sr:
+        return ""
+    n = (x.size // bins) * bins
+    env = np.sqrt((x[:n].reshape(bins, -1) ** 2).mean(axis=1) + 1e-9)
+    env = np.log(env + 1e-6)
+    lo, hi = np.percentile(env, 5), np.percentile(env, 95)
+    q = np.clip(((env - lo) / max(hi - lo, 1e-6) * 15).round(), 0, 15).astype(np.uint8)
+    return "".join(f"{v:x}" for v in q)
+
+
+def fingerprint_similarity(a: str, b: str) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    va = np.frombuffer(bytes.fromhex("".join("0" + c for c in a)), dtype=np.uint8)
+    vb = np.frombuffer(bytes.fromhex("".join("0" + c for c in b)), dtype=np.uint8)
+    return float((np.abs(va.astype(int) - vb.astype(int)) <= 1).mean())
+
+
+def duplicate_audio(conn: sqlite3.Connection, video_id: str, fp: str, duration_s: float, threshold: float = 0.9) -> str | None:
+    """Return the id of an earlier recording with (almost) the same length and envelope, else None."""
+    if not fp or not duration_s:
+        return None
+    for r in conn.execute("SELECT id, fp FROM videos WHERE id != ? AND fp IS NOT NULL AND duration_s BETWEEN ? AND ?",
+                          (video_id, duration_s - 2.0, duration_s + 2.0)):
+        if fingerprint_similarity(fp, r["fp"]) >= threshold:
+            return r["id"]
+    return None
