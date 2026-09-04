@@ -9,7 +9,7 @@ log 'uv: '$(uv --version)
 uv python install 3.11 || true
 [ -d venv ] || uv venv --python 3.11 venv
 uv pip install --python venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch torchaudio 2>&1 | tail -2
-uv pip install --python venv/bin/python yt-dlp fastapi 'uvicorn[standard]' numpy soundfile scipy librosa onnxruntime ten-vad 'huggingface_hub[hf_transfer]' hf_transfer pyarrow httpx pydantic pyyaml tqdm panns-inference psutil python-multipart datasets 2>&1 | tail -3
+uv pip install --python venv/bin/python yt-dlp fastapi 'uvicorn[standard]' numpy soundfile scipy librosa onnxruntime ten-vad 'huggingface_hub[hf_xet]' pyarrow httpx pydantic pyyaml tqdm panns-inference psutil python-multipart datasets 2>&1 | tail -3
 (apt-get install -y -q libc++1 >/dev/null 2>&1 && log 'libc++1 ok') || log 'libc++1 install failed (check manually)'
 for f in sig_bak_ovr.onnx model_v8.onnx; do [ -s models/dnsmos/$f ] || curl -sL --max-time 120 https://raw.githubusercontent.com/microsoft/DNS-Challenge/master/DNSMOS/DNSMOS/$f -o models/dnsmos/$f; done
 ls -la models/dnsmos

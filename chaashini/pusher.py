@@ -10,7 +10,9 @@ log = logging.getLogger("chaashini.pusher")
 
 
 def _api(token: str):
-    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    # huggingface_hub >= 1.0 moves large-file transfer to Xet; hf_transfer is deprecated.
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    os.environ.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
     from huggingface_hub import HfApi
     return HfApi(token=token)
 

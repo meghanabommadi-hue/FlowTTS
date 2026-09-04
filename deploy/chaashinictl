@@ -11,7 +11,7 @@ mkdir -p $ROOT/run $LOGS
 export PATH=/usr/local/bin:$PATH
 export CHAASHINI_CONFIG=$APP/configs/chaashini.yaml
 export PYTHONUNBUFFERED=1
-export HF_HUB_ENABLE_HF_TRANSFER=1
+export HF_XET_HIGH_PERFORMANCE=1
 [ -f $ROOT/chaashini.env ] && set -a && . $ROOT/chaashini.env && set +a
 
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
