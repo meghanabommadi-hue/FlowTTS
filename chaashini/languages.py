@@ -135,7 +135,7 @@ _add(Language("grt", "Garo", "A·chik", ("latin",),
     ("Garo", "garo", "achik"), ("Tura", "Meghalaya")))
 _add(Language("kha", "Khasi", "Khasi", ("latin",),
     _sw("ka u ki ba bad jong na ha sha kumno kumne dei"),
-    ("Khasi", "khasi"), ("Shillong", "Meghalaya")))
+    ("Khasi", "khasi"), ("Shillong", "Meghalaya"), asr_supported=False))
 
 
 # Script -> candidate languages (order = default prior when nothing else discriminates)

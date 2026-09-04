@@ -71,19 +71,32 @@ class DiscoverWorker(Worker):
         return n
 
     # ------------------------------------------------------------------ sources
+    def scarce_languages(self) -> set[str]:
+        """Enabled languages with less than `low_resource_hours` of accepted audio so far."""
+        have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
+            "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
+        return {l.code for l in self.cfg.enabled_languages() if have.get(l.code, 0.0) < self.cfg.discovery.low_resource_hours}
+
     def expand_channels(self, budget: int) -> int:
         dc = self.cfg.discovery
+        scarce = self.scarce_languages()
+        # A channel in a scarce language is crawled on much weaker evidence, and more of it is taken:
+        # finding one good Assamese or Bodo channel is worth more than another Hindi one.
         rows = self.conn.execute(
-            "SELECT id, name, lang_hint, videos_done, accepted_sec, source_sec FROM channels WHERE expanded_at IS NULL AND blocked=0 AND videos_done >= ? "
-            "AND source_sec > 0 AND accepted_sec/source_sec >= ? ORDER BY accepted_sec DESC LIMIT 5",
-            (dc.channel_expand_min_videos, dc.channel_expand_min_accept_ratio)).fetchall()
+            "SELECT id, name, lang_hint, videos_done, accepted_sec, source_sec FROM channels WHERE expanded_at IS NULL AND blocked=0 "
+            "AND source_sec > 0 AND ((videos_done >= ? AND accepted_sec/source_sec >= ?) OR (videos_done >= 1 AND accepted_sec/source_sec >= ?)) "
+            "ORDER BY accepted_sec DESC LIMIT 8",
+            (dc.channel_expand_min_videos, dc.channel_expand_min_accept_ratio, dc.low_resource_expand_ratio)).fetchall()
+        rows = [r for r in rows if (r["accepted_sec"] / max(r["source_sec"], 1) >= dc.channel_expand_min_accept_ratio
+                                    and r["videos_done"] >= dc.channel_expand_min_videos) or (r["lang_hint"] in scarce)]
         added = 0
         for ch in rows:
             if added >= budget or self.stop:
                 break
             try:
                 ck, px, _ = identity(self.cfg.source, self.stats["rounds"])
-                found = channel_videos(self.cfg.source, ch["id"], dc.channel_expand_max_items, cookies_file=ck, proxy=px)
+                n_items = dc.low_resource_expand_max_items if ch["lang_hint"] in scarce else dc.channel_expand_max_items
+                found = channel_videos(self.cfg.source, ch["id"], n_items, cookies_file=ck, proxy=px)
             except RateLimited as e:
                 self.rate_limited(str(e))
                 break
@@ -141,6 +154,21 @@ class DiscoverWorker(Worker):
     def pending_queries(self, lang: str, limit: int) -> list:
         return self.conn.execute("SELECT * FROM queries WHERE lang=? AND runs=0 ORDER BY created_at LIMIT ?", (lang, limit)).fetchall()
 
+    def exhausted(self, lang: str) -> bool:
+        """A language whose searches keep coming up empty is retried only after a cooldown, so a scarce
+        language cannot burn the LLM and the search budget round after round."""
+        until = D.kv_get(self.conn, f"lang_exhausted:{lang}", 0) or 0
+        if until > time.time():
+            return True
+        duds = self.conn.execute("SELECT COUNT(*) n FROM queries WHERE lang=? AND runs>0 AND videos_new=0", (lang,)).fetchone()["n"]
+        if duds >= self.cfg.discovery.max_dud_queries_per_lang:
+            D.kv_set(self.conn, f"lang_exhausted:{lang}", time.time() + self.cfg.discovery.lang_exhausted_cooldown_s)
+            self.conn.execute("DELETE FROM queries WHERE lang=? AND runs=0", (lang,))
+            self.event("discover", f"{lang}: {duds} searches returned nothing new; pausing discovery for this language", level="warn")
+            log.info("%s exhausted (%d dud queries); cooling down", lang, duds)
+            return True
+        return False
+
     def make_queries(self, lang: str) -> int:
         L = LANGUAGES[lang]
         known = [r["query"] for r in self.conn.execute("SELECT query FROM queries WHERE lang=? ORDER BY created_at DESC LIMIT 80", (lang,))]
@@ -188,8 +216,10 @@ class DiscoverWorker(Worker):
 
     # ------------------------------------------------------------------ main step
     def language_deficits(self) -> list[tuple[str, int]]:
-        """Languages whose queued backlog is below their weight-proportional share (min 8), worst first."""
-        langs = [l for l in self.cfg.enabled_languages() if l.code in LANGUAGES and LANGUAGES[l.code].asr_supported]
+        """Languages whose queued backlog is below their weight-proportional share (min 8), worst first.
+        Languages under an exhaustion cooldown are skipped."""
+        langs = [l for l in self.cfg.enabled_languages() if l.code in LANGUAGES and LANGUAGES[l.code].asr_supported
+                 and not self.exhausted(l.code)]
         tw = sum(l.weight for l in langs) or 1.0
         bl = self.backlog_by_lang()
         target = self.cfg.discovery.target_backlog_videos
@@ -236,6 +266,8 @@ class DiscoverWorker(Worker):
         while added < need and rounds < 6 and not self.stop and not self.cooldown_active():
             rounds += 1
             lang = self.pick_language()
+            if self.exhausted(lang):
+                continue
             qs = self.pending_queries(lang, 4)
             if not qs:
                 self.make_queries(lang)

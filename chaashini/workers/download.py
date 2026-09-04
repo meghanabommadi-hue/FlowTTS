@@ -111,11 +111,19 @@ class DownloadWorker(Worker):
         if n_inflight >= self.cfg.workers.max_videos_in_flight:
             self.heartbeat("paused: pipeline full", f"{n_inflight} in flight", force=True)
             return False
+        # weight by the configured share, then boost languages that are still short of audio, so the
+        # download mix follows the corpus deficit rather than whatever discovery happened to queue
         langs = [l for l in self.cfg.enabled_languages() if l.weight > 0]
         v = None
         if langs:
-            pick = random.choices(langs, weights=[l.weight for l in langs], k=1)[0].code
-            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (pick,))
+            have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
+                "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
+            lr = self.cfg.discovery.low_resource_hours
+            weights = [l.weight * (2.5 if have.get(l.code, 0.0) < lr else 1.0) for l in langs]
+            for pick in {random.choices(langs, weights=weights, k=1)[0].code for _ in range(3)}:
+                v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (pick,))
+                if v:
+                    break
         if not v:
             v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s)
         if not v:

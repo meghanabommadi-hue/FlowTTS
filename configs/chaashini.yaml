@@ -34,36 +34,49 @@ source:
   cooldown_base_s: 300
   cooldown_max_s: 3600
 
-# Target languages. weight = share of discovery effort.
+# Target languages. weight = share of discovery AND download effort.
+# The corpus is deliberately biased toward LOW-RESOURCE languages: the big four are easy to find later,
+# scarce languages are the reason this pipeline exists. English is kept to a trickle (verified Indian
+# English only) because its yield is poor and its risk of non-Indian audio is high.
 languages:
-  - {code: hi, weight: 3.0}
-  - {code: bn, weight: 2.0}
-  - {code: ta, weight: 2.0}
-  - {code: te, weight: 2.0}
-  - {code: mr, weight: 2.0}
-  - {code: gu, weight: 1.5}
-  - {code: kn, weight: 1.5}
-  - {code: ml, weight: 1.5}
-  - {code: pa, weight: 1.2}
-  - {code: or, weight: 1.0}
-  - {code: as, weight: 0.8}
-  - {code: bho, weight: 0.8}
-  - {code: mai, weight: 0.5}
-  - {code: ne, weight: 0.5}
-  - {code: sa, weight: 0.3}
-  - {code: kok, weight: 0.3}
-  - {code: doi, weight: 0.2}
-  - {code: brx, weight: 0.2}
-  - {code: mni, weight: 0.2}
-  - {code: sat, weight: 0.2}
-  - {code: sd, weight: 0.2}
-  - {code: raj, weight: 0.4}
-  - {code: hne, weight: 0.3}
-  - {code: awa, weight: 0.2}
-  - {code: mag, weight: 0.2}
-  - {code: bgc, weight: 0.2}
-  - {code: en, weight: 0.8}          # INDIAN English only (query anchoring + LLM creator check + transcript cue check)
-  - {code: ur, weight: 0.0, enabled: false}   # ASR does not support Urdu / Kashmiri yet
+  # --- scarce scheduled languages (highest priority)
+  - {code: as, weight: 3.0}          # Assamese
+  - {code: or, weight: 3.0}          # Odia
+  - {code: kok, weight: 3.0}         # Konkani
+  - {code: doi, weight: 3.0}         # Dogri
+  - {code: brx, weight: 3.0}         # Bodo
+  - {code: mni, weight: 3.0}         # Manipuri
+  - {code: sat, weight: 3.0}         # Santali
+  - {code: mai, weight: 2.5}         # Maithili
+  - {code: sd, weight: 2.5}          # Sindhi
+  - {code: sa, weight: 2.0}          # Sanskrit
+  - {code: ne, weight: 2.0}          # Nepali
+  # --- non-scheduled languages and major dialects
+  - {code: tcy, weight: 2.5}         # Tulu
+  - {code: lus, weight: 2.5}         # Mizo
+  - {code: grt, weight: 2.5}         # Garo
+  - {code: bho, weight: 2.0}         # Bhojpuri
+  - {code: mag, weight: 2.0}         # Magahi
+  - {code: awa, weight: 2.0}         # Awadhi
+  - {code: hne, weight: 2.0}         # Chhattisgarhi
+  - {code: raj, weight: 2.0}         # Rajasthani / Marwari
+  - {code: bgc, weight: 2.0}         # Haryanvi
+  - {code: gbm, weight: 2.0}         # Garhwali
+  - {code: kfy, weight: 2.0}         # Kumaoni
+  # --- major languages (plenty available; kept flowing, no longer dominant)
+  - {code: hi, weight: 1.5}
+  - {code: bn, weight: 1.2}
+  - {code: ta, weight: 1.2}
+  - {code: te, weight: 1.2}
+  - {code: mr, weight: 1.2}
+  - {code: kn, weight: 1.0}
+  - {code: ml, weight: 1.0}
+  - {code: gu, weight: 1.0}
+  - {code: pa, weight: 1.0}
+  # --- Indian English: trickle only (poor yield, high risk of non-Indian speakers)
+  - {code: en, weight: 0.1}
+  # --- unsupported by the recogniser
+  - {code: ur, weight: 0.0, enabled: false}
   - {code: ks, weight: 0.0, enabled: false}
 
 discovery:
@@ -73,6 +86,11 @@ discovery:
   channel_expand_min_accept_ratio: 0.35
   channel_expand_min_videos: 2
   channel_expand_max_items: 60
+  low_resource_hours: 3.0                 # a language below this many accepted hours counts as scarce
+  low_resource_expand_ratio: 0.12         # scarce languages: crawl a channel fully on much weaker evidence
+  low_resource_expand_max_items: 200      # and take more of it
+  max_dud_queries_per_lang: 36            # stop inventing queries for a language whose searches keep coming up empty
+  lang_exhausted_cooldown_s: 21600        # ... and retry it only after this long (6 h)
   seed_channel_playlists: []          # "hi|https://www.youtube.com/playlist?list=..."
 
 audio:

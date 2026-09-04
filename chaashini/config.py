@@ -97,6 +97,11 @@ class DiscoveryCfg(BaseModel):
     channel_expand_min_accept_ratio: float = 0.35
     channel_expand_min_videos: int = 2
     channel_expand_max_items: int = 60
+    low_resource_hours: float = 3.0
+    low_resource_expand_ratio: float = 0.12
+    low_resource_expand_max_items: int = 200
+    max_dud_queries_per_lang: int = 36
+    lang_exhausted_cooldown_s: int = 21600
     seed_channel_playlists: list[str] = []
 
 
