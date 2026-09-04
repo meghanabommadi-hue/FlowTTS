@@ -11,3 +11,4 @@ logs/
 configs/local.yaml
 configs/cookies.txt
 .env
+*cookies*.txt
