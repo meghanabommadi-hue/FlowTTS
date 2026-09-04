@@ -21,7 +21,7 @@ import numpy as np
 import soundfile as sf
 
 from .. import db as D
-from ..audio import cut_to_array, decode_to_wav, peak_normalize, read_wav_int16, resample
+from ..audio import decode_to_wav, peak_normalize, read_wav_int16, resample
 from ..export import stage_chunk
 from ..languages import LANGUAGES
 from ..lid import identify
@@ -109,6 +109,16 @@ class ProcessWorker(Worker):
     def _load_master(self, wd: Path) -> tuple[np.ndarray, int]:
         return read_wav_int16(wd / "audio16k.wav")
 
+    def _load_export_master(self, wd: Path) -> tuple[np.ndarray, int]:
+        p = wd / f"audio{self.cfg.audio.export_sr // 1000}k.wav"
+        x, sr = read_wav_int16(p)
+        return x, sr
+
+    @staticmethod
+    def _slice(x: np.ndarray, sr: int, start_ms: int, end_ms: int) -> np.ndarray:
+        a, b = int(start_ms * sr / 1000), int(end_ms * sr / 1000)
+        return x[a:b].astype(np.float32) / 32768.0
+
     def _load_vad(self, wd: Path, n_samples: int) -> VADFrames:
         probs = np.load(wd / "vad.npy")
         return VADFrames(probs, (probs >= self.cfg.vad.threshold).astype(np.uint8), self.cfg.vad.hop, self.cfg.audio.analysis_sr)
@@ -123,6 +133,8 @@ class ProcessWorker(Worker):
             return
         master = wd / "audio16k.wav"
         dur, sr = decode_to_wav(src, master, self.cfg.audio.analysis_sr)
+        # export-rate master: every later cut is an exact array slice (no per-chunk container seeking)
+        decode_to_wav(src, wd / f"audio{self.cfg.audio.export_sr // 1000}k.wav", self.cfg.audio.export_sr)
         x16, sr = self._load_master(wd)
         # VAD over the full file
         vad = run_vad(x16, sr, self.cfg.vad.hop, self.cfg.vad.threshold)
@@ -348,12 +360,12 @@ class ProcessWorker(Worker):
 
     def _write_enhance_payload(self, wd: Path, v, rows: list) -> Path:
         E = self.cfg.quality.enhance
-        sr_in = self.cfg.audio.enhance_input_sr
+        xm, sr_in = self._load_export_master(wd)
         tar_path = wd / "enh_in.tar"
         items = []
         with tarfile.open(tar_path, "w") as tf:
             for c in rows:
-                x = cut_to_array(v["src_path"], c["start_ms"] / 1000, c["end_ms"] / 1000, sr_in)
+                x = self._slice(xm, sr_in, c["start_ms"], c["end_ms"])
                 buf = io.BytesIO()
                 sf.write(buf, x, sr_in, format="WAV", subtype="PCM_16")
                 data = buf.getvalue()
@@ -448,6 +460,7 @@ class ProcessWorker(Worker):
         q = self.conn.execute("SELECT genre FROM queries WHERE id=?", (v["query_id"],)).fetchone() if v["query_id"] else None
         genre = (q["genre"] if q else "") or ""
         enh_dir = wd / "enh"
+        xm, xm_sr = self._load_export_master(wd)
         accepted = []
         n_rej = 0
         reasons: dict[str, int] = {}
@@ -544,7 +557,14 @@ class ProcessWorker(Worker):
                     y = y[:, 0]
                 audio = resample(y, ysr, export_sr)
             else:
-                audio = cut_to_array(v["src_path"], c["start_ms"] / 1000, c["end_ms"] / 1000, export_sr)
+                audio = self._slice(xm, xm_sr, c["start_ms"], c["end_ms"])
+                if xm_sr != export_sr:
+                    audio = resample(audio, xm_sr, export_sr)
+            if audio.size < int(0.4 * export_sr):
+                n_rej += 1
+                reasons["export_empty"] = reasons.get("export_empty", 0) + 1
+                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='export_empty', text=?, updated_at=? WHERE id=?", (text, time.time(), cid))
+                continue
             m = D.uj(c["metrics_json"], {}) or {}
             bw = bandwidth_hz(audio, export_sr)
             m["bandwidth_hz"] = round(bw, 0)

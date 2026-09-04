@@ -143,6 +143,27 @@ def playlist_videos(cfg: SourceCfg, url: str, n: int) -> list[Found]:
     return out
 
 
+def select_audio_format(ctx: dict):
+    """yt-dlp format selector (callable form).
+
+    Preference order: audio-only DASH (https) over HLS (m3u8 fragments cannot be seeked reliably),
+    non-DRC over DRC (loudness-processed) variants, ORIGINAL track when the video carries dubbed
+    tracks (original = language_preference >= 10, dubbed = -1; single-track videos also report -1,
+    so the rule is only applied when an original exists), then opus over AAC, then bitrate.
+    """
+    fmts = [f for f in (ctx.get("formats") or []) if f.get("vcodec") in (None, "none") and f.get("acodec") not in (None, "none")]
+    if not fmts:
+        fmts = [f for f in (ctx.get("formats") or []) if f.get("acodec") not in (None, "none")]
+    if not fmts:
+        return
+    pool = [f for f in fmts if "m3u8" not in (f.get("protocol") or "")] or fmts
+    pool = [f for f in pool if "drc" not in (f.get("format_id") or "").lower() and "drc" not in (f.get("format_note") or "").lower()] or pool
+    if any((f.get("language_preference") or 0) >= 10 for f in pool):
+        pool = [f for f in pool if (f.get("language_preference") or 0) >= 10]
+    pool.sort(key=lambda f: ((f.get("acodec") or "").startswith("opus"), f.get("abr") or f.get("tbr") or 0), reverse=True)
+    yield pool[0]
+
+
 @dataclass
 class Downloaded:
     path: str
@@ -186,7 +207,7 @@ def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: 
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = _ydl_base(cfg)
     opts.update({
-        "format": cfg.format,
+        "format": select_audio_format,
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
         "match_filter": _match_filter_factory(cfg, allowed_langs),
         "sleep_interval": cfg.sleep_interval, "max_sleep_interval": cfg.sleep_interval * 2,
@@ -221,7 +242,8 @@ def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: 
     fmt = reqs[0] if reqs else info
     track_lang = fmt.get("language") or info.get("language")
     lp = fmt.get("language_preference")
-    if lp is not None and lp < 0:
+    has_original = any((f.get("language_preference") or 0) >= 10 for f in (info.get("formats") or []))
+    if has_original and lp is not None and lp < 0:
         try:
             os.remove(path)
         except OSError:

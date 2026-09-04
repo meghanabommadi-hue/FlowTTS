@@ -45,11 +45,11 @@ ever lost or processed twice.
 stateDiagram-v2
   [*] --> discovered
   discovered --> downloading: download worker claims
-  downloading --> downloaded: original track saved
+  downloading --> downloaded: original DASH track saved
   downloading --> rejected: unavailable / music category / dubbed only
   downloaded --> decoding: process worker
   decoding --> rejected: mostly music · not speech · little speech
-  decoding --> diarize_queued: 16 kHz master + VAD saved
+  decoding --> diarize_queued: 16 kHz + 24 kHz masters, VAD saved
   diarize_queued --> diarized: GPU diarize job done
   diarized --> segmenting: fuse VAD × diarization, score every chunk
   segmenting --> enhance_queued: borderline chunks exist

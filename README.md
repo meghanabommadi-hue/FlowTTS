@@ -65,8 +65,10 @@ ssh root@101.53.138.193
   "confirm you're not a bot" checks under load; cookies from a throw-away account lift most of it.
 * **Rotating residential proxy** (`source.proxy`) and/or a **PO-token provider** plugin for real scale.
   The pipeline backs off globally (5 min → 1 h) whenever it is throttled, so it degrades instead of breaking.
-* Only the **original** audio track is taken (auto-dubbed tracks are refused), music/gaming/film
-  categories and live streams are skipped before download, and the per-channel cap keeps speaker diversity.
+* Audio format selection is a Python selector (`ytsource.select_audio_format`): DASH over HLS (HLS fragments
+  cannot be seeked reliably), non-DRC over loudness-processed "DRC" variants, the **original** track whenever
+  auto-dubbed tracks exist, opus over AAC, then bitrate. Music/gaming/film categories and live streams are
+  skipped before download, and the per-channel cap keeps speaker diversity.
 
 ## Configuration highlights
 

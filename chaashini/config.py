@@ -73,7 +73,7 @@ class SourceCfg(BaseModel):
     sleep_requests: float = 0.75         # seconds between HTTP requests to the source
     sleep_interval: float = 2.0          # seconds between downloads
     js_runtime: str = "deno"
-    format: str = "bestaudio[language_preference>=?0][acodec=opus]/bestaudio[language_preference>=?0]/bestaudio/best"
+    format: str = "callable"          # see ytsource.select_audio_format (DASH > HLS, no DRC, original track, opus > aac)
     cooldown_base_s: int = 300           # global back-off when the source rate-limits / bot-checks us
     cooldown_max_s: int = 3600
     max_attempts: int = 3
