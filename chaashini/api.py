@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db as D
 from .config import Config, get_config
-from .status import metrics_point, snapshot
+from .status import metrics_point, series, snapshot
 
 log = logging.getLogger("chaashini.api")
 UI_DIR = Path(__file__).resolve().parent.parent / "ui"
@@ -79,14 +79,26 @@ def create_app() -> FastAPI:
         with snap.lock:
             return JSONResponse(snap.data, headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/series")
+    def api_series(range: str = "24h"):
+        secs = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400}.get(range, 86400)
+        return JSONResponse(series(conn(), secs), headers={"Cache-Control": "no-store"})
+
     @app.get("/api/recent_chunks")
-    def api_recent(limit: int = 30, lang: str | None = None, status: str = "accepted"):
+    def api_recent(limit: int = 30, lang: str | None = None, status: str = "accepted", q: str | None = None, reason: str | None = None):
         c = conn()
-        q = "SELECT c.*, v.title, v.lang_hint FROM chunks c LEFT JOIN videos v ON v.id=c.video_id WHERE c.status=? "
+        q_sql = "SELECT c.*, v.title, v.lang_hint FROM chunks c LEFT JOIN videos v ON v.id=c.video_id WHERE c.status=? "
         params: list = [status]
         if lang:
-            q += "AND c.lang=? "
+            q_sql += "AND c.lang=? "
             params.append(lang)
+        if reason:
+            q_sql += "AND c.reject_reason=? "
+            params.append(reason)
+        if q:
+            q_sql += "AND c.text LIKE ? "
+            params.append(f"%{q[:80]}%")
+        q = q_sql
         q += "ORDER BY c.created_at DESC LIMIT ?"
         params.append(min(200, max(1, limit)))
         rows = []

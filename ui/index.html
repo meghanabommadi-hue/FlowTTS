@@ -3,169 +3,253 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chaashini · चाशनी</title>
+<title>Chaashini</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍯</text></svg>">
+<script src="static/vendor/chart.umd.js"></script>
 <style>
-:root{--bg:#0d0f14;--panel:#151923;--panel2:#1b2030;--line:#262c3b;--text:#e8ebf2;--muted:#8b93a7;--amber:#f5b942;--amber2:#ffd479;--green:#4fd18b;--red:#ff6b6b;--blue:#6aa8ff;--purple:#b48cff;--teal:#4fd1c5}
-*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
-a{color:var(--amber2)}
-.wrap{max-width:1600px;margin:0 auto;padding:18px 22px 60px}
-header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:16px}
-header h1{margin:0;font-size:24px;letter-spacing:.3px}header h1 span{color:var(--amber);font-weight:400}
-.sub{color:var(--muted);font-size:13px}
-.live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-left:auto}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
-.dot.stale{background:var(--red);box-shadow:0 0 8px var(--red)}
-.grid{display:grid;gap:14px}.kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+:root{color-scheme:dark;--surface:#1a1a19;--panel:#222221;--panel2:#2a2a28;--line:#33332f;--text:#ffffff;--text2:#c3c2b7;--muted:#8d8c83;
+--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;--s7:#9085e9;--s8:#e66767;
+--good:#0ca30c;--warn:#fab219;--serious:#ec835a;--critical:#d03b3b}
+*{box-sizing:border-box}html,body{margin:0;background:var(--surface);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+a{color:var(--s1)}
+.wrap{max-width:1400px;margin:0 auto;padding:18px 22px 60px}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+h1{margin:0;font-size:22px}h1 small{color:var(--muted);font-weight:400;font-size:13px;margin-left:8px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;background:var(--panel2);font-size:12px;color:var(--text2)}
+.pill i{width:8px;height:8px;border-radius:50%;display:inline-block}
+.pill.ok i{background:var(--good)}.pill.warn i{background:var(--warn)}.pill.bad i{background:var(--critical)}
+.right{margin-left:auto;color:var(--muted);font-size:12px}
+.filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 14px;font-size:13px;color:var(--text2)}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{background:none;border:0;color:var(--text2);padding:6px 11px;cursor:pointer;font-size:13px}
+.seg button.on{background:var(--panel2);color:var(--text)}
+select,input[type=search]{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 9px;font-size:13px}
+section{margin-top:18px}
+h2{font-size:13px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);margin:0 0 10px;font-weight:600}
+h2 span{text-transform:none;letter-spacing:0;color:var(--muted);font-weight:400;margin-left:8px}
+.grid{display:grid;gap:12px}.kpis{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.c2{grid-template-columns:3fr 2fr}.c3{grid-template-columns:1fr 1fr 1fr}.c11{grid-template-columns:1fr 1fr}
+@media(max-width:1000px){.c2,.c3,.c11{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;min-width:0}
-.card h3{margin:0 0 10px;font-size:12px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--muted)}
-.kpi .v{font-size:28px;font-weight:700;letter-spacing:-.5px;line-height:1.1}.kpi .v small{font-size:13px;color:var(--muted);font-weight:500;margin-left:4px}
-.kpi .d{color:var(--muted);font-size:12px;margin-top:6px}
-.row2{grid-template-columns:1.4fr 1fr}.row3{grid-template-columns:1fr 1fr 1fr}.row21{grid-template-columns:2fr 1fr}
-@media(max-width:1100px){.row2,.row3,.row21{grid-template-columns:1fr}}
-.bar{height:10px;background:var(--panel2);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--amber),var(--amber2));border-radius:6px;transition:width .6s}
-table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+.kpi .v{font-size:30px;font-weight:700;letter-spacing:-.5px;line-height:1.05;font-variant-numeric:tabular-nums}.kpi .v small{font-size:13px;color:var(--muted);font-weight:500;margin-left:4px}
+.kpi .l{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.6px}.kpi .d{color:var(--text2);font-size:12px;margin-top:6px}
+.chart{position:relative;height:260px}.chart.tall{height:340px}.chart.short{height:180px}
+canvas{width:100%!important}
+table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;cursor:pointer;user-select:none;white-space:nowrap}th.sorted::after{content:" ▾"}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
-.tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;background:var(--panel2);color:var(--text)}
-.tag.ok{background:rgba(79,209,139,.15);color:var(--green)}.tag.bad{background:rgba(255,107,107,.15);color:var(--red)}.tag.warn{background:rgba(245,185,66,.15);color:var(--amber)}.tag.info{background:rgba(106,168,255,.15);color:var(--blue)}
-svg{width:100%;height:auto;display:block}.muted{color:var(--muted)}.small{font-size:12px}
-.scroll{max-height:380px;overflow:auto}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-.chunk{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
-.chunk audio{width:210px;height:30px}.chunk .t{font-size:14px;line-height:1.5}.chunk .m{color:var(--muted);font-size:11.5px;margin-top:3px}
-.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
-.funnel div{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px}.funnel b{width:150px;color:var(--muted);font-weight:500;text-align:right}.funnel .bar{flex:1}.funnel span{width:56px;text-align:right;font-variant-numeric:tabular-nums}
-.ev{padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}.ev time{color:var(--muted);margin-right:8px;font-variant-numeric:tabular-nums}
-.ev.error{color:var(--red)}.ev.warn{color:var(--amber)}
-footer{margin-top:24px;color:var(--muted);font-size:12px}
+tr.pick{cursor:pointer}tr.pick:hover{background:var(--panel2)}tr.sel{background:var(--panel2)}
+.tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;background:var(--panel2);color:var(--text2)}
+.tag.ok{color:var(--good)}.tag.bad{color:var(--critical)}.tag.warn{color:var(--warn)}.tag.info{color:var(--s1)}
+.bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--s1);border-radius:4px}
+.muted{color:var(--muted)}.small{font-size:12px}.scroll{max-height:380px;overflow:auto}
+.alerts{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}.alert{padding:8px 12px;border-radius:8px;background:var(--panel2);font-size:13px;border-left:3px solid var(--warn)}
+.alert.critical{border-left-color:var(--critical)}.alert.good{border-left-color:var(--good)}
+.clip{display:grid;grid-template-columns:230px 1fr;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.clip audio{width:220px;height:32px}.clip .t{font-size:14px;line-height:1.5}.clip .m{color:var(--muted);font-size:11.5px;margin-top:4px}
+.gloss{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px 16px;font-size:12px;color:var(--text2);margin-top:10px}.gloss b{color:var(--text);font-weight:600}
+.ev{padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}.ev time{color:var(--muted);margin-right:8px;font-variant-numeric:tabular-nums}.ev.error{color:var(--s8)}.ev.warn{color:var(--warn)}
+details summary{cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:8px}
+.help{color:var(--muted);font-size:12px;margin:-4px 0 10px}
 </style>
 </head>
 <body><div class="wrap">
 <header>
-  <div><h1>🍯 Chaashini <span>· चाशनी</span></h1><div class="sub">pristine multilingual Indian speech · continuous corpus builder</div></div>
-  <div class="live"><span id="fresh" class="tag"></span><span class="dot" id="dot"></span><span id="updated">connecting…</span></div>
+  <h1>🍯 Chaashini <small>pristine Indian-language speech · live corpus builder</small></h1>
+  <span class="pill" id="live"><i></i><span>connecting…</span></span>
+  <span class="right" id="updated"></span>
 </header>
 
+<div class="filters">
+  <span>Time range</span>
+  <div class="seg" id="range"><button data-r="1h">1h</button><button data-r="6h">6h</button><button data-r="24h" class="on">24h</button><button data-r="7d">7d</button><button data-r="30d">30d</button></div>
+  <span style="margin-left:10px">Language</span>
+  <select id="langsel"><option value="">all languages</option></select>
+  <span class="muted small" id="filterhint"></span>
+</div>
+
+<div id="alerts" class="alerts"></div>
 <div class="grid kpis" id="kpis"></div>
 
-<div class="grid row2" style="margin-top:14px">
-  <div class="card"><h3>Hours per language <span class="muted" style="text-transform:none;letter-spacing:0">(accepted · pushed)</span></h3><div id="langchart"></div></div>
-  <div class="card"><h3>Next push to the Hub</h3><div id="push"></div><h3 style="margin-top:14px">GPU job queues</h3><div id="gpuq"></div></div>
-</div>
+<section>
+  <h2>Growth <span>hours of accepted speech, cumulative, and the hourly acceptance rate</span></h2>
+  <div class="grid c2">
+    <div class="card"><div class="chart"><canvas id="growth"></canvas></div></div>
+    <div class="card"><div class="chart"><canvas id="rate"></canvas></div></div>
+  </div>
+</section>
 
-<div class="grid row2" style="margin-top:14px">
-  <div class="card"><h3>Accepted hours over time</h3><div id="series"></div><div class="legend"><span><i style="background:var(--amber)"></i>accepted (cumulative)</span><span><i style="background:var(--blue)"></i>pushed (cumulative)</span><span><i style="background:var(--teal)"></i>hours/hour (rate)</span></div></div>
-  <div class="card"><h3>Pipeline funnel (sources)</h3><div class="funnel" id="funnel"></div></div>
-</div>
+<section>
+  <h2>Languages <span>click a bar or a row to focus the listen panel on that language</span></h2>
+  <div class="grid c2">
+    <div class="card"><div class="chart tall"><canvas id="langs"></canvas></div></div>
+    <div class="card scroll"><table id="langtable"></table></div>
+  </div>
+</section>
 
-<div class="grid row3" style="margin-top:14px">
-  <div class="card"><h3>Why chunks were rejected (24h)</h3><div id="reasons"></div></div>
-  <div class="card"><h3>Overall quality of accepted chunks (DNSMOS OVRL)</h3><div id="qhist"></div></div>
-  <div class="card"><h3>Accepted chunk durations</h3><div id="dhist"></div></div>
-</div>
+<section>
+  <h2>Where audio is lost <span>every source and every clip has to earn its place; click a reason to hear rejected examples</span></h2>
+  <div class="grid c11">
+    <div class="card"><div class="help">Sources by pipeline stage (right now)</div><div class="chart"><canvas id="funnel"></canvas></div></div>
+    <div class="card"><div class="help">Clip rejections in the last 24 h, by gate</div><div class="chart"><canvas id="reasons"></canvas></div></div>
+  </div>
+  <div class="card" style="margin-top:12px"><div class="gloss" id="gloss"></div></div>
+</section>
 
-<div class="grid row2" style="margin-top:14px">
-  <div class="card"><h3>Workers</h3><div class="scroll"><table id="workers"></table></div></div>
-  <div class="card"><h3>In flight</h3><div class="scroll"><table id="active"></table></div></div>
-</div>
+<section>
+  <h2>Quality of accepted clips <span>distributions over the most recent accepted clips</span></h2>
+  <div class="grid c3">
+    <div class="card"><div class="help">Overall perceptual quality (DNSMOS OVRL, 1–5; gate ≥ 3.0)</div><div class="chart short"><canvas id="qhist"></canvas></div></div>
+    <div class="card"><div class="help">Recogniser confidence (mean token posterior; gate ≥ 0.8)</div><div class="chart short"><canvas id="chist"></canvas></div></div>
+    <div class="card"><div class="help">Clip length in seconds (0.5–30 s, cut at pauses)</div><div class="chart short"><canvas id="dhist"></canvas></div></div>
+  </div>
+</section>
 
-<div class="grid row21" style="margin-top:14px">
-  <div class="card"><h3>Fresh accepted chunks <span class="muted" style="text-transform:none;letter-spacing:0">(listen)</span></h3><div class="scroll" id="chunks" style="max-height:520px"></div></div>
-  <div class="card"><h3>Language table</h3><div class="scroll"><table id="langtable"></table></div></div>
-</div>
+<section>
+  <h2>Machine <span>the two boxes and the GPU queue</span></h2>
+  <div class="grid c2">
+    <div class="card scroll"><table id="workers"></table></div>
+    <div class="card" id="machine"></div>
+  </div>
+</section>
 
-<div class="grid row2" style="margin-top:14px">
-  <div class="card"><h3>Recently finished sources</h3><div class="scroll"><table id="recent"></table></div></div>
-  <div class="card"><h3>Events</h3><div class="scroll" id="events"></div><h3 style="margin-top:14px">Push history</h3><div class="scroll" id="pushes" style="max-height:200px"></div></div>
-</div>
-<footer id="foot"></footer>
+<section>
+  <h2>Listen <span>fresh clips with transcript, language mix and scores</span></h2>
+  <div class="filters" style="margin-bottom:8px">
+    <div class="seg" id="listmode"><button data-m="accepted" class="on">accepted</button><button data-m="rejected">rejected</button></div>
+    <select id="reasonsel" hidden><option value="">any reason</option></select>
+    <input type="search" id="q" placeholder="search transcript…" style="min-width:240px">
+    <span class="muted small" id="listinfo"></span>
+  </div>
+  <div class="card scroll" id="clips" style="max-height:560px"></div>
+</section>
+
+<section>
+  <div class="grid c11">
+    <div class="card"><h2>Recently finished sources</h2><div class="scroll"><table id="recent"></table></div></div>
+    <div class="card"><h2>Pushes to the Hub</h2><div id="pushes"></div><details style="margin-top:12px"><summary>Event log</summary><div class="scroll" id="events"></div></details></div>
+  </div>
+</section>
+<footer class="muted small" id="foot" style="margin-top:18px"></footer>
 </div>
 <script>
+'use strict';
 const $=s=>document.querySelector(s);
-const fmtH=h=>h>=100?h.toFixed(0):h>=10?h.toFixed(1):h.toFixed(2);
+const el=(tag,attrs={},...kids)=>{const e=document.createElement(tag);for(const [k,v] of Object.entries(attrs)){if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v)}for(const k of kids){if(k==null)continue;e.appendChild(typeof k==='string'?document.createTextNode(k):k)}return e};
+const fmtH=h=>h==null?'–':h>=100?h.toFixed(0):h>=10?h.toFixed(1):h.toFixed(2);
 const fmtN=n=>(n||0).toLocaleString();
-const ago=s=>s<60?`${Math.round(s)}s`:s<3600?`${Math.round(s/60)}m`:s<86400?`${(s/3600).toFixed(1)}h`:`${(s/86400).toFixed(1)}d`;
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const clock=t=>new Date(t*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-let lastOk=0;
+const ago=s=>s==null?'–':s<60?`${Math.round(s)}s`:s<3600?`${Math.round(s/60)}m`:s<86400?`${(s/3600).toFixed(1)}h`:`${(s/86400).toFixed(1)}d`;
+const clock=t=>new Date(t*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const C={s1:css('--s1'),s2:css('--s2'),s3:css('--s3'),s4:css('--s4'),s5:css('--s5'),s6:css('--s6'),s7:css('--s7'),s8:css('--s8'),good:css('--good'),warn:css('--warn'),critical:css('--critical'),grid:'#2c2c2a',text:css('--text2'),muted:css('--muted')};
+const GLOSS={background_noise:'background too intrusive (DNSMOS BAK below 3.8)',music:'music or singing detected in the clip',bgm:'faint background music under the speech',low_snr:'estimated signal-to-noise below 20 dB',signal_quality:'speech itself distorted or muffled (DNSMOS SIG below 3.2)',overall_quality:'overall perceptual score below 3.0',p808:'P.808 listener-style score below 3.0',clipping:'flat-topped (clipped) samples',too_quiet:'level below −40 dBFS',too_loud:'level above −6 dBFS',multi_speaker:'more than one speaker inside the clip',diar_no_speaker:'diarizer found no speaker where VAD found speech',low_speech_ratio:'too much silence inside the clip',not_speech:'tagger says this is not speech',singing:'singing detected',enhance_insufficient:'still failed the gates after enhancement',enhance_failed:'enhancer error',enhance_skipped:'enhancement skipped (budget or queue backpressure)',asr_empty:'recogniser produced no text',asr_lowconf:'recogniser confidence below 0.8 (unintelligible or noisy audio)',asr_rate_low:'too few characters per second',asr_rate_high:'too many characters per second (hallucination)',script_mix:'transcript mixes scripts inside words or has stray letters from another script',script_outlier:'transcript in a different script than the rest of the recording',latin_unexpected:'Latin-script transcript in a recording that should be Indic (ASR failed)',lid_unknown:'language could not be identified',lid_lowconf:'language decision not confident',lid_too_mixed:'no language reaches 40 % of the clip',bandwidth:'narrow-band (telephone-like) audio',export_empty:'audio could not be cut',duplicate:'duplicate content'};
+const STAGES=['discovered','downloading','downloaded','decoding','diarize_queued','diarized','segmenting','enhance_queued','enhanced','rescoring','transcribe_queued','transcribed','finalizing','done','rejected','failed'];
+let state={range:'24h',lang:'',mode:'accepted',reason:'',q:'',sortKey:'accepted_hours',sortDir:-1,snap:null};
+Chart.defaults.color=C.text;Chart.defaults.font.family=getComputedStyle(document.body).fontFamily;Chart.defaults.font.size=12;
+Chart.defaults.plugins.tooltip.backgroundColor='#111';Chart.defaults.plugins.tooltip.titleColor='#fff';Chart.defaults.plugins.tooltip.bodyColor='#e8e8e2';Chart.defaults.plugins.tooltip.borderColor='#444';Chart.defaults.plugins.tooltip.borderWidth=1;Chart.defaults.plugins.tooltip.padding=10;Chart.defaults.plugins.tooltip.displayColors=true;Chart.defaults.plugins.tooltip.boxWidth=8;Chart.defaults.plugins.tooltip.boxHeight=2;
+const gridOpts={color:C.grid,drawTicks:false};const axisX={grid:gridOpts,ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:8}};const axisY=(t)=>({grid:gridOpts,beginAtZero:true,ticks:{callback:v=>t?t(v):v}});
+const charts={};
+function mk(id,cfg){charts[id]=new Chart($('#'+id),cfg);return charts[id]}
+function upd(ch,labels,datasets){ch.data.labels=labels;datasets.forEach((d,i)=>{if(!ch.data.datasets[i])ch.data.datasets[i]=d;else Object.assign(ch.data.datasets[i],d)});ch.data.datasets.length=datasets.length;ch.update('none')}
 
-function kpi(label,val,unit,desc){return `<div class="card kpi"><h3>${label}</h3><div class="v">${val}<small>${unit||''}</small></div><div class="d">${desc||''}</div></div>`}
+mk('growth',{type:'line',data:{labels:[],datasets:[]},options:{animation:false,responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{position:'top',align:'end',labels:{boxWidth:14,boxHeight:2,usePointStyle:false}},tooltip:{callbacks:{label:c=>` ${c.dataset.label}: ${fmtH(c.parsed.y)} h`}}},elements:{line:{borderWidth:2,tension:.2},point:{radius:0,hoverRadius:5,hitRadius:12}},scales:{x:axisX,y:axisY(v=>v+' h')}}});
+mk('rate',{type:'bar',data:{labels:[],datasets:[]},options:{animation:false,responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},title:{display:true,text:'accepted hours per hour',color:C.muted,font:{weight:'normal'}},tooltip:{callbacks:{label:c=>` ${c.parsed.y.toFixed(2)} h/h`}}},scales:{x:axisX,y:axisY(v=>v+' h/h')}}});
+mk('langs',{type:'bar',data:{labels:[],datasets:[]},options:{indexAxis:'y',animation:false,responsive:true,maintainAspectRatio:false,onClick:(e,items,ch)=>{if(items.length){const l=ch.data.labels[items[0].index];setLang(state.lang===l?'':l)}},plugins:{legend:{position:'top',align:'end',labels:{boxWidth:10,boxHeight:10}},tooltip:{mode:'index',callbacks:{label:c=>` ${c.dataset.label}: ${fmtH(c.parsed.x)} h`}}},scales:{x:{grid:gridOpts,beginAtZero:true,ticks:{callback:v=>v+' h'}},y:{grid:{display:false},ticks:{autoSkip:false}}}}});
+mk('funnel',{type:'bar',data:{labels:[],datasets:[]},options:{indexAxis:'y',animation:false,responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${fmtN(c.parsed.x)} sources`}}},scales:{x:{grid:gridOpts,beginAtZero:true},y:{grid:{display:false},ticks:{autoSkip:false,font:{size:11}}}}}});
+mk('reasons',{type:'bar',data:{labels:[],datasets:[]},options:{indexAxis:'y',animation:false,responsive:true,maintainAspectRatio:false,onClick:(e,items,ch)=>{if(items.length){setMode('rejected',ch.data.labels[items[0].index])}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${fmtN(c.parsed.x)} clips`,afterLabel:c=>GLOSS[c.label]||''}}},scales:{x:{grid:gridOpts,beginAtZero:true},y:{grid:{display:false},ticks:{autoSkip:false,font:{size:11}}}}}});
+for(const id of ['qhist','chist','dhist'])mk(id,{type:'bar',data:{labels:[],datasets:[]},options:{animation:false,responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>` ${fmtN(c.parsed.y)} clips`}}},scales:{x:{grid:{display:false},ticks:{maxRotation:0,autoSkip:true,maxTicksLimit:10,font:{size:10}}},y:axisY()}}});
 
+function kpi(label,val,unit,desc){return el('div',{class:'card kpi'},el('div',{class:'l',text:label}),el('div',{class:'v'},val,el('small',{text:unit||''})),el('div',{class:'d',text:desc||''}))}
 function render(s){
-  const T=s.totals,th=s.throughput;
-  const fr=s.freshness||{};const fa=fr.last_accept_age_s;
-  const fe=$('#fresh');if(fa==null){fe.textContent='no clips yet';fe.className='tag warn'}else{fe.textContent=`last clip ${ago(fa)} ago · ${fr.active_sources} sources in flight`;fe.className='tag '+(fr.stalled?'bad':fa<600?'ok':'warn')}
-  const gpu=(s.workers||[]).find(w=>w.kind==='gpu-asr');
-  const gs=gpu&&gpu.stats||{};
-  $('#kpis').innerHTML=[
-    kpi('Accepted audio',fmtH(T.accepted_hours),'h',`${fmtN(T.accepted_chunks)} chunks · avg ${T.avg_chunk_s}s`),
-    kpi('Pushed to Hub',fmtH(T.pushed_hours),'h',`${T.pushed_shards} shards · ${fmtH(T.staged_hours+T.built_unpushed_hours)} h waiting`),
-    kpi('Rate (last hour)',th['1h'].hours_per_hour.toFixed(2),'h/h',`24h: ${fmtH(th['24h'].accepted_hours)} h · 6h: ${fmtH(th['6h'].accepted_hours)} h`),
-    kpi('Chunk acceptance',(100*T.accept_ratio_chunks).toFixed(1),'%',`${fmtN(T.rejected_chunks)} rejected · ${fmtN(T.enhanced_accepted)} enhanced`),
-    kpi('Source yield',(100*T.yield_ratio).toFixed(1),'%',`${fmtH(T.source_hours_processed)} h of source processed`),
-    kpi('Sources',fmtN(T.videos_processed),'',`${fmtN(s.videos_total)} known · ${fmtN(s.videos.discovered||0)} queued`),
-    kpi('GPU',gs.gpu_util!=null?gs.gpu_util:'–','%',gs.mem_used_mb?`${(gs.mem_used_mb/1024).toFixed(1)} / ${(gs.mem_total_mb/1024).toFixed(0)} GB · ${gpu.alive?'online':'offline'}`:'no GPU heartbeat yet'),
-    kpi('Disk free',s.disk.free_gb!=null?s.disk.free_gb.toFixed(0):'–','GB',s.disk.total_gb?`${s.disk.used_pct}% used of ${s.disk.total_gb.toFixed(0)} GB`:''),
-  ].join('');
-
-  // language bars
-  const langs=s.languages.filter(l=>(l.accepted_hours||0)>0||(l.queued_videos||0)>0).slice(0,24);
-  const max=Math.max(0.01,...langs.map(l=>l.accepted_hours||0));
-  $('#langchart').innerHTML=langs.length?`<svg viewBox="0 0 600 ${langs.length*22+6}">`+langs.map((l,i)=>{const y=i*22;const w=520*(l.accepted_hours||0)/max;const wp=520*(l.pushed_hours||0)/max;return `<text x="0" y="${y+15}" fill="#8b93a7" font-size="12">${l.code}</text><rect x="36" y="${y+4}" width="${w}" height="14" rx="3" fill="#f5b942"/><rect x="36" y="${y+4}" width="${wp}" height="14" rx="3" fill="#6aa8ff" opacity=".85"/><text x="${40+w}" y="${y+15}" fill="#e8ebf2" font-size="11">${fmtH(l.accepted_hours||0)} h${l.queued_videos?` · ${l.queued_videos} queued`:''}</text>`}).join('')+'</svg>':'<div class="muted">nothing accepted yet</div>';
-
-  // push progress
-  const pp=T.push_progress;$('#push').innerHTML=`<div class="bar"><i style="width:${(100*pp).toFixed(1)}%"></i></div><div class="small muted" style="margin-top:6px">${fmtH(T.staged_hours+T.built_unpushed_hours)} h staged of ${T.next_push_hours} h → <b>${(100*pp).toFixed(0)}%</b> · target <a href="https://huggingface.co/datasets/${s.config.repo_id}" target="_blank">${s.config.repo_id}</a></div>`;
-  const q=s.gpu_jobs||{};$('#gpuq').innerHTML=`<table>${['diarize','enhance','transcribe'].map(k=>{const d=q[k]||{};const done=d.done||{};return `<tr><td>${k}</td><td class="num"><span class="tag ${d.queued_now?'warn':''}">${d.queued_now||0} queued</span> <span class="tag info">${d.running_now||0} running</span></td><td class="num muted">${done.n||0} done/24h · ${done.avg_proc_s||0}s per job</td></tr>`}).join('')}</table>`;
-
+  state.snap=s;const T=s.totals,th=s.throughput,fr=s.freshness||{};
+  const live=$('#live');const fa=fr.last_accept_age_s;live.className='pill '+(fa==null?'warn':fr.stalled?'bad':fa<900?'ok':'warn');live.lastElementChild.textContent=fa==null?'no clips yet':`last clip ${ago(fa)} ago · ${fr.active_sources} sources in flight`;
+  $('#updated').textContent='updated '+new Date(s.ts*1000).toLocaleTimeString();
+  // alerts
+  const A=$('#alerts');A.replaceChildren();
+  const dead=(s.workers||[]).filter(w=>!w.alive).map(w=>w.name);
+  if(fr.stalled)A.appendChild(el('div',{class:'alert critical',text:'Stalled: no clip accepted for 30+ minutes while sources are queued.'}));
+  if(dead.length)A.appendChild(el('div',{class:'alert critical',text:`Workers not reporting: ${dead.join(', ')}`}));
+  if(s.source.cooldown_s>0)A.appendChild(el('div',{class:'alert',text:`Source is throttling us: downloads paused for ${ago(s.source.cooldown_s)} (level ${s.source.cooldown_level}).`}));
+  if(s.disk.free_gb!=null&&s.disk.free_gb<60)A.appendChild(el('div',{class:'alert'+(s.disk.free_gb<40?' critical':''),text:`Disk free ${s.disk.free_gb} GB on the orchestrator box.`}));
+  const eq=(s.gpu_jobs.enhance||{}).queued_now||0;if(eq>25)A.appendChild(el('div',{class:'alert',text:`Enhancer queue is deep (${eq} jobs); backpressure is skipping enhancement for new sources.`}));
+  if(!A.children.length)A.appendChild(el('div',{class:'alert good',text:'All systems normal.'}));
+  // KPIs
+  const gpu=(s.workers||[]).find(w=>w.kind==='gpu-asr');const gs=gpu&&gpu.stats||{};
+  $('#kpis').replaceChildren(
+    kpi('accepted speech',fmtH(T.accepted_hours),'h',`${fmtN(T.accepted_chunks)} clips · average ${T.avg_chunk_s} s`),
+    kpi('on the hub',fmtH(T.pushed_hours),'h',`${T.pushed_shards} shards · next push at 10 h, ${fmtH(T.staged_hours+T.built_unpushed_hours)} h ready (${(100*T.push_progress).toFixed(0)}%)`),
+    kpi('rate, last hour',th['1h'].hours_per_hour.toFixed(2),'h/h',`6h ${fmtH(th['6h'].accepted_hours)} h · 24h ${fmtH(th['24h'].accepted_hours)} h`),
+    kpi('yield',(100*T.yield_ratio).toFixed(1),'%',`of ${fmtH(T.source_hours_processed)} h of source audio survives all gates`),
+    kpi('clip acceptance',(100*T.accept_ratio_chunks).toFixed(1),'%',`${fmtN(T.rejected_chunks)} clips rejected · ${fmtN(T.enhanced_accepted)} rescued by enhancement`),
+    kpi('sources',fmtN(T.videos_processed),'',`${fmtN(s.videos.discovered||0)} queued in ${s.config.languages.length} languages · ${fmtN(s.source.channels)} channels`),
+  );
+  // languages
+  const langs=(s.languages||[]).filter(l=>(l.accepted_hours||0)>0||(l.pushed_hours||0)>0);
+  const sel=$('#langsel');const cur=sel.value;sel.replaceChildren(el('option',{value:'',text:'all languages'}),...s.languages.map(l=>el('option',{value:l.code,text:`${l.code} · ${l.name}`})));sel.value=cur;
+  const top=langs.slice().sort((a,b)=>(b.accepted_hours||0)-(a.accepted_hours||0)).slice(0,20);
+  upd(charts.langs,top.map(l=>l.code),[{label:'accepted',data:top.map(l=>l.accepted_hours||0),backgroundColor:top.map(l=>state.lang&&state.lang!==l.code?'#3a4a60':C.s1),borderRadius:4,barPercentage:.7,categoryPercentage:.8},{label:'on the hub',data:top.map(l=>l.pushed_hours||0),backgroundColor:top.map(l=>state.lang&&state.lang!==l.code?'#5a3a2f':C.s2),borderRadius:4,barPercentage:.7,categoryPercentage:.8}]);
+  renderLangTable(s.languages);
   // funnel
-  const order=['discovered','downloading','downloaded','decoding','diarize_queued','diarized','segmenting','enhance_queued','enhanced','rescoring','transcribe_queued','transcribed','finalizing','done','rejected','failed'];
-  const vmax=Math.max(1,...order.map(k=>s.videos[k]||0));
-  $('#funnel').innerHTML=order.map(k=>{const n=s.videos[k]||0;const c=k==='done'?'var(--green)':k==='rejected'?'var(--amber)':k==='failed'?'var(--red)':'var(--blue)';return `<div><b>${k.replace('_',' ')}</b><div class="bar"><i style="width:${100*n/vmax}%;background:${c}"></i></div><span>${fmtN(n)}</span></div>`}).join('');
-
-  // series
-  const ser=s.series||[];if(ser.length>1){const W=600,H=170,P=30;const t0=ser[0].ts,t1=ser[ser.length-1].ts;const x=t=>P+(W-2*P)*(t-t0)/Math.max(1,t1-t0);const ymax=Math.max(0.05,...ser.map(p=>p.accepted_h||0));const y=v=>H-P+4-(H-2*P)*v/ymax;
-    const rate=[];for(let i=1;i<ser.length;i++){const dt=(ser[i].ts-ser[i-1].ts)/3600;rate.push({ts:ser[i].ts,r:dt>0?(ser[i].accepted_h-ser[i-1].accepted_h)/dt:0})}
-    const rmax=Math.max(0.05,...rate.map(p=>p.r));const yr=v=>H-P+4-(H-2*P)*v/rmax;
-    const path=(pts,fx,fy)=>pts.map((p,i)=>(i?'L':'M')+fx(p).toFixed(1)+','+fy(p).toFixed(1)).join(' ');
-    $('#series').innerHTML=`<svg viewBox="0 0 ${W} ${H}"><line x1="${P}" y1="${H-P+4}" x2="${W-P}" y2="${H-P+4}" stroke="#262c3b"/><path d="${path(rate,p=>x(p.ts),p=>yr(p.r))}" fill="none" stroke="#4fd1c5" stroke-width="1.2" opacity=".8"/><path d="${path(ser,p=>x(p.ts),p=>y(p.pushed_h||0))}" fill="none" stroke="#6aa8ff" stroke-width="2"/><path d="${path(ser,p=>x(p.ts),p=>y(p.accepted_h||0))}" fill="none" stroke="#f5b942" stroke-width="2.2"/><text x="${P}" y="14" fill="#8b93a7" font-size="11">${fmtH(ymax)} h</text><text x="${W-P}" y="14" fill="#4fd1c5" font-size="11" text-anchor="end">${rmax.toFixed(2)} h/h</text><text x="${P}" y="${H-6}" fill="#8b93a7" font-size="10">${new Date(t0*1000).toLocaleString()}</text><text x="${W-P}" y="${H-6}" fill="#8b93a7" font-size="10" text-anchor="end">${new Date(t1*1000).toLocaleString()}</text></svg>`}
-  else $('#series').innerHTML='<div class="muted small">collecting points…</div>';
-
+  const fl=STAGES.filter(k=>k!=='discovered');upd(charts.funnel,fl.map(k=>k.replace('_',' ')),[{data:fl.map(k=>s.videos[k]||0),backgroundColor:fl.map(k=>k==='done'?C.good:k==='rejected'?C.warn:k==='failed'?C.critical:C.s1),borderRadius:4,barPercentage:.7}]);
   // reasons
-  const rs=Object.entries(s.reject_reasons_24h||{});const rmax2=Math.max(1,...rs.map(r=>r[1]));
-  $('#reasons').innerHTML=rs.length?`<svg viewBox="0 0 600 ${rs.length*20+4}">`+rs.map((r,i)=>`<text x="0" y="${i*20+14}" fill="#8b93a7" font-size="11">${esc(r[0])}</text><rect x="160" y="${i*20+4}" width="${400*r[1]/rmax2}" height="12" rx="3" fill="#ff6b6b" opacity=".8"/><text x="${164+400*r[1]/rmax2}" y="${i*20+14}" fill="#e8ebf2" font-size="11">${fmtN(r[1])}</text>`).join('')+'</svg>':'<div class="muted small">none yet</div>';
-  const vr=Object.entries(s.video_reject_reasons_24h||{});if(vr.length)$('#reasons').innerHTML+=`<div class="small muted" style="margin-top:8px">sources rejected: ${vr.map(r=>`${esc(r[0])} <b>${r[1]}</b>`).join(' · ')}</div>`;
-
+  const rs=Object.entries(s.reject_reasons_24h||{}).slice(0,14);upd(charts.reasons,rs.map(r=>r[0]),[{data:rs.map(r=>r[1]),backgroundColor:rs.map(r=>state.mode==='rejected'&&state.reason===r[0]?C.s2:C.s8),borderRadius:4,barPercentage:.7}]);
+  const rsel=$('#reasonsel');const rc=rsel.value;rsel.replaceChildren(el('option',{value:'',text:'any reason'}),...rs.map(r=>el('option',{value:r[0],text:r[0]})));rsel.value=state.reason||rc;
+  $('#gloss').replaceChildren(...Object.entries(GLOSS).filter(([k])=>s.reject_reasons_24h&&s.reject_reasons_24h[k]).map(([k,v])=>el('div',{},el('b',{text:k}),' — '+v)));
   // histograms
-  const hist=(h,color,labels)=>{const m=Math.max(1,...h.counts);const n=h.counts.length;const W=600,H=140;const bw=(W-10)/n;return `<svg viewBox="0 0 ${W} ${H}">`+h.counts.map((c,i)=>`<rect x="${5+i*bw}" y="${H-24-(H-34)*c/m}" width="${bw-2}" height="${(H-34)*c/m}" rx="2" fill="${color}"/><text x="${5+i*bw+bw/2}" y="${H-8}" fill="#8b93a7" font-size="9" text-anchor="middle">${labels(i)}</text>`).join('')+'</svg>'};
-  const qh=s.quality_hist;$('#qhist').innerHTML=hist(qh,'#4fd18b',i=>(qh.lo+i*(qh.hi-qh.lo)/qh.bins).toFixed(1));
-  const dh=s.duration_hist;$('#dhist').innerHTML=hist({counts:dh.counts},'#b48cff',i=>`${dh.edges[i]}-${dh.edges[i+1]>30?30:dh.edges[i+1]}s`);
-
-  // workers
-  $('#workers').innerHTML='<tr><th>name</th><th>state</th><th>current</th><th class="num">beat</th><th>stats</th></tr>'+(s.workers||[]).map(w=>{const st=w.stats||{};const keys=Object.keys(st).filter(k=>!['gpu_util','mem_used_mb','mem_total_mb','temp_c'].includes(k)).slice(0,6);return `<tr><td><span class="tag ${w.alive?'ok':'bad'}">${w.alive?'●':'✕'}</span> ${esc(w.name)}</td><td>${esc(w.state)}</td><td class="muted">${esc(w.current||'')}</td><td class="num muted">${ago(w.age_s)}</td><td class="muted mono">${keys.map(k=>`${k}=${typeof st[k]==='number'?(Number.isInteger(st[k])?st[k]:st[k].toFixed(1)):st[k]}`).join(' ')}</td></tr>`}).join('');
-
-  // active
-  $('#active').innerHTML='<tr><th>source</th><th>lang</th><th>stage</th><th class="num">length</th><th class="num">for</th></tr>'+(s.active_videos||[]).map(v=>`<tr><td title="${esc(v.title)}">${esc((v.title||v.id).slice(0,48))}</td><td>${esc(v.lang)}</td><td><span class="tag info">${esc(v.status)}</span></td><td class="num">${v.duration_s?ago(v.duration_s):''}</td><td class="num muted">${ago(v.since_s)}</td></tr>`).join('')||'<tr><td class="muted">idle</td></tr>';
-
-  // language table
-  $('#langtable').innerHTML='<tr><th>lang</th><th class="num">accepted</th><th class="num">pushed</th><th class="num">chunks</th><th class="num">rej</th><th class="num">queued</th></tr>'+s.languages.map(l=>`<tr><td><b>${l.code}</b> <span class="muted">${esc(l.name)}</span></td><td class="num">${fmtH(l.accepted_hours||0)} h</td><td class="num">${fmtH(l.pushed_hours||0)} h</td><td class="num">${fmtN(l.accepted_chunks||0)}</td><td class="num muted">${fmtN(l.rejected_chunks||0)}</td><td class="num muted">${l.queued_videos||0}</td></tr>`).join('');
-
-  // recent
-  $('#recent').innerHTML='<tr><th>source</th><th>lang</th><th>result</th><th class="num">kept</th><th class="num">when</th></tr>'+(s.recent_videos||[]).map(v=>{const st=v.stats||{};const acc=st.accepted_sec||0;const y=v.duration_s?acc/v.duration_s:0;const cls=v.status==='done'?(y>0.3?'ok':'warn'):v.status==='rejected'?'warn':'bad';return `<tr><td title="${esc(v.title)}">${esc((v.title||v.id).slice(0,52))}<div class="muted small">${esc(v.channel||'')}</div></td><td>${esc(v.lang)}</td><td><span class="tag ${cls}">${v.status}</span>${v.error?`<div class="muted small">${esc(String(v.error).slice(0,70))}</div>`:''}</td><td class="num">${v.status==='done'?`${(acc/60).toFixed(1)} min<div class="muted small">${(100*y).toFixed(0)}% · ${st.accepted_chunks||0} ch</div>`:''}</td><td class="num muted">${ago(s.ts-v.updated_at)}</td></tr>`}).join('');
-
-  // events & pushes
-  $('#events').innerHTML=(s.events||[]).map(e=>`<div class="ev ${e.level}"><time>${clock(e.ts)}</time><span class="tag">${esc(e.kind)}</span> ${esc(e.msg)}</div>`).join('');
-  $('#pushes').innerHTML=(s.pushes||[]).map(p=>`<div class="ev ${p.status==='failed'?'error':''}"><time>${new Date(p.started_at*1000).toLocaleString()}</time><span class="tag ${p.status==='done'?'ok':p.status==='failed'?'bad':'warn'}">${p.status}</span> ${fmtH(p.hours||0)} h · ${p.n_shards} shards · ${((p.bytes||0)/1e9).toFixed(2)} GB ${p.commit_url?`· <a href="${esc(p.commit_url)}" target="_blank">commit</a>`:''} ${p.error?`· <span class="muted">${esc(p.error.slice(0,80))}</span>`:''}</div>`).join('')||'<div class="muted small">no pushes yet</div>';
-  $('#foot').textContent=`repo ${s.config.repo_id} · export ${s.config.export_sr/1000} kHz · push every ${s.config.push_every_hours} h · workers ${JSON.stringify(s.config.workers)} · source cooldown ${s.source.cooldown_s?s.source.cooldown_s+'s':'none'} · ${s.source.queries} queries · ${s.source.channels} channels`;
+  const qh=s.quality_hist;upd(charts.qhist,qh.counts.map((_,i)=>(qh.lo+i*(qh.hi-qh.lo)/qh.bins).toFixed(2)),[{data:qh.counts,backgroundColor:C.s3,borderRadius:3}]);
+  const ch=s.asr_conf_hist||{counts:[],lo:0.5,hi:1,bins:10};upd(charts.chist,ch.counts.map((_,i)=>(ch.lo+i*(ch.hi-ch.lo)/ch.bins).toFixed(2)),[{data:ch.counts,backgroundColor:C.s7,borderRadius:3}]);
+  const dh=s.duration_hist;upd(charts.dhist,dh.counts.map((_,i)=>`${dh.edges[i]}–${Math.min(30,dh.edges[i+1])}`),[{data:dh.counts,backgroundColor:C.s4,borderRadius:3}]);
+  // workers + machine
+  const W=$('#workers');W.replaceChildren(el('tr',{},el('th',{text:'worker'}),el('th',{text:'state'}),el('th',{text:'working on'}),el('th',{class:'num',text:'beat'})));
+  for(const w of s.workers||[])W.appendChild(el('tr',{},el('td',{},el('span',{class:'tag '+(w.alive?'ok':'bad'),text:w.alive?'●':'✕'}),' '+w.name),el('td',{text:w.state||''}),el('td',{class:'muted',text:(w.current||'').slice(0,70)}),el('td',{class:'num muted',text:ago(w.age_s)})));
+  const M=$('#machine');M.replaceChildren();
+  const memPct=gs.mem_total_mb?100*gs.mem_used_mb/gs.mem_total_mb:0;
+  M.appendChild(el('div',{class:'small muted',text:'GPU (shared with production TTS; our two workers are memory-capped)'}));
+  M.appendChild(el('div',{style:'margin:6px 0 2px'},el('b',{text:gs.gpu_util!=null?`${gs.gpu_util}% busy`:'no heartbeat'}),el('span',{class:'muted',text:gs.mem_total_mb?`  ·  ${(gs.mem_used_mb/1024).toFixed(1)} of ${(gs.mem_total_mb/1024).toFixed(0)} GB used by everyone`:''})));
+  M.appendChild(el('div',{class:'bar'},el('i',{style:`width:${memPct.toFixed(0)}%;background:${memPct>90?C.critical:memPct>80?C.warn:C.s1}`})));
+  const q=s.gpu_jobs||{};const QT=el('table',{style:'margin-top:10px'},el('tr',{},el('th',{text:'gpu queue'}),el('th',{class:'num',text:'waiting'}),el('th',{class:'num',text:'running'}),el('th',{class:'num',text:'done 24h'}),el('th',{class:'num',text:'per job'})));
+  for(const k of ['diarize','transcribe','enhance']){const d=q[k]||{};const dn=d.done||{};QT.appendChild(el('tr',{},el('td',{text:k}),el('td',{class:'num',text:fmtN(d.queued_now||0)}),el('td',{class:'num',text:fmtN(d.running_now||0)}),el('td',{class:'num muted',text:fmtN(dn.n||0)}),el('td',{class:'num muted',text:dn.avg_proc_s?`${dn.avg_proc_s}s / ${dn.avg_audio_s}s audio`:'–'})))}
+  M.appendChild(QT);
+  M.appendChild(el('div',{class:'small muted',style:'margin-top:10px',text:`Orchestrator disk: ${s.disk.free_gb} GB free of ${s.disk.total_gb} GB (${s.disk.used_pct}% used, shared box). Work dir cleans itself per source; pushes delete local shards after the Hub confirms them.`}));
+  // recent sources
+  const R=$('#recent');R.replaceChildren(el('tr',{},el('th',{text:'source'}),el('th',{text:'lang'}),el('th',{text:'result'}),el('th',{class:'num',text:'kept'}),el('th',{class:'num',text:'when'})));
+  for(const v of s.recent_videos||[]){const st=v.stats||{};const acc=st.accepted_sec||0;const y=v.duration_s?acc/v.duration_s:0;const cls=v.status==='done'?(y>0.3?'ok':'warn'):v.status==='rejected'?'warn':'bad';
+    R.appendChild(el('tr',{},el('td',{title:v.title||''},(v.title||v.id).slice(0,52),el('div',{class:'muted small',text:v.channel||''})),el('td',{text:v.lang||''}),el('td',{},el('span',{class:'tag '+cls,text:v.status}),v.error?el('div',{class:'muted small',text:String(v.error).slice(0,70)}):null),el('td',{class:'num',text:v.status==='done'?`${(acc/60).toFixed(1)} min (${(100*y).toFixed(0)}%)`:''}),el('td',{class:'num muted',text:ago(s.ts-v.updated_at)})))}
+  // pushes + events
+  const P=$('#pushes');P.replaceChildren();for(const p of s.pushes||[]){P.appendChild(el('div',{class:'ev'+(p.status==='failed'?' error':'')},el('time',{text:new Date(p.started_at*1000).toLocaleString()}),el('span',{class:'tag '+(p.status==='done'?'ok':p.status==='failed'?'bad':'warn'),text:p.status}),` ${fmtH(p.hours||0)} h · ${p.n_shards} shards · ${((p.bytes||0)/1e9).toFixed(2)} GB `,p.commit_url?el('a',{href:p.commit_url,target:'_blank',text:'commit'}):null,p.error?el('span',{class:'muted',text:' · '+p.error.slice(0,80)}):null))}
+  if(!P.children.length)P.appendChild(el('div',{class:'muted small',text:'no pushes yet'}));
+  const E=$('#events');E.replaceChildren(...(s.events||[]).map(e=>el('div',{class:'ev '+e.level},el('time',{text:clock(e.ts)}),el('span',{class:'tag',text:e.kind}),' '+e.msg)));
+  $('#foot').textContent=`dataset ${s.config.repo_id} · ${s.config.export_sr/1000} kHz FLAC · push every ${s.config.push_every_hours} h · ${s.source.queries} search queries run`;
 }
-
-async function poll(){
-  try{const r=await fetch('api/status',{cache:'no-store'});const s=await r.json();if(!s.ts)throw new Error('empty');render(s);lastOk=Date.now();$('#dot').classList.remove('stale');$('#updated').textContent='updated '+clock(s.ts)}
-  catch(e){$('#dot').classList.add('stale');$('#updated').textContent='no data ('+e.message+')'}
-}
-async function chunks(){
-  try{const r=await fetch('api/recent_chunks?limit=24',{cache:'no-store'});const rows=await r.json();
-    $('#chunks').innerHTML=rows.map(c=>{const m=c.metrics||{};const mix=Object.entries((c.lid||{}).composition||{}).map(([k,v])=>`${k} ${(100*v).toFixed(0)}%`).join(', ');return `<div class="chunk"><div>${c.preview?`<audio controls preload="none" src="${c.preview}"></audio>`:'<span class="muted small">no preview</span>'}<div class="muted small">${(c.dur_ms/1000).toFixed(1)}s · spk ${c.speaker}${c.enhanced?' · <span class="tag warn">enhanced</span>':''}</div></div><div><div class="t">${esc(c.text)}</div><div class="m"><span class="tag ok">${esc(c.lang)}</span> conf ${(c.lang_conf||0).toFixed(2)} ${mix?`· mix ${esc(mix)}`:''} · OVRL ${m.dnsmos_ovrl} SIG ${m.dnsmos_sig} BAK ${m.dnsmos_bak} · SNR ${m.snr_db} dB · music ${m.music_prob} · <span title="${esc(c.title)}">${esc((c.title||'').slice(0,50))}</span></div></div></div>`}).join('')||'<div class="muted small">nothing accepted yet</div>'}
-  catch(e){}
-}
-poll();chunks();setInterval(poll,5000);setInterval(chunks,15000);
+function renderLangTable(L){const cols=[['code','language',0],['accepted_hours','accepted h',1],['pushed_hours','on hub h',1],['accepted_chunks','clips',1],['rejected_chunks','rejected',1],['queued_videos','queued',1]];
+  const rows=(L||[]).slice().sort((a,b)=>{const k=state.sortKey;const x=a[k]??(typeof a[k]==='string'?'':0),y=b[k]??0;return (x<y?-1:x>y?1:0)*state.sortDir});
+  const T=$('#langtable');T.replaceChildren(el('tr',{},...cols.map(([k,t,n])=>el('th',{class:(n?'num ':'')+(state.sortKey===k?'sorted':''),onclick:()=>{state.sortDir=state.sortKey===k?-state.sortDir:-1;state.sortKey=k;renderLangTable(state.snap.languages)},text:t}))));
+  for(const l of rows){T.appendChild(el('tr',{class:'pick'+(state.lang===l.code?' sel':''),onclick:()=>setLang(state.lang===l.code?'':l.code)},el('td',{},el('b',{text:l.code}),el('span',{class:'muted',text:'  '+(l.name||'')})),el('td',{class:'num',text:fmtH(l.accepted_hours||0)}),el('td',{class:'num',text:fmtH(l.pushed_hours||0)}),el('td',{class:'num',text:fmtN(l.accepted_chunks||0)}),el('td',{class:'num muted',text:fmtN(l.rejected_chunks||0)}),el('td',{class:'num muted',text:fmtN(l.queued_videos||0)})))}}
+function setLang(l){state.lang=l;$('#langsel').value=l;$('#filterhint').textContent=l?`showing clips for ${l}`:'';if(state.snap)render(state.snap);clips()}
+function setMode(m,reason){state.mode=m;state.reason=reason||'';document.querySelectorAll('#listmode button').forEach(b=>b.classList.toggle('on',b.dataset.m===m));$('#reasonsel').hidden=m!=='rejected';$('#reasonsel').value=state.reason;if(state.snap)render(state.snap);clips();if(reason)$('#clips').scrollIntoView({behavior:'smooth',block:'start'})}
+async function poll(){try{const r=await fetch('api/status',{cache:'no-store'});const s=await r.json();if(!s.ts)throw new Error('empty');render(s)}catch(e){$('#live').className='pill bad';$('#live').lastElementChild.textContent='no data: '+e.message}}
+async function growth(){try{const r=await fetch('api/series?range='+state.range,{cache:'no-store'});const pts=await r.json();
+  const lab=pts.map(p=>{const d=new Date(p.ts*1000);return state.range==='1h'||state.range==='6h'?d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})});
+  upd(charts.growth,lab,[{label:'accepted',data:pts.map(p=>p.accepted_h||0),borderColor:C.s1,backgroundColor:C.s1},{label:'on the hub',data:pts.map(p=>p.pushed_h||0),borderColor:C.s2,backgroundColor:C.s2}]);
+  // hourly rate buckets
+  const bucket=state.range==='1h'?300:state.range==='6h'?900:state.range==='24h'?3600:state.range==='7d'?6*3600:86400;const B=new Map();
+  for(const p of pts){const k=Math.floor(p.ts/bucket)*bucket;const b=B.get(k)||{min:p.accepted_h,max:p.accepted_h};b.min=Math.min(b.min,p.accepted_h||0);b.max=Math.max(b.max,p.accepted_h||0);B.set(k,b)}
+  const keys=[...B.keys()].sort();upd(charts.rate,keys.map(k=>new Date(k*1000).toLocaleString([], bucket>=86400?{month:'short',day:'numeric'}:{hour:'2-digit',minute:'2-digit'})),[{data:keys.map(k=>(B.get(k).max-B.get(k).min)*3600/bucket),backgroundColor:C.s3,borderRadius:4,barPercentage:.8}]);
+  charts.rate.options.plugins.title.text=`accepted hours per hour (${bucket/60} min buckets)`;charts.rate.update('none');
+}catch(e){}}
+async function clips(){try{const p=new URLSearchParams({limit:'40',status:state.mode});if(state.lang)p.set('lang',state.lang);if(state.q)p.set('q',state.q);if(state.mode==='rejected'&&state.reason)p.set('reason',state.reason);
+  const r=await fetch('api/recent_chunks?'+p,{cache:'no-store'});const rows=await r.json();const L=$('#clips');L.replaceChildren();
+  $('#listinfo').textContent=`${rows.length} ${state.mode} clips${state.lang?' · '+state.lang:''}${state.reason?' · '+state.reason:''}`;
+  for(const c of rows){const m=c.metrics||{};const mix=Object.entries((c.lid||{}).composition||{}).map(([k,v])=>`${k} ${(100*v).toFixed(0)}%`).join(', ');
+    const left=el('div',{},c.preview?el('audio',{controls:'',preload:'none',src:c.preview}):el('span',{class:'muted small',text:'no preview kept'}),el('div',{class:'muted small',text:`${(c.dur_ms/1000).toFixed(1)} s · speaker ${c.speaker}${c.enhanced?' · enhanced':''}${c.reject_reason?' · '+c.reject_reason:''}`}));
+    const meta=el('div',{class:'m'},el('span',{class:'tag ok',text:c.lang||'?'}),` lang conf ${(c.lang_conf||0).toFixed(2)}${mix?' · '+mix:''} · OVRL ${m.dnsmos_ovrl??'–'} · SIG ${m.dnsmos_sig??'–'} · BAK ${m.dnsmos_bak??'–'} · SNR ${m.snr_db??'–'} dB${m.asr_conf!=null?' · ASR conf '+m.asr_conf:''} · `,el('span',{class:'muted',title:c.title||'',text:(c.title||'').slice(0,50)}));
+    L.appendChild(el('div',{class:'clip'},left,el('div',{},el('div',{class:'t',text:c.text||''}),meta)))}
+  if(!rows.length)L.appendChild(el('div',{class:'muted small',text:'nothing to show for this filter'}))}catch(e){}}
+$('#range').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;state.range=b.dataset.r;document.querySelectorAll('#range button').forEach(x=>x.classList.toggle('on',x===b));growth()});
+$('#langsel').addEventListener('change',e=>setLang(e.target.value));
+$('#listmode').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setMode(b.dataset.m,'')});
+$('#reasonsel').addEventListener('change',e=>{state.reason=e.target.value;if(state.snap)render(state.snap);clips()});
+let qt;$('#q').addEventListener('input',e=>{clearTimeout(qt);qt=setTimeout(()=>{state.q=e.target.value.trim();clips()},300)});
+poll();growth();clips();setInterval(poll,5000);setInterval(growth,30000);setInterval(clips,20000);
 </script>
 </body></html>

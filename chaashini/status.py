@@ -131,8 +131,7 @@ def snapshot(conn: sqlite3.Connection, cfg: Config) -> dict:
     out["source"] = {"cooldown_until": cd, "cooldown_s": max(0, round(cd - t)), "cooldown_level": kv_get(conn, "source_cooldown_level", 0) or 0,
                      "queries": conn.execute("SELECT COUNT(*) n FROM queries").fetchone()["n"],
                      "channels": conn.execute("SELECT COUNT(*) n FROM channels").fetchone()["n"]}
-    out["series"] = [{"ts": r["ts"], **(uj(r["data_json"], {}) or {})} for r in conn.execute(
-        "SELECT ts, data_json FROM metrics WHERE ts > ? ORDER BY ts", (t - 7 * 86400,))]
+    out["asr_conf_hist"] = _hist(conn, "asr_conf", 0.5, 1.0, 10)
     out["config"] = {"push_every_hours": cfg.hf.push_every_hours, "repo_id": cfg.hf.repo_id, "export_sr": cfg.audio.export_sr,
                      "languages": [l.code for l in cfg.enabled_languages()], "workers": cfg.workers.model_dump()}
     return out
@@ -162,6 +161,17 @@ def _dur_hist(conn: sqlite3.Connection) -> dict:
                 counts[i] += 1
                 break
     return {"edges": edges, "counts": counts}
+
+
+def series(conn: sqlite3.Connection, seconds: int, max_points: int = 240) -> list[dict]:
+    """Downsampled time series (accepted / pushed hours, sources done, GPU queue) for the growth chart."""
+    t = now()
+    rows = [{"ts": r["ts"], **(uj(r["data_json"], {}) or {})} for r in conn.execute(
+        "SELECT ts, data_json FROM metrics WHERE ts > ? ORDER BY ts", (t - seconds,))]
+    if len(rows) <= max_points:
+        return rows
+    step = len(rows) / max_points
+    return [rows[int(i * step)] for i in range(max_points)] + [rows[-1]]
 
 
 def metrics_point(conn: sqlite3.Connection, cfg: Config) -> dict:
