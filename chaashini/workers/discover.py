@@ -88,8 +88,12 @@ class DiscoverWorker(Worker):
             "AND source_sec > 0 AND ((videos_done >= ? AND accepted_sec/source_sec >= ?) OR (videos_done >= 1 AND accepted_sec/source_sec >= ?)) "
             "ORDER BY accepted_sec DESC LIMIT 8",
             (dc.channel_expand_min_videos, dc.channel_expand_min_accept_ratio, dc.low_resource_expand_ratio)).fetchall()
-        rows = [r for r in rows if (r["accepted_sec"] / max(r["source_sec"], 1) >= dc.channel_expand_min_accept_ratio
-                                    and r["videos_done"] >= dc.channel_expand_min_videos) or (r["lang_hint"] in scarce)]
+        # channel expansion must respect the configured priorities: a de-prioritised language (weight < 1.0,
+        # e.g. English) is never crawled wholesale, however well one of its channels performs.
+        weight = {l.code: l.weight for l in self.cfg.enabled_languages()}
+        rows = [r for r in rows if weight.get(r["lang_hint"], 0.0) >= 1.0
+                and ((r["accepted_sec"] / max(r["source_sec"], 1) >= dc.channel_expand_min_accept_ratio
+                      and r["videos_done"] >= dc.channel_expand_min_videos) or (r["lang_hint"] in scarce))]
         added = 0
         for ch in rows:
             if added >= budget or self.stop:
