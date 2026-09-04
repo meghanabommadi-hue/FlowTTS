@@ -55,8 +55,28 @@ class Models:
         log.info("diarizer loaded in %.1fs", time.time() - t)
 
     # ------------------------------------------------------------------ diarization
-    def diarize(self, wav16: np.ndarray) -> tuple[list[list], np.ndarray]:
-        segs, probs = self.diar.diarize(audio=[wav16.astype(np.float32)], batch_size=1, sample_rate=16000, include_tensor_outputs=True)
+    def diarize(self, wav16: np.ndarray, _depth: int = 0) -> tuple[list[list], np.ndarray]:
+        """Diarize a whole recording. Memory grows with length and our allocator share is capped, so on
+        OOM the audio is split in half and each part diarized separately; speakers of part j are mapped to
+        columns 4j..4j+3 of the probability matrix (labels stay distinct, never merged wrongly)."""
+        try:
+            segs, probs = self.diar.diarize(audio=[wav16.astype(np.float32)], batch_size=1, sample_rate=16000, include_tensor_outputs=True)
+        except self.torch.OutOfMemoryError:
+            self.torch.cuda.empty_cache()
+            if len(wav16) < 16000 * 300 or _depth > 4:
+                raise
+            mid = len(wav16) // 2
+            log.warning("diarize OOM on %.0fs of audio; splitting", len(wav16) / 16000)
+            seg_a, p_a = self.diarize(wav16[:mid], _depth + 1)
+            seg_b, p_b = self.diarize(wav16[mid:], _depth + 1)
+            off_s = mid / 16000.0
+            width = max(p_a.shape[1], 4)
+            k = width // 4 if width % 4 == 0 else 1
+            seg_b = [[a + off_s, b + off_s, spk + 4 * k] for a, b, spk in seg_b]
+            out = np.zeros((p_a.shape[0] + p_b.shape[0], p_a.shape[1] + p_b.shape[1]), dtype=np.float16)
+            out[: p_a.shape[0], : p_a.shape[1]] = p_a
+            out[p_a.shape[0]:, p_a.shape[1]:] = p_b
+            return seg_a + seg_b, out
         p = probs[0]
         if hasattr(p, "detach"):
             p = p.detach().float().cpu().numpy()
