@@ -590,7 +590,24 @@ class ProcessWorker(Worker):
             stats_prev = D.uj(v["stats_json"], {}) or {}
             stats_prev["india_cues"] = cues
             self.conn.execute("UPDATE videos SET stats_json=? WHERE id=?", (D.j(stats_prev), v["id"]))
-            if cues == 0 and total_s >= 600:
+            verdict = self.conn.execute("SELECT india_verdict, india_conf FROM channels WHERE id=?", (v["channel_id"],)).fetchone() if v["channel_id"] else None
+            verdict_ok = bool(verdict and verdict["india_verdict"] == "yes" and (verdict["india_conf"] or 0) >= 0.7)
+            if not verdict_ok:
+                # the creator check never ran (or said no): run it now on title/channel/description + a transcript sample
+                from ..llm import LLM, judge_indian_english
+                meta = D.uj(v["meta_json"], {}) or {}
+                sample = " ".join(t[0] for t in list(texts_ok.values())[:40])[:1500]
+                ok, conf, why = judge_indian_english(LLM(self.cfg.llm), v["title"] or "", v["channel"] or "",
+                                                     (meta.get("description") or "") + "\n\nTRANSCRIPT SAMPLE: " + sample, meta.get("tags") or [])
+                verdict_ok = ok and conf >= 0.7
+                stats_prev["india_judge"] = {"ok": ok, "conf": conf, "why": why[:120]}
+                self.conn.execute("UPDATE videos SET stats_json=? WHERE id=?", (D.j(stats_prev), v["id"]))
+                if v["channel_id"]:
+                    self.conn.execute("INSERT INTO channels(id, name, lang_hint, updated_at, india_verdict, india_conf) VALUES (?,?,?,?,?,?) "
+                                      "ON CONFLICT(id) DO UPDATE SET india_verdict=excluded.india_verdict, india_conf=excluded.india_conf",
+                                      (v["channel_id"], v["channel"], "en", time.time(), "yes" if verdict_ok else "no", conf))
+            need_cues = 1 if total_s < 600 else 3
+            if not verdict_ok or cues < need_cues:
                 for cid in texts_ok:
                     self.conn.execute("UPDATE chunks SET status='rejected', reject_reason='not_indian_english', text=?, updated_at=? WHERE id=?", (texts_ok[cid][0], time.time(), cid))
                 reasons["not_indian_english"] = reasons.get("not_indian_english", 0) + len(texts_ok)

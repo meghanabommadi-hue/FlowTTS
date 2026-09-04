@@ -38,6 +38,9 @@ class DownloadWorker(Worker):
     def indian_english_check(self, v):
         """Pre-download gate for English items: the creator must be Indian (LLM verdict, cached per channel)."""
         def check(info: dict):
+            declared = (info.get("language") or "").split("-")[0].lower()
+            if v["lang_hint"] != "en" and declared != "en":
+                return None                      # not an English video: the LID/consensus gates handle it later
             ch = info.get("channel_id") or v["channel_id"]
             if ch:
                 r = self.conn.execute("SELECT india_verdict, india_conf FROM channels WHERE id=?", (ch,)).fetchone()
@@ -135,7 +138,7 @@ class DownloadWorker(Worker):
         out_dir = self.cfg.paths.work_dir / vid
         t0 = time.time()
         try:
-            extra = self.indian_english_check(v) if v["lang_hint"] == "en" else None
+            extra = self.indian_english_check(v)   # applies itself only to English (declared or discovered) videos
             dl = download(self.cfg.source, vid, out_dir, allowed_langs=self.allowed, cookies_file=ck, proxy=px, extra_check=extra)
         except SkipVideo as e:
             self.stats["skipped"] += 1
