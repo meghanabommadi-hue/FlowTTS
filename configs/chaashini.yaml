@@ -107,18 +107,18 @@ quality:
     rms_dbfs_min: -40.0
     rms_dbfs_max: -6.0
     clipping_max: 0.001
-    bandwidth_hz_min: 6000.0
+    bandwidth_hz_min: 4500.0
     vad_ratio_min: 0.6
   enhance:                     # failing chunks inside these bounds get enhanced, then re-scored against `accept`
     enabled: true
     ovrl_min: 2.3
-    sig_min: 2.8
+    sig_min: 3.3
     snr_db_min: 8.0
     music_prob_max: 0.3
     max_fraction_per_video: 0.4
     max_chunks_per_video: 400
     mode: enhance              # enhance | denoise
-    nfe: 32
+    nfe: 16
     solver: midpoint
     lambd: 0.5
     tau: 0.5

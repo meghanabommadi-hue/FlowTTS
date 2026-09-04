@@ -52,6 +52,26 @@ The source site throttles datacenter IPs. Levers, in order:
    for yt-dlp (`bgutil-ytdlp-pot-provider`) — see the yt-dlp wiki (EJS / PO Token guides).
 4. Channel expansion is the biggest free lever: every well-yielding channel is crawled fully.
 
+## Shared-GPU etiquette
+
+The L4 also serves two production TTS engines (~10–12 GB VRAM, bursty 100 % utilisation). The
+workers therefore:
+
+* cap their own allocator (`CHAASHINI_GPU_MEM_FRACTION=0.25` for ASR+diarization, `CHAASHINI_GPU_ENH_MEM_FRACTION=0.17`
+  for the enhancer) and release cached memory after every job (`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`);
+* run the enhancer in 8 s windows (`CHAASHINI_ENH_CHUNK_S`) and refuse sources longer than 2 h (`source.max_duration_s`),
+  because diarization memory grows with file length;
+* fail a job (and retry once) rather than fight for memory. If `gpuctl logs asr` shows repeated `OutOfMemoryError`,
+  lower the fractions or the ASR batch (`CHAASHINI_ASR_BATCH`).
+
+## Disk hygiene (nothing may fill the shared disks)
+
+* per-source work dirs are deleted the moment a source finishes or fails; a 48 h TTL sweeper catches leftovers;
+* staged FLACs are deleted once packed into a parquet shard; shards are deleted only after the Hub listing confirms them;
+* downloads pause below `storage.min_free_gb` (40 GB) and processing pauses below half of that;
+* worker logs rotate (5 × 50 MB each); watchdog `*.out` files are truncated past 200 MB; library caches older than a day are swept;
+* the dashboard "Disk free" tile and the `system` events show all of the above.
+
 ## Failure modes
 
 | symptom | where to look | fix |

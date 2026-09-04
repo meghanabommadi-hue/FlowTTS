@@ -245,7 +245,7 @@ def clipping_ratio(x: np.ndarray, thresh: float = 0.985, min_run: int = 3) -> fl
     return float(runs[runs >= min_run].sum() / x.size)
 
 
-def bandwidth_hz(x: np.ndarray, sr: int, drop_db: float = 55.0) -> float:
+def bandwidth_hz(x: np.ndarray, sr: int, drop_db: float = 60.0) -> float:
     """Highest frequency whose long-term average spectrum is within `drop_db` of the peak band."""
     if x.size < sr // 4:
         return 0.0

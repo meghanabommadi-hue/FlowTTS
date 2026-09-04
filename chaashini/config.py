@@ -133,7 +133,7 @@ class AcceptCfg(BaseModel):
     rms_dbfs_min: float = -40.0
     rms_dbfs_max: float = -6.0
     clipping_max: float = 0.001
-    bandwidth_hz_min: float = 6000.0
+    bandwidth_hz_min: float = 4500.0
     vad_ratio_min: float = 0.6
 
 
@@ -141,13 +141,13 @@ class EnhanceGateCfg(BaseModel):
     """Chunks failing acceptance but inside these bounds are sent for enhancement, then re-scored."""
     enabled: bool = True
     ovrl_min: float = 2.3
-    sig_min: float = 2.8
+    sig_min: float = 3.3
     music_prob_max: float = 0.3
     snr_db_min: float = 8.0
     max_fraction_per_video: float = 0.4
     max_chunks_per_video: int = 400
     mode: str = "enhance"                # enhance | denoise
-    nfe: int = 32
+    nfe: int = 16
     solver: str = "midpoint"
     lambd: float = 0.5
     tau: float = 0.5

@@ -231,8 +231,11 @@ class ProcessWorker(Worker):
             reason = "overall_quality"
         else:
             reason = "p808"
-        if E.enabled and m["dnsmos_ovrl"] >= E.ovrl_min and m["dnsmos_sig"] >= E.sig_min and m["snr_db"] >= E.snr_db_min \
-                and m.get("music_prob", 0) <= E.music_prob_max:
+        # Enhancement only pays off when the problem is the BACKGROUND (noise / low SNR / faint bgm) and the
+        # speech itself is healthy; poor signal quality is not fixable and would just burn GPU time.
+        background_issue = (m["dnsmos_bak"] < A.bak_min or m["snr_db"] < A.snr_db_min or m.get("music_prob", 0) > A.music_prob_max)
+        if E.enabled and background_issue and m["dnsmos_ovrl"] >= E.ovrl_min and m["dnsmos_sig"] >= E.sig_min \
+                and m["snr_db"] >= E.snr_db_min and m.get("music_prob", 0) <= E.music_prob_max:
             return "enhance", reason
         return "rejected", reason
 

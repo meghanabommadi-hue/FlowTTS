@@ -90,7 +90,7 @@ flowchart TD
 | gate | accept | enhance window |
 |---|---|---|
 | DNSMOS OVRL | ≥ 3.0 | ≥ 2.3 |
-| DNSMOS SIG | ≥ 3.2 | ≥ 2.8 |
+| DNSMOS SIG | ≥ 3.2 | ≥ 3.3 (speech must be healthy; only background problems are worth enhancing) |
 | DNSMOS BAK | ≥ 3.8 | — |
 | P.808 MOS | ≥ 3.0 | — |
 | music probability (tagger, max over 4 s windows) | ≤ 0.15 | ≤ 0.30 |
@@ -98,7 +98,7 @@ flowchart TD
 | SNR (VAD-informed) | ≥ 20 dB | ≥ 8 dB |
 | RMS level | −34 … −6 dBFS | — |
 | clipping ratio | ≤ 0.1 % | — |
-| effective bandwidth | ≥ 6 kHz | — |
+| effective bandwidth | ≥ 4.5 kHz (rejects narrowband/telephone audio) | — |
 | VAD speech ratio | ≥ 0.6 | — |
 | speaker dominance | ≥ 0.9 | — |
 

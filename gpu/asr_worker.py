@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Orchestrator, extract_tar, gpu_stats, load_env, setup_logging  # noqa: E402
+from common import HeartbeatThread, Orchestrator, extract_tar, gpu_stats, load_env, setup_logging  # noqa: E402
 
 log = logging.getLogger("chaashini.gpu.asr")
 
@@ -199,21 +199,21 @@ def main() -> None:
     while not api.health():
         log.warning("orchestrator unreachable at %s; retrying", env["CHAASHINI_API_URL"])
         time.sleep(10)
+    hb = HeartbeatThread(api, "gpu-asr").start()
     models = Models(models_dir, diar_cfg, lookahead=int(env.get("CHAASHINI_ASR_LOOKAHEAD", 13)))
     stats = {"jobs": 0, "diarize_s": 0.0, "transcribe_s": 0.0, "audio_s": 0.0, "errors": 0}
     last_hb = 0.0
     while True:
         try:
-            if time.time() - last_hb > 10:
-                api.heartbeat("gpu-asr", "idle", stats={**stats, **gpu_stats()})
-                last_hb = time.time()
+            hb.set("idle", None, stats)
             job = api.claim(["diarize", "transcribe"])
             if not job:
                 time.sleep(idle)
                 continue
             jid, kind = job["id"], job["kind"]
             t0 = time.time()
-            api.heartbeat("gpu-asr", f"running:{kind}", current=f"{kind} job {jid} ({job.get('video_id')})", stats={**stats, **gpu_stats()})
+            hb.set(f"running:{kind}", f"{kind} job {jid} ({job.get('video_id')}, {job.get('n_items')} items, {float(job.get('audio_seconds') or 0):.0f}s)", stats)
+            api.heartbeat("gpu-asr", hb.state, hb.current, {**stats, **gpu_stats()})
             with tempfile.TemporaryDirectory(prefix="chaashini-") as td:
                 tmp = Path(td)
                 payload = tmp / ("payload.wav" if kind == "diarize" else "payload.tar")

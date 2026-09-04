@@ -11,7 +11,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Orchestrator, extract_tar, gpu_stats, load_env, make_tar, setup_logging  # noqa: E402
+from common import HeartbeatThread, Orchestrator, extract_tar, gpu_stats, load_env, make_tar, setup_logging  # noqa: E402
 
 log = logging.getLogger("chaashini.gpu.enhance")
 
@@ -111,21 +111,21 @@ def main() -> None:
     while not api.health():
         log.warning("orchestrator unreachable; retrying")
         time.sleep(10)
+    hb = HeartbeatThread(api, "gpu-enhance").start()
     enh = Enhancer(run_dir)
     stats = {"jobs": 0, "items": 0, "enhance_s": 0.0, "errors": 0}
     last_hb = 0.0
     while True:
         try:
-            if time.time() - last_hb > 10:
-                api.heartbeat("gpu-enhance", "idle", stats={**stats, **gpu_stats()})
-                last_hb = time.time()
+            hb.set("idle", None, stats)
             job = api.claim(["enhance"])
             if not job:
                 time.sleep(idle)
                 continue
             jid = job["id"]
             t0 = time.time()
-            api.heartbeat("gpu-enhance", "running:enhance", current=f"enhance job {jid} ({job.get('video_id')}, {job.get('n_items')} items)", stats={**stats, **gpu_stats()})
+            hb.set("running:enhance", f"enhance job {jid} ({job.get('video_id')}, {job.get('n_items')} items)", stats)
+            api.heartbeat("gpu-enhance", hb.state, hb.current, {**stats, **gpu_stats()})
             with tempfile.TemporaryDirectory(prefix="chaashini-enh-") as td:
                 tmp = Path(td)
                 payload = tmp / "payload.tar"

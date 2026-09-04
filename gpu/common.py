@@ -98,6 +98,36 @@ class Orchestrator:
             log.debug("heartbeat failed: %s", e)
 
 
+class HeartbeatThread:
+    """Posts a worker heartbeat every `interval` seconds with whatever state/current was last set."""
+
+    def __init__(self, api: "Orchestrator", kind: str, interval: float = 15.0):
+        import threading
+        self.api, self.kind, self.interval = api, kind, interval
+        self.state, self.current, self.stats = "starting", None, {}
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True, name="heartbeat")
+
+    def start(self):
+        self._t.start()
+        return self
+
+    def set(self, state: str, current: str | None = None, stats: dict | None = None):
+        self.state, self.current = state, current
+        if stats is not None:
+            self.stats = stats
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            try:
+                self.api.heartbeat(self.kind, self.state, self.current, {**self.stats, **gpu_stats()})
+            except Exception:  # noqa: BLE001
+                pass
+
+    def stop(self):
+        self._stop.set()
+
+
 def gpu_stats() -> dict:
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
