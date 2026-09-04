@@ -177,7 +177,7 @@ function render(s){
   const gpu=(s.workers||[]).find(w=>w.kind==='gpu-asr');const gs=gpu&&gpu.stats||{};
   $('#kpis').replaceChildren(
     kpi('accepted speech',fmtH(T.accepted_hours),'h',`${fmtN(T.accepted_chunks)} clips · average ${T.avg_chunk_s} s`),
-    kpi('on the hub',fmtH(T.pushed_hours),'h',`${T.pushed_shards} shards · next push at 10 h, ${fmtH(T.staged_hours+T.built_unpushed_hours)} h ready (${(100*T.push_progress).toFixed(0)}%)`),
+    kpi('on the hub',fmtH(T.pushed_hours),'h',`${T.pushed_shards} shards · next push at ${fmtH(T.next_push_hours)} h: ${fmtH(T.staged_hours+T.built_unpushed_hours)} h ready (${(100*T.push_progress).toFixed(0)}%)`),
     kpi('rate, last hour',th['1h'].hours_per_hour.toFixed(2),'h/h',`6h ${fmtH(th['6h'].accepted_hours)} h · 24h ${fmtH(th['24h'].accepted_hours)} h`),
     kpi('yield',(100*T.yield_ratio).toFixed(1),'%',`of ${fmtH(T.source_hours_processed)} h of source audio survives all gates`),
     kpi('clip acceptance',(100*T.accept_ratio_chunks).toFixed(1),'%',`${fmtN(T.rejected_chunks)} clips rejected · ${fmtN(T.enhanced_accepted)} rescued by enhancement`),
