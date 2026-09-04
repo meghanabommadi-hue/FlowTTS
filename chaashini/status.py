@@ -35,6 +35,8 @@ def snapshot(conn: sqlite3.Connection, cfg: Config) -> dict:
     src_s, src_n = r["s"], r["n"]
     r = conn.execute("SELECT COALESCE(SUM(duration_s),0) s FROM videos WHERE status='done'").fetchone()
     src_done_s = r["s"]
+    r = conn.execute("SELECT COALESCE(SUM(dur_ms),0)/1000.0 s FROM chunks WHERE status='accepted' AND video_id NOT LIKE 'hub:%'").fetchone()
+    acc_local_s = r["s"]
     r = conn.execute("SELECT COUNT(*) n FROM chunks WHERE status='accepted' AND enhanced=1").fetchone()
     enh_n = r["n"]
     staged = staged_seconds(cfg.paths.staging_dir)
@@ -44,7 +46,7 @@ def snapshot(conn: sqlite3.Connection, cfg: Config) -> dict:
         "pushed_hours": _h(pushed_s), "pushed_shards": pushed_shards, "built_unpushed_hours": _h(built_s),
         "staged_hours": _h(staged_s), "source_hours_processed": _h(src_s), "source_hours_kept_videos": _h(src_done_s),
         "videos_processed": src_n, "enhanced_accepted": enh_n,
-        "yield_ratio": round(acc_s / src_s, 4) if src_s else 0.0,
+        "yield_ratio": round(acc_local_s / src_s, 4) if src_s else 0.0,
         "accept_ratio_chunks": round(acc_n / (acc_n + rej_n), 4) if (acc_n + rej_n) else 0.0,
         "avg_chunk_s": round(acc_s / acc_n, 2) if acc_n else 0.0,
         "next_push_hours": cfg.hf.push_every_hours, "push_progress": round(min(1.0, (staged_s + built_s) / (cfg.hf.push_every_hours * 3600)), 4),

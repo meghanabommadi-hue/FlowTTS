@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("backup", help="upload a state backup now")
     sub.add_parser("restore", help="restore the state database from the latest backup if none exists locally")
     sub.add_parser("seed-fps", help="seed the clip-fingerprint index from the shards already on the Hub")
+    sub.add_parser("restore-history", help="rebuild accepted-clip and shard history from the shards on the Hub")
     t = sub.add_parser("test-lid")
     t.add_argument("text")
     args = ap.parse_args(argv)
@@ -115,6 +116,13 @@ def main(argv: list[str] | None = None) -> None:
         from .config import get_config
         cfg = get_config()
         print("restored" if restore_db_if_missing(cfg.paths.db_path, cfg.hf.token, cfg.hf.state_repo_id) else "nothing restored")
+    elif args.cmd == "restore-history":
+        from . import db as D
+        from .backup import restore_history_from_hub
+        from .config import get_config
+        cfg = get_config()
+        c = D.connect(cfg.paths.db_path); D.init_schema(c)
+        print(restore_history_from_hub(cfg, c))
     elif args.cmd == "seed-fps":
         from .dedup import seed_clip_fingerprints_from_hub
         from .config import get_config
