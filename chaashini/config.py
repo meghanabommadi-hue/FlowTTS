@@ -144,8 +144,9 @@ class EnhanceGateCfg(BaseModel):
     sig_min: float = 3.3
     music_prob_max: float = 0.3
     snr_db_min: float = 8.0
-    max_fraction_per_video: float = 0.4
-    max_chunks_per_video: int = 400
+    max_fraction_per_video: float = 0.2
+    max_chunks_per_video: int = 60
+    min_chunk_ms: int = 4000             # short borderline clips are not worth GPU time (acceptance after enhancement < 25 %)
     mode: str = "enhance"                # enhance | denoise
     nfe: int = 16
     solver: str = "midpoint"
@@ -178,7 +179,7 @@ class WorkersCfg(BaseModel):
     torch_threads: int = 8
     heartbeat_s: int = 10
     lease_s: int = 3600
-    max_videos_in_flight: int = 24
+    max_videos_in_flight: int = 40
 
 
 class APICfg(BaseModel):

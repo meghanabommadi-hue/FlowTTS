@@ -115,8 +115,9 @@ quality:
     sig_min: 3.3
     snr_db_min: 8.0
     music_prob_max: 0.3
-    max_fraction_per_video: 0.4
-    max_chunks_per_video: 400
+    max_fraction_per_video: 0.2
+    max_chunks_per_video: 60
+    min_chunk_ms: 4000
     mode: enhance              # enhance | denoise
     nfe: 16
     solver: midpoint
@@ -137,7 +138,7 @@ workers:
   torch_threads: 8
   heartbeat_s: 10
   lease_s: 3600
-  max_videos_in_flight: 24
+  max_videos_in_flight: 40
 
 api:
   host: 127.0.0.1

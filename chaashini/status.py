@@ -56,6 +56,11 @@ def snapshot(conn: sqlite3.Connection, cfg: Config) -> dict:
         return {"accepted_hours": _h(r["s"]), "accepted_chunks": r["n"], "videos": v["n"], "source_hours": _h(v["s"]),
                 "hours_per_hour": round((r["s"] / 3600.0) / (sec / 3600.0), 3)}
     out["throughput"] = {"1h": window(3600), "6h": window(6 * 3600), "24h": window(24 * 3600)}
+    last = conn.execute("SELECT MAX(created_at) t FROM chunks WHERE status='accepted'").fetchone()["t"]
+    last_done = conn.execute("SELECT MAX(updated_at) t FROM videos WHERE status IN ('done','rejected')").fetchone()["t"]
+    active = sum(v for k, v in vs.items() if k not in ("discovered", "done", "rejected", "failed"))
+    out["freshness"] = {"last_accept_age_s": round(t - last) if last else None, "last_finish_age_s": round(t - last_done) if last_done else None,
+                        "active_sources": active, "stalled": bool(last and t - last > 1800 and vs.get("discovered", 0) > 0)}
 
     langs: dict[str, dict] = {}
     for r in conn.execute("SELECT lang, COUNT(*) n, COALESCE(SUM(dur_ms),0)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang"):

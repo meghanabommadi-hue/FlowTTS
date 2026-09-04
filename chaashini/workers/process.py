@@ -256,8 +256,8 @@ class ProcessWorker(Worker):
         # Enhancement only pays off when the problem is the BACKGROUND (noise / low SNR / faint bgm) and the
         # speech itself is healthy; poor signal quality is not fixable and would just burn GPU time.
         background_issue = (m["dnsmos_bak"] < A.bak_min or m["snr_db"] < A.snr_db_min or m.get("music_prob", 0) > A.music_prob_max)
-        if E.enabled and background_issue and m["dnsmos_ovrl"] >= E.ovrl_min and m["dnsmos_sig"] >= E.sig_min \
-                and m["snr_db"] >= E.snr_db_min and m.get("music_prob", 0) <= E.music_prob_max:
+        if E.enabled and background_issue and ch_info.get("dur_ms", 0) >= E.min_chunk_ms and m["dnsmos_ovrl"] >= E.ovrl_min \
+                and m["dnsmos_sig"] >= E.sig_min and m["snr_db"] >= E.snr_db_min and m.get("music_prob", 0) <= E.music_prob_max:
             return "enhance", reason
         return "rejected", reason
 
@@ -323,7 +323,7 @@ class ProcessWorker(Worker):
             m["vad_speech_ratio"] = round(c.vad_ratio, 3)
             m["speaker_dominance"] = round(c.dominance, 3)
             m["diar_coverage"] = round(c.diar_coverage, 3)
-            status, reason = self._decide(m, {"dominance": c.dominance, "diar_coverage": c.diar_coverage, "vad_ratio": c.vad_ratio})
+            status, reason = self._decide(m, {"dominance": c.dominance, "diar_coverage": c.diar_coverage, "vad_ratio": c.vad_ratio, "dur_ms": c.dur_ms})
             if status == "accepted":
                 status = "candidate"
             cid = f"{v['source_hash']}_{i:04d}"

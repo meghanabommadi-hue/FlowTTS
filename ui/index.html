@@ -42,7 +42,7 @@ footer{margin-top:24px;color:var(--muted);font-size:12px}
 <body><div class="wrap">
 <header>
   <div><h1>🍯 Chaashini <span>· चाशनी</span></h1><div class="sub">pristine multilingual Indian speech · continuous corpus builder</div></div>
-  <div class="live"><span class="dot" id="dot"></span><span id="updated">connecting…</span></div>
+  <div class="live"><span id="fresh" class="tag"></span><span class="dot" id="dot"></span><span id="updated">connecting…</span></div>
 </header>
 
 <div class="grid kpis" id="kpis"></div>
@@ -92,6 +92,8 @@ function kpi(label,val,unit,desc){return `<div class="card kpi"><h3>${label}</h3
 
 function render(s){
   const T=s.totals,th=s.throughput;
+  const fr=s.freshness||{};const fa=fr.last_accept_age_s;
+  const fe=$('#fresh');if(fa==null){fe.textContent='no clips yet';fe.className='tag warn'}else{fe.textContent=`last clip ${ago(fa)} ago · ${fr.active_sources} sources in flight`;fe.className='tag '+(fr.stalled?'bad':fa<600?'ok':'warn')}
   const gpu=(s.workers||[]).find(w=>w.kind==='gpu-asr');
   const gs=gpu&&gpu.stats||{};
   $('#kpis').innerHTML=[
