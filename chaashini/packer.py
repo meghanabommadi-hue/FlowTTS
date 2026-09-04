@@ -37,6 +37,32 @@ def features():
     })
 
 
+def arrow_schema():
+    import pyarrow as pa
+    f32, i32, s, b = pa.float32(), pa.int32(), pa.string(), pa.bool_()
+    return pa.schema([
+        ("id", s), ("audio", pa.struct([("bytes", pa.binary()), ("path", s)])), ("text", s), ("language", s), ("language_name", s),
+        ("language_confidence", f32), ("language_mix", s), ("script", s), ("code_mixed", b), ("duration_s", f32), ("sample_rate", i32),
+        ("speaker_id", s), ("source_id", s), ("segment_index", i32), ("enhanced", b),
+        ("dnsmos_sig", f32), ("dnsmos_bak", f32), ("dnsmos_ovrl", f32), ("dnsmos_p808", f32), ("music_prob", f32), ("speech_prob", f32),
+        ("noise_prob", f32), ("snr_db", f32), ("rms_dbfs", f32), ("peak_dbfs", f32), ("clipping_ratio", f32), ("bandwidth_hz", f32),
+        ("vad_speech_ratio", f32), ("speaker_dominance", f32), ("chars_per_sec", f32), ("genre", s), ("created_at", s),
+    ])
+
+
+def write_parquet(rows: list[dict], path: Path) -> None:
+    """Write rows with pyarrow and embed the Hugging Face `features` metadata (Audio feature for `audio`)
+    exactly as `datasets` does, without running any audio encoder."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    schema = arrow_schema()
+    cols = {name: [r[name] for r in rows] for name in schema.names}
+    table = pa.Table.from_pydict(cols, schema=schema)
+    meta = {"info": {"features": features().to_dict()}}
+    table = table.replace_schema_metadata({**(table.schema.metadata or {}), b"huggingface": json.dumps(meta).encode("utf-8")})
+    pq.write_table(table, str(path), compression="zstd", row_group_size=256)
+
+
 def _row(meta: dict, audio_bytes: bytes, fname: str) -> dict:
     q = meta.get("quality", {})
     lid = meta.get("lid", {})
@@ -60,7 +86,6 @@ def build_shards(staging_dir: Path, shards_dir: Path, lang: str, next_index: int
                  min_seconds: float = 60.0) -> list[dict]:
     """Pack all staged files of `lang` into one or more parquet shards. Returns shard descriptors.
     Staged files are deleted only after the parquet is fully written and fsynced."""
-    from datasets import Dataset
     src = staging_dir / lang
     if not src.exists():
         return []

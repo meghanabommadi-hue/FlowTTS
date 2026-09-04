@@ -109,8 +109,18 @@ class ProcessWorker(Worker):
     def _load_master(self, wd: Path) -> tuple[np.ndarray, int]:
         return read_wav_int16(wd / "audio16k.wav")
 
-    def _load_export_master(self, wd: Path) -> tuple[np.ndarray, int]:
+    def _load_export_master(self, wd: Path, v=None) -> tuple[np.ndarray, int]:
         p = wd / f"audio{self.cfg.audio.export_sr // 1000}k.wav"
+        if not p.exists():
+            src = None
+            if v is not None and v["src_path"] and os.path.exists(v["src_path"]):
+                src = v["src_path"]
+            else:
+                cands = [q for q in wd.iterdir() if q.suffix in (".webm", ".m4a", ".mp4", ".opus", ".mka", ".ogg")]
+                src = str(cands[0]) if cands else None
+            if not src:
+                raise RuntimeError("export master and source both missing")
+            decode_to_wav(src, p, self.cfg.audio.export_sr)
         x, sr = read_wav_int16(p)
         return x, sr
 
@@ -360,7 +370,7 @@ class ProcessWorker(Worker):
 
     def _write_enhance_payload(self, wd: Path, v, rows: list) -> Path:
         E = self.cfg.quality.enhance
-        xm, sr_in = self._load_export_master(wd)
+        xm, sr_in = self._load_export_master(wd, v)
         tar_path = wd / "enh_in.tar"
         items = []
         with tarfile.open(tar_path, "w") as tf:
@@ -460,7 +470,7 @@ class ProcessWorker(Worker):
         q = self.conn.execute("SELECT genre FROM queries WHERE id=?", (v["query_id"],)).fetchone() if v["query_id"] else None
         genre = (q["genre"] if q else "") or ""
         enh_dir = wd / "enh"
-        xm, xm_sr = self._load_export_master(wd)
+        xm, xm_sr = self._load_export_master(wd, v)
         accepted = []
         n_rej = 0
         reasons: dict[str, int] = {}

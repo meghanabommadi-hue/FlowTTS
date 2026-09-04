@@ -124,6 +124,9 @@ class DiscoverWorker(Worker):
         return added
 
     def pick_language(self) -> str:
+        deficits = self.language_deficits()
+        if deficits:
+            return deficits[0][0]
         langs = [l for l in self.cfg.enabled_languages() if LANGUAGES.get(l.code, None) and LANGUAGES[l.code].asr_supported]
         bl = self.backlog_by_lang()
         # weight by config weight and inverse backlog share
@@ -178,15 +181,46 @@ class DiscoverWorker(Worker):
         log.warning("rate limited: cooling down %ds", cd)
 
     # ------------------------------------------------------------------ main step
+    def language_deficits(self) -> list[tuple[str, int]]:
+        """Languages whose queued backlog is below their weight-proportional share (min 8), worst first."""
+        langs = [l for l in self.cfg.enabled_languages() if l.code in LANGUAGES and LANGUAGES[l.code].asr_supported]
+        tw = sum(l.weight for l in langs) or 1.0
+        bl = self.backlog_by_lang()
+        target = self.cfg.discovery.target_backlog_videos
+        out = []
+        for l in langs:
+            want = max(8, int(target * l.weight / tw))
+            have = bl.get(l.code, 0)
+            if have < want:
+                out.append((l.code, want - have))
+        return sorted(out, key=lambda t: -t[1])
+
     def step(self) -> bool:
         if self.cooldown_active():
             self.heartbeat("cooldown", force=True)
             return False
         target = self.cfg.discovery.target_backlog_videos
         have = self.backlog()
-        if have >= target:
+        deficits = self.language_deficits()
+        if have >= target and not deficits:
             self.heartbeat("backlog full", f"{have}/{target} queued", force=True)
             return False
+        if have >= target and deficits:
+            # global backlog is fine but some languages are starved: top those up only
+            added = 0
+            for code, need in deficits[:4]:
+                if self.stop or self.cooldown_active():
+                    break
+                qs = self.pending_queries(code, 3)
+                if not qs:
+                    self.make_queries(code)
+                    qs = self.pending_queries(code, 3)
+                for q in qs:
+                    added += self.run_query(q)
+                    self.heartbeat("topping up", f"[{code}] {q['query'][:60]}")
+                    time.sleep(1.0)
+            log.info("language top-up: +%d videos for %s", added, [d[0] for d in deficits[:4]])
+            return True
         self.stats["rounds"] += 1
         self.heartbeat("discovering", f"backlog {have}/{target}", force=True)
         need = target - have

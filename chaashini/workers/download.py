@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from pathlib import Path
 
@@ -46,7 +47,13 @@ class DownloadWorker(Worker):
         if n_inflight >= self.cfg.workers.max_videos_in_flight:
             self.heartbeat("paused: pipeline full", f"{n_inflight} in flight", force=True)
             return False
-        v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s)
+        langs = [l for l in self.cfg.enabled_languages() if l.weight > 0]
+        v = None
+        if langs:
+            pick = random.choices(langs, weights=[l.weight for l in langs], k=1)[0].code
+            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (pick,))
+        if not v:
+            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s)
         if not v:
             return False
         vid = v["id"]
