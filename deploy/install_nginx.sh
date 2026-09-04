@@ -11,7 +11,7 @@ DEFAULT_SITE=${DEFAULT_SITE:-$SE/vartalaap}
 cp $APP/deploy/nginx/chaashini-internal.conf $SE/chaashini-internal
 cp $APP/deploy/nginx/chaashini-standalone.conf $SE/chaashini
 if [ -f "$DEFAULT_SITE" ] && ! grep -q "location ^~ /chaashini/" "$DEFAULT_SITE"; then
-  cp "$DEFAULT_SITE" "$DEFAULT_SITE.bak.chaashini.$(date +%s)"
+  cp "$DEFAULT_SITE" "/root/$(basename "$DEFAULT_SITE").bak.chaashini.$(date +%s)"   # backups must NOT live in sites-enabled
   # insert the location block before the final closing brace of the last server block
   python3 - "$DEFAULT_SITE" "$APP/deploy/nginx/chaashini-dashboard.location" <<'PY'
 import sys
