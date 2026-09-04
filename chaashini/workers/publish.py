@@ -137,7 +137,9 @@ class PublishWorker(Worker):
                     age = time.time() - d.stat().st_mtime
                 except OSError:
                     continue
-                if (r is None and age > 3600) or (r and r["status"] in D.TERMINAL) or (r and age > ttl):
+                # a terminal source's dir is normally removed by the worker itself; the sweep only picks up
+                # leftovers, and never touches a dir that changed in the last 15 min (a worker may still be in it)
+                if age > 900 and ((r is None and age > 3600) or (r and r["status"] in D.TERMINAL) or (r and age > ttl)):
                     shutil.rmtree(d, ignore_errors=True)
         # library caches that could grow silently (datasets arrow cache, yt-dlp cache, stale HF downloads)
         for cache in (Path.home() / ".cache" / "huggingface" / "datasets", Path.home() / ".cache" / "yt-dlp", Path("/tmp")):

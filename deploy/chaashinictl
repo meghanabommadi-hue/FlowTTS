@@ -39,8 +39,10 @@ stop() {
   pkill -TERM -f "^$VENV/bin/python -m chaashini (worker|api)" 2>/dev/null
   sleep 3
   pkill -KILL -f "^$VENV/bin/python -m chaashini" 2>/dev/null
+  # never start a new generation while an old worker is still alive (two workers on one source corrupt each other)
+  for i in $(seq 1 30); do pgrep -f "^$VENV/bin/python -m chaashini" >/dev/null || break; pkill -KILL -f "^$VENV/bin/python -m chaashini" 2>/dev/null; sleep 1; done
   rm -f $WATCHPID
-  echo "stopped"
+  echo "stopped ($(pgrep -fc "^$VENV/bin/python -m chaashini") left)"
 }
 status() {
   if alive $WATCHPID; then echo "watchdog: running (pid $(cat $WATCHPID))"; else echo "watchdog: NOT running"; fi

@@ -348,7 +348,7 @@ def release_all_video_leases(conn: sqlite3.Connection) -> dict[str, int]:
     t = now()
     with tx(conn):
         for working, back in LEASE_FALLBACK.items():
-            cur = conn.execute("UPDATE videos SET status=?, leased_by=NULL, leased_until=NULL, updated_at=? WHERE status=?", (back, t, working))
+            cur = conn.execute("UPDATE videos SET status=?, leased_by=NULL, leased_until=NULL, updated_at=?, attempts=MAX(0, attempts-1) WHERE status=?", (back, t, working))
             if cur.rowcount:
                 out[working] = cur.rowcount
     return out
@@ -372,8 +372,9 @@ def release_stale(conn: sqlite3.Connection) -> dict[str, int]:
                 "WHERE status=? AND leased_until IS NOT NULL AND leased_until < ?", (back, t, working, t))
             if cur.rowcount:
                 out[working] = cur.rowcount
+        # never fail a row that a live worker is holding (its lease is current); only truly stuck ones
         cur = conn.execute("UPDATE videos SET status='failed', error='attempt budget exhausted', updated_at=? "
-                           "WHERE status NOT IN ('done','rejected','failed') AND attempts > 8", (t,))
+                           "WHERE status NOT IN ('done','rejected','failed') AND attempts > 12 AND (leased_until IS NULL OR leased_until < ?)", (t, t))
         if cur.rowcount:
             out["failed_attempts"] = cur.rowcount
     return out

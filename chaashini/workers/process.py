@@ -82,6 +82,11 @@ class ProcessWorker(Worker):
                 t0 = time.time()
                 try:
                     fn(v)
+                except InterruptedError:
+                    D.set_video_status(self.conn, v["id"], from_s)
+                    self.conn.execute("UPDATE videos SET attempts=MAX(0, attempts-1) WHERE id=?", (v["id"],))
+                    log.info("%s of %s abandoned for shutdown; will be redone", to_s, v["id"])
+                    return True
                 except Exception as e:  # noqa: BLE001
                     log.exception("%s failed for %s: %s", to_s, v["id"], e)
                     if v["attempts"] >= 3:
@@ -354,6 +359,8 @@ class ProcessWorker(Worker):
             cid = f"{v['source_hash']}_{i:04d}"
             rows.append([cid, vid, i, c.start_ms, c.end_ms, c.dur_ms, c.speaker, status, reason, D.j(m), time.time(), time.time()])
             if i % 50 == 0:
+                if self.stop:
+                    raise InterruptedError("stop requested")
                 self.heartbeat("segmenting", f"{vid} chunk {i}/{len(chunks)}")
                 D.touch_lease(self.conn, vid, self.cfg.workers.lease_s)
         # enhancement budget: keep the longest borderline chunks (most audio per GPU second), reject the rest
