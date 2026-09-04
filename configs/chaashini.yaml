@@ -19,7 +19,7 @@ hf:
 source:
   search_results_per_query: 40
   min_duration_s: 240
-  max_duration_s: 14400
+  max_duration_s: 7200             # 2 h cap: diarization memory grows with file length on a shared GPU
   max_videos_per_channel: 80
   download_concurrency: 4
   cookies_file: /opt/chaashini/configs/cookies.txt     # optional; export from a logged-in browser to lift bot-checks

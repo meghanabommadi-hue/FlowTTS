@@ -8,6 +8,7 @@ RUN=$ROOT/run
 mkdir -p $LOGS $RUN
 export PYTHONUNBUFFERED=1
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 [ -f $ROOT/gpu.env ] && set -a && . $ROOT/gpu.env && set +a
 
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }

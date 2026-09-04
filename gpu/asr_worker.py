@@ -29,6 +29,11 @@ class Models:
         import torch
         self.torch = torch
         self.dev = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.dev == "cuda":
+            # This GPU is shared with production services: never let the caching allocator grow past our share.
+            frac = float(os.environ.get("CHAASHINI_GPU_MEM_FRACTION", "0.30"))
+            torch.cuda.set_per_process_memory_fraction(frac, 0)
+            log.info("GPU memory cap: %.0f%% of device", 100 * frac)
         t = time.time()
         from transformers import AutoModel
         self.asr = AutoModel.from_pretrained(str(models_dir / "sravaani-0.5-live"), trust_remote_code=True).to(self.dev).eval()
@@ -179,6 +184,9 @@ def handle_transcribe(models: Models, payload: Path, tmp: Path, batch: int) -> P
 
 def main() -> None:
     env = load_env()
+    for k, v in env.items():
+        if k.startswith("CHAASHINI_"):
+            os.environ.setdefault(k, v)
     setup_logging("asr_worker", env.get("CHAASHINI_LOG_DIR", "/opt/chaashini/logs"))
     api = Orchestrator(env["CHAASHINI_API_URL"], env["CHAASHINI_INTERNAL_TOKEN"], env.get("CHAASHINI_API_HOST") or None,
                        worker=env.get("CHAASHINI_GPU_NAME", "gpu-asr"))
@@ -218,6 +226,8 @@ def main() -> None:
                         out = handle_transcribe(models, payload, tmp, batch)
                     dt = time.time() - t0
                     api.complete(jid, True, out, proc_seconds=dt)
+                    if models.dev == "cuda":
+                        models.torch.cuda.empty_cache()      # hand reserved memory back to the other tenants
                     stats["jobs"] += 1
                     stats[f"{kind}_s"] += dt
                     stats["audio_s"] += float(job.get("audio_seconds") or 0)

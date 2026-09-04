@@ -16,25 +16,48 @@ from common import Orchestrator, extract_tar, gpu_stats, load_env, make_tar, set
 log = logging.getLogger("chaashini.gpu.enhance")
 
 
+import os
+
 class Enhancer:
     def __init__(self, run_dir: Path):
         import torch
         self.torch = torch
         self.dev = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.dev == "cuda":
+            frac = float(os.environ.get("CHAASHINI_GPU_ENH_MEM_FRACTION", "0.22"))
+            torch.cuda.set_per_process_memory_fraction(frac, 0)
+            log.info("GPU memory cap: %.0f%% of device", 100 * frac)
         self.run_dir = run_dir
-        from resemble_enhance.enhancer.inference import denoise, enhance, load_enhancer
-        self._denoise, self._enhance = denoise, enhance
+        from resemble_enhance.enhancer.inference import load_enhancer
+        from resemble_enhance.inference import inference
+        self._inference = inference
         t = time.time()
-        load_enhancer(run_dir, self.dev)
-        log.info("enhancer loaded in %.1fs", time.time() - t)
+        self.model = load_enhancer(run_dir, self.dev)
+        # shorter inference windows bound peak memory on the shared GPU (default is 30 s)
+        self.chunk_seconds = float(os.environ.get("CHAASHINI_ENH_CHUNK_S", "8"))
+        log.info("enhancer loaded in %.1fs (inference window %.0fs)", time.time() - t, self.chunk_seconds)
 
     def run(self, wav, sr: int, mode: str, nfe: int, solver: str, lambd: float, tau: float):
+        import numpy as np
+        # the enhancer's chunker misbehaves on very short inputs: pad to >= 1.5 s, trim afterwards
+        min_len = int(1.5 * sr)
+        pad = max(0, min_len - len(wav))
+        if pad:
+            wav = np.concatenate([wav, np.zeros(pad, dtype=wav.dtype)])
         x = self.torch.from_numpy(wav)
-        if mode == "denoise":
-            y, osr = self._denoise(x, sr, self.dev, run_dir=self.run_dir)
-        else:
-            y, osr = self._enhance(x, sr, self.dev, nfe=nfe, solver=solver, lambd=lambd, tau=tau, run_dir=self.run_dir)
-        return y.detach().cpu().numpy(), int(osr)
+        with self.torch.inference_mode():
+            if mode == "denoise":
+                y, osr = self._inference(model=self.model.denoiser, dwav=x, sr=sr, device=self.dev,
+                                         chunk_seconds=self.chunk_seconds, overlap_seconds=1.0)
+            else:
+                self.model.configurate_(nfe=nfe, solver=solver, lambd=lambd, tau=tau)
+                y, osr = self._inference(model=self.model, dwav=x, sr=sr, device=self.dev,
+                                         chunk_seconds=self.chunk_seconds, overlap_seconds=1.0)
+        y = y.detach().cpu().numpy()
+        if pad:
+            keep = int(round((len(wav) - pad) * int(osr) / sr))
+            y = y[:keep]
+        return y, int(osr)
 
 
 def handle(enh: Enhancer, payload: Path, tmp: Path, api: Orchestrator, jid: int) -> Path:
@@ -77,6 +100,9 @@ def handle(enh: Enhancer, payload: Path, tmp: Path, api: Orchestrator, jid: int)
 
 def main() -> None:
     env = load_env()
+    for k, v in env.items():
+        if k.startswith("CHAASHINI_"):
+            os.environ.setdefault(k, v)
     setup_logging("enhance_worker", env.get("CHAASHINI_LOG_DIR", "/opt/chaashini/logs"))
     api = Orchestrator(env["CHAASHINI_API_URL"], env["CHAASHINI_INTERNAL_TOKEN"], env.get("CHAASHINI_API_HOST") or None,
                        worker=env.get("CHAASHINI_GPU_ENH_NAME", "gpu-enhance"))
@@ -108,6 +134,8 @@ def main() -> None:
                     out = handle(enh, payload, tmp, api, jid)
                     dt = time.time() - t0
                     api.complete(jid, True, out, proc_seconds=dt)
+                    if enh.dev == "cuda":
+                        enh.torch.cuda.empty_cache()
                     stats["jobs"] += 1
                     stats["items"] += int(job.get("n_items") or 0)
                     stats["enhance_s"] += dt
