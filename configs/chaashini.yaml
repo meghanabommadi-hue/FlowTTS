@@ -60,7 +60,7 @@ languages:
   - {code: awa, weight: 0.2}
   - {code: mag, weight: 0.2}
   - {code: bgc, weight: 0.2}
-  - {code: en, weight: 0.8}          # Indian English
+  - {code: en, weight: 0.0, enabled: false}   # Indian English: this ASR's English transcripts are too rough
   - {code: ur, weight: 0.0, enabled: false}   # ASR does not support Urdu / Kashmiri yet
   - {code: ks, weight: 0.0, enabled: false}
 
@@ -120,7 +120,7 @@ quality:
     max_fraction_per_video: 0.2
     max_chunks_per_video: 60
     min_chunk_ms: 4000
-    max_queue_s: 1800
+    max_queue_s: 900
     mode: enhance              # enhance | denoise
     nfe: 16
     solver: midpoint

@@ -55,28 +55,36 @@ class Models:
         log.info("diarizer loaded in %.1fs", time.time() - t)
 
     # ------------------------------------------------------------------ diarization
+    def free_gb(self) -> float:
+        try:
+            free, _ = self.torch.cuda.mem_get_info()
+            return free / 1e9
+        except Exception:  # noqa: BLE001
+            return 99.0
+
     def diarize(self, wav16: np.ndarray, _depth: int = 0) -> tuple[list[list], np.ndarray]:
-        """Diarize a whole recording. Memory grows with length and our allocator share is capped, so on
-        OOM the audio is split in half and each part diarized separately; speakers of part j are mapped to
-        columns 4j..4j+3 of the probability matrix (labels stay distinct, never merged wrongly)."""
+        """Diarize a whole recording. Memory grows with length, the GPU is shared with other tenants and our
+        allocator share is capped, so the audio is pre-split into segments sized to the memory that is free
+        right now (~15 min per free GB), and on OOM a segment is halved again; speakers of part j are mapped
+        to columns 4j..4j+3 of the probability matrix (labels stay distinct, never merged wrongly)."""
+        max_s = max(300.0, min(3600.0, self.free_gb() * 900.0))
+        if _depth == 0 and len(wav16) > 16000 * max_s:
+            _depth = 1
+            mid = len(wav16) // 2
+            seg_a, p_a = self.diarize(wav16[:mid], _depth)
+            seg_b, p_b = self.diarize(wav16[mid:], _depth)
+            return self._merge(seg_a, p_a, seg_b, p_b, mid / 16000.0)
         try:
             segs, probs = self.diar.diarize(audio=[wav16.astype(np.float32)], batch_size=1, sample_rate=16000, include_tensor_outputs=True)
         except self.torch.OutOfMemoryError:
             self.torch.cuda.empty_cache()
-            if len(wav16) < 16000 * 300 or _depth > 4:
+            if len(wav16) < 16000 * 300 or _depth > 5:
                 raise
             mid = len(wav16) // 2
             log.warning("diarize OOM on %.0fs of audio; splitting", len(wav16) / 16000)
             seg_a, p_a = self.diarize(wav16[:mid], _depth + 1)
             seg_b, p_b = self.diarize(wav16[mid:], _depth + 1)
-            off_s = mid / 16000.0
-            width = max(p_a.shape[1], 4)
-            k = width // 4 if width % 4 == 0 else 1
-            seg_b = [[a + off_s, b + off_s, spk + 4 * k] for a, b, spk in seg_b]
-            out = np.zeros((p_a.shape[0] + p_b.shape[0], p_a.shape[1] + p_b.shape[1]), dtype=np.float16)
-            out[: p_a.shape[0], : p_a.shape[1]] = p_a
-            out[p_a.shape[0]:, p_a.shape[1]:] = p_b
-            return seg_a + seg_b, out
+            return self._merge(seg_a, p_a, seg_b, p_b, mid / 16000.0)
         p = probs[0]
         if hasattr(p, "detach"):
             p = p.detach().float().cpu().numpy()
@@ -88,6 +96,16 @@ class Models:
             a, b, spk = s.split()
             out.append([float(a), float(b), int(spk.replace("speaker_", ""))])
         return out, p.astype(np.float16)
+
+    @staticmethod
+    def _merge(seg_a, p_a, seg_b, p_b, off_s: float):
+        width = max(p_a.shape[1], 4)
+        k = width // 4 if width % 4 == 0 else 1
+        seg_b = [[a + off_s, b + off_s, spk + 4 * k] for a, b, spk in seg_b]
+        out = np.zeros((p_a.shape[0] + p_b.shape[0], p_a.shape[1] + p_b.shape[1]), dtype=np.float16)
+        out[: p_a.shape[0], : p_a.shape[1]] = p_a
+        out[p_a.shape[0]:, p_a.shape[1]:] = p_b
+        return seg_a + seg_b, out
 
     # ------------------------------------------------------------------ ASR (batched streaming)
     TAIL_SILENCE_S = 2.4   # > lookahead (1.04 s) + one chunk (1.12 s): flushes the last word of every clip
@@ -170,6 +188,11 @@ class Models:
         return self.asr.transcribe([padded])[0].strip()
 
     def transcribe_many(self, items: list[tuple[str, np.ndarray]], batch_size: int = 16) -> dict[str, tuple[str, float | None]]:
+        free = self.free_gb()
+        if free < 2.0:
+            batch_size = max(2, batch_size // 4)
+        elif free < 3.5:
+            batch_size = max(4, batch_size // 2)
         order = sorted(range(len(items)), key=lambda i: len(items[i][1]))
         res: dict[str, tuple[str, float | None]] = {}
         for i in range(0, len(order), batch_size):
@@ -252,6 +275,7 @@ def main() -> None:
     models = Models(models_dir, diar_cfg, lookahead=int(env.get("CHAASHINI_ASR_LOOKAHEAD", 13)))
     stats = {"jobs": 0, "diarize_s": 0.0, "transcribe_s": 0.0, "audio_s": 0.0, "errors": 0}
     last_hb = 0.0
+    oom_waits, last_oom_job = 0, None
     while True:
         try:
             hb.set("idle", None, stats)
@@ -282,11 +306,21 @@ def main() -> None:
                     stats["audio_s"] += float(job.get("audio_seconds") or 0)
                     log.info("%s job %d done in %.1fs (audio %.0fs)", kind, jid, dt, float(job.get("audio_seconds") or 0))
                 except Exception as e:  # noqa: BLE001
+                    is_oom = isinstance(e, models.torch.OutOfMemoryError) or "out of memory" in str(e).lower()
+                    if is_oom:
+                        models.torch.cuda.empty_cache()
+                        oom_waits = oom_waits + 1 if job.get("id") == last_oom_job else 1
+                        last_oom_job = job.get("id")
+                        if oom_waits <= 6:
+                            # other tenants are using the GPU right now: release the job and try again later
+                            log.warning("%s job %d OOM (free %.1f GB); releasing and waiting 60s (%d/6)", kind, jid, models.free_gb(), oom_waits)
+                            api.complete(jid, False, None, error=f"OOM (transient, free {models.free_gb():.1f} GB)", proc_seconds=time.time() - t0)
+                            hb.set("waiting: gpu memory", f"{models.free_gb():.1f} GB free", stats)
+                            time.sleep(60)
+                            continue
                     stats["errors"] += 1
                     log.error("%s job %d failed: %s\n%s", kind, jid, e, traceback.format_exc())
                     api.complete(jid, False, None, error=f"{type(e).__name__}: {e}", proc_seconds=time.time() - t0)
-                    if "CUDA" in str(e) or "out of memory" in str(e).lower():
-                        models.torch.cuda.empty_cache()
         except KeyboardInterrupt:
             break
         except Exception as e:  # noqa: BLE001

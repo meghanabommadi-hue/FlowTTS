@@ -532,7 +532,11 @@ class ProcessWorker(Worker):
             if reason:
                 n_rej += 1
                 reasons[reason] = reasons.get(reason, 0) + 1
-                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason=?, text=?, updated_at=? WHERE id=?", (reason, text, time.time(), cid))
+                m0 = D.uj(c["metrics_json"], {}) or {}
+                if aconf is not None:
+                    m0["asr_conf"] = round(float(aconf), 4)
+                self.conn.execute("UPDATE chunks SET status='rejected', reject_reason=?, text=?, metrics_json=?, updated_at=? WHERE id=?",
+                                  (reason, text, D.j(m0), time.time(), cid))
                 continue
             texts_ok[cid] = (text, cps, aconf)
             lids[cid] = identify(text, expected=v["lang_hint"], prior_weight=self.cfg.lid.prior_weight, code_mix_threshold=self.cfg.lid.code_mix_threshold)

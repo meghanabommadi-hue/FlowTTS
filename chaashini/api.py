@@ -247,9 +247,10 @@ def _on_job_finished(c, cfg: Config, job_id: int) -> None:
         nxt = {"diarize": "diarized", "enhance": "enhanced", "transcribe": "transcribed"}[kind]
         D.set_video_status(c, vid, nxt)
     else:
-        if job["attempts"] < cfg.gpu.max_attempts:
-            # requeue the same payload
-            c.execute("UPDATE gpu_jobs SET status='queued', worker=NULL, leased_until=NULL, started_at=NULL WHERE id=?", (job_id,))
+        transient = "transient" in (job["error"] or "")
+        if transient or job["attempts"] < cfg.gpu.max_attempts:
+            # requeue the same payload; a transient GPU-memory failure does not count against the budget
+            c.execute("UPDATE gpu_jobs SET status='queued', worker=NULL, leased_until=NULL, started_at=NULL, attempts=CASE WHEN ? THEN MAX(0, attempts-1) ELSE attempts END WHERE id=?", (1 if transient else 0, job_id))
             return
         if kind == "enhance":
             D.set_video_status(c, vid, "enhanced", error=f"enhance failed: {job['error']}")

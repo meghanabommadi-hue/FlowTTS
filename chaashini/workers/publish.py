@@ -26,6 +26,10 @@ class PublishWorker(Worker):
         self.stats = {"pushes": 0, "shards": 0, "pushed_hours": 0.0, "failures": 0}
         self._last_check = 0.0
         self._card_done = bool(D.kv_get(self.conn, "card_initialized"))
+        # a push interrupted by a restart never finished: its shards are still 'built' and will be retried
+        n = self.conn.execute("UPDATE pushes SET status='failed', finished_at=?, error='interrupted by restart' WHERE status='running'", (time.time(),)).rowcount
+        if n:
+            log.warning("marked %d interrupted push(es) as failed; built shards will be re-pushed", n)
 
     def idle_sleep(self) -> float:
         return 30.0
