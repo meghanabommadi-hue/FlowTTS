@@ -6,7 +6,8 @@ every push.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .languages import LANGUAGES
 
@@ -25,7 +26,7 @@ def render_card(repo_id: str, name: str, per_lang: dict[str, dict], totals: dict
     rows = "\n".join(
         f"| `{l}` | {LANGUAGES[l].name if l in LANGUAGES else l} | {v['chunks']:,} | {_fmt_h(v['seconds'])} | {v['seconds'] / max(1, v['chunks']):.1f} s | {v.get('avg_ovrl', 0):.2f} |"
         for l, v in langs_sorted)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M IST")
     size_cat = "n<1K" if totals["chunks"] < 1000 else "1K<n<10K" if totals["chunks"] < 10_000 else "10K<n<100K" if totals["chunks"] < 100_000 else "100K<n<1M" if totals["chunks"] < 1_000_000 else "1M<n<10M"
     return f"""---
 license: apache-2.0
