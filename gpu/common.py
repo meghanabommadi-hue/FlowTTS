@@ -47,6 +47,13 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             return False
 
+    def reset(self) -> int:
+        try:
+            r = self.client.post("/internal/workers/reset", json={"name": self.worker})
+            return int(r.json().get("requeued", 0)) if r.status_code == 200 else 0
+        except Exception:  # noqa: BLE001
+            return 0
+
     def claim(self, kinds: list[str]) -> dict | None:
         r = self.client.post("/internal/jobs/claim", json={"kinds": kinds, "worker": self.worker})
         if r.status_code == 204:

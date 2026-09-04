@@ -46,6 +46,8 @@ class Worker:
         self.stop = False
         self.stats: dict = {}
         self._last_hb = 0.0
+        self._last_state: str | None = None
+        self._last_current: str | None = None
         self._errors = 0
         signal.signal(signal.SIGTERM, self._sig)
         signal.signal(signal.SIGINT, self._sig)
@@ -55,6 +57,7 @@ class Worker:
         self.stop = True
 
     def heartbeat(self, state: str, current: str | None = None, force: bool = False) -> None:
+        self._last_state, self._last_current = state, current
         t = time.time()
         if force or t - self._last_hb >= self.cfg.workers.heartbeat_s:
             try:
@@ -93,6 +96,7 @@ class Worker:
         end = time.time() + s
         while not self.stop and time.time() < end:
             time.sleep(min(1.0, end - time.time()))
+            self.heartbeat(self._last_state or "idle", self._last_current)
 
     def idle_sleep(self) -> float:
         return 5.0

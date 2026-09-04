@@ -199,6 +199,9 @@ def main() -> None:
     while not api.health():
         log.warning("orchestrator unreachable at %s; retrying", env["CHAASHINI_API_URL"])
         time.sleep(10)
+    n = api.reset()
+    if n:
+        log.info("requeued %d job(s) left running by a previous instance", n)
     hb = HeartbeatThread(api, "gpu-asr").start()
     models = Models(models_dir, diar_cfg, lookahead=int(env.get("CHAASHINI_ASR_LOOKAHEAD", 13)))
     stats = {"jobs": 0, "diarize_s": 0.0, "transcribe_s": 0.0, "audio_s": 0.0, "errors": 0}

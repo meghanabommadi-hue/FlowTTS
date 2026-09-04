@@ -331,6 +331,24 @@ def heartbeat(conn: sqlite3.Connection, name: str, kind: str, state: str, curren
 
 
 # ----------------------------------------------------------------------------- janitor
+def release_all_video_leases(conn: sqlite3.Connection) -> dict[str, int]:
+    """Used at supervisor start: every CPU worker restarted, so any working-state row is orphaned."""
+    out: dict[str, int] = {}
+    t = now()
+    with tx(conn):
+        for working, back in LEASE_FALLBACK.items():
+            cur = conn.execute("UPDATE videos SET status=?, leased_by=NULL, leased_until=NULL, updated_at=? WHERE status=?", (back, t, working))
+            if cur.rowcount:
+                out[working] = cur.rowcount
+    return out
+
+
+def requeue_worker_jobs(conn: sqlite3.Connection, worker: str) -> int:
+    """A GPU worker (re)started: whatever it had running is gone; make it claimable again."""
+    cur = conn.execute("UPDATE gpu_jobs SET status='queued', worker=NULL, leased_until=NULL, started_at=NULL WHERE status='running' AND worker=?", (worker,))
+    return cur.rowcount
+
+
 def release_stale(conn: sqlite3.Connection) -> dict[str, int]:
     """Return rows whose lease expired to their previous stage; fail rows over the attempt budget."""
     out: dict[str, int] = {}

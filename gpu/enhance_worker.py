@@ -111,6 +111,9 @@ def main() -> None:
     while not api.health():
         log.warning("orchestrator unreachable; retrying")
         time.sleep(10)
+    n = api.reset()
+    if n:
+        log.info("requeued %d job(s) left running by a previous instance", n)
     hb = HeartbeatThread(api, "gpu-enhance").start()
     enh = Enhancer(run_dir)
     stats = {"jobs": 0, "items": 0, "enhance_s": 0.0, "errors": 0}

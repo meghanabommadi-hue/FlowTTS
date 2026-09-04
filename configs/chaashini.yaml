@@ -136,7 +136,7 @@ workers:
   torch_threads: 8
   heartbeat_s: 10
   lease_s: 3600
-  max_videos_in_flight: 16
+  max_videos_in_flight: 24
 
 api:
   host: 127.0.0.1

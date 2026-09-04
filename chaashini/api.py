@@ -207,6 +207,14 @@ def create_app() -> FastAPI:
         _on_job_finished(c, cfg, job_id)
         return {"ok": True}
 
+    @app.post("/internal/workers/reset")
+    def i_worker_reset(body: dict, _=Depends(auth)):
+        c = conn()
+        n = D.requeue_worker_jobs(c, str(body.get("name", ""))[:64])
+        if n:
+            D.event(c, "gpu", f"{body.get('name')} restarted; requeued {n} running job(s)", level="warn")
+        return {"requeued": n}
+
     @app.post("/internal/workers/heartbeat")
     def i_worker_hb(body: dict, _=Depends(auth)):
         c = conn()

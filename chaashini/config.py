@@ -177,7 +177,7 @@ class WorkersCfg(BaseModel):
     torch_threads: int = 8
     heartbeat_s: int = 10
     lease_s: int = 3600
-    max_videos_in_flight: int = 16
+    max_videos_in_flight: int = 24
 
 
 class APICfg(BaseModel):
