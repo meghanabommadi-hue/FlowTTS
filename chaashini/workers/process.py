@@ -175,7 +175,9 @@ class ProcessWorker(Worker):
                 D.set_video_status(self.conn, v["id"], "failed", error="source file missing and no usable masters")
                 self._cleanup(v)
                 return
+            self.heartbeat("decoding", f"{v['id']} decoding analysis master", force=True)
             dur, sr = decode_to_wav(src, master, self.cfg.audio.analysis_sr)
+            self.heartbeat("decoding", f"{v['id']} decoding export master ({dur / 60:.0f} min)", force=True)
             decode_to_wav(src, export_master, self.cfg.audio.export_sr)
         x16, sr = self._load_master(wd)
         fp = fingerprint(x16, sr)
@@ -350,6 +352,7 @@ class ProcessWorker(Worker):
         if not chunks:
             self._finish_video(v, [], {"reason": "no_chunks"})
             return
+        self.heartbeat("segmenting", f"{vid} tagging {len(x16) / sr / 60:.0f} min", force=True)
         tags = self._tag_file(x16, sr)
         noise_floor = noise_floor_from_vad(x16.astype(np.float32) / 32768.0, vad.probs, self.cfg.vad.hop)
         xf = x16.astype(np.float32) / 32768.0

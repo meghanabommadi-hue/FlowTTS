@@ -107,8 +107,10 @@ def snapshot(conn: sqlite3.Connection, cfg: Config) -> dict:
     workers = []
     for r in conn.execute("SELECT * FROM workers ORDER BY kind, name"):
         age = t - r["heartbeat_at"]
+        # a single blocking step (a long download, a 2 h decode) can exceed the heartbeat interval by a lot,
+        # so "not reporting" means far past any legitimate gap, not merely quiet for a minute
         workers.append({"name": r["name"], "kind": r["kind"], "host": r["host"], "pid": r["pid"], "state": r["state"],
-                        "current": r["current"], "age_s": round(age, 1), "alive": age < 90, "stats": uj(r["stats_json"], {}),
+                        "current": r["current"], "age_s": round(age, 1), "alive": age < 600, "stats": uj(r["stats_json"], {}),
                         "uptime_s": round(t - r["started_at"])})
     out["workers"] = workers
 

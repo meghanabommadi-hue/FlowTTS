@@ -150,7 +150,17 @@ class DownloadWorker(Worker):
         t0 = time.time()
         try:
             extra = self.indian_english_check(v)   # applies itself only to English (declared or discovered) videos
-            dl = download(self.cfg.source, vid, out_dir, allowed_langs=self.allowed, cookies_file=ck, proxy=px, extra_check=extra)
+
+            def _progress(d):
+                # a large download must not look like a dead worker: report while bytes are moving
+                if d.get("status") == "downloading":
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    got = d.get("downloaded_bytes") or 0
+                    pct = f"{100 * got / total:.0f}%" if total else f"{got / 1e6:.0f} MB"
+                    self.heartbeat("downloading", f"{vid} [{v['lang_hint']}] {pct} {(v['title'] or '')[:40]} via {label}")
+
+            dl = download(self.cfg.source, vid, out_dir, allowed_langs=self.allowed, cookies_file=ck, proxy=px,
+                          extra_check=extra, progress=_progress)
         except SkipVideo as e:
             self.stats["skipped"] += 1
             D.set_video_status(self.conn, vid, "rejected", error=f"source: {str(e)[:200]}")

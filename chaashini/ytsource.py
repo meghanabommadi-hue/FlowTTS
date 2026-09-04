@@ -231,7 +231,7 @@ def _match_filter_factory(cfg: SourceCfg, allowed_langs: set[str] | None, extra_
 
 
 def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: set[str] | None = None,
-             cookies_file: str | None = None, proxy: str | None = None, extra_check=None) -> Downloaded:
+             cookies_file: str | None = None, proxy: str | None = None, extra_check=None, progress=None) -> Downloaded:
     """Download the original-language audio track for `video_id` into out_dir/<id>.<ext>."""
     import yt_dlp
     out_dir = Path(out_dir)
@@ -245,6 +245,8 @@ def download(cfg: SourceCfg, video_id: str, out_dir: str | Path, allowed_langs: 
         "concurrent_fragment_downloads": 2,
         "overwrites": True, "continuedl": True,
     })
+    if progress is not None:
+        opts["progress_hooks"] = [progress]
     if cfg.rate_limit:
         opts["ratelimit"] = _parse_rate(cfg.rate_limit)
     url = f"https://www.youtube.com/watch?v={video_id}"
