@@ -60,6 +60,44 @@ class DownloadWorker(Worker):
             return None
         return check
 
+    def claim_by_share(self):
+        """Claim the next source, choosing its language by how far that language is BEHIND its target share.
+
+        Configured weights define each language's target share of the corpus. A language already over its
+        share is picked only rarely; one under it is favoured, and a language still under `low_resource_hours`
+        gets an extra boost. There is deliberately NO "any language" fallback: when the chosen language has
+        nothing queued we re-draw among languages that do, so a language with a deep backlog can never absorb
+        every other language's misses (which is how Hindi came to be 63 % of the corpus).
+        """
+        langs = [l for l in self.cfg.enabled_languages() if l.weight > 0]
+        if not langs:
+            return None
+        queued = {r["lang_hint"]: r["n"] for r in self.conn.execute(
+            "SELECT lang_hint, COUNT(*) n FROM videos WHERE status='discovered' AND (leased_until IS NULL OR leased_until < ?) GROUP BY 1",
+            (time.time(),))}
+        have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
+            "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
+        total_have = sum(have.values()) or 1.0
+        total_w = sum(l.weight for l in langs) or 1.0
+        lr = self.cfg.discovery.low_resource_hours
+        pool, weights = [], []
+        for l in langs:
+            if queued.get(l.code, 0) <= 0:
+                continue
+            deficit = (l.weight / total_w) - (have.get(l.code, 0.0) / total_have)
+            w = max(0.02, deficit + 0.02) * l.weight
+            if have.get(l.code, 0.0) < lr:
+                w *= 2.5                          # a language with almost no audio yet is worth chasing
+            pool.append(l.code)
+            weights.append(w)
+        if not pool:
+            return None
+        for code in random.choices(pool, weights=weights, k=min(4, len(pool))):
+            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (code,))
+            if v:
+                return v
+        return None
+
     def n_identities(self) -> int:
         proxies = [p for p in self.cfg.source.proxies if p] or ([self.cfg.source.proxy] if self.cfg.source.proxy else [])
         return max(len(cookie_files(self.cfg.source)), len(proxies), 1)
@@ -111,25 +149,9 @@ class DownloadWorker(Worker):
         if n_inflight >= self.cfg.workers.max_videos_in_flight:
             self.heartbeat("paused: pipeline full", f"{n_inflight} in flight", force=True)
             return False
-        # weight by the configured share, then boost languages that are still short of audio, so the
-        # download mix follows the corpus deficit rather than whatever discovery happened to queue
-        langs = [l for l in self.cfg.enabled_languages() if l.weight > 0]
-        v = None
-        if langs:
-            have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
-                "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
-            lr = self.cfg.discovery.low_resource_hours
-            weights = [l.weight * (2.5 if (l.weight >= 1.0 and have.get(l.code, 0.0) < lr) else 1.0) for l in langs]
-            for pick in {random.choices(langs, weights=weights, k=1)[0].code for _ in range(3)}:
-                v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s, "AND lang_hint=?", (pick,))
-                if v:
-                    break
-        if not v and langs:
-            codes = [l.code for l in langs]
-            qs = ",".join("?" * len(codes))
-            v = D.claim_video(self.conn, "discovered", "downloading", self.name, self.cfg.workers.lease_s,
-                              f"AND lang_hint IN ({qs})", codes)
+        v = self.claim_by_share()
         if not v:
+            self.heartbeat("idle: nothing queued for the languages that need it", force=True)
             return False
         vid = v["id"]
         ident = self.pick_identity()
