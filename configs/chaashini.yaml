@@ -86,7 +86,7 @@ discovery:
   channel_expand_min_accept_ratio: 0.35
   channel_expand_min_videos: 2
   channel_expand_max_items: 60
-  low_resource_hours: 3.0                 # a language below this many accepted hours counts as scarce
+  low_resource_hours: 5.0                 # a language below this many accepted hours counts as scarce
   low_resource_expand_ratio: 0.12         # scarce languages: crawl a channel fully on much weaker evidence
   low_resource_expand_max_items: 200      # and take more of it
   max_dud_queries_per_lang: 36            # stop inventing queries for a language whose searches keep coming up empty

@@ -144,17 +144,15 @@ class DiscoverWorker(Worker):
         return added
 
     def pick_language(self) -> str:
-        deficits = self.language_deficits()
-        if deficits:
-            return deficits[0][0]
-        langs = [l for l in self.cfg.enabled_languages() if LANGUAGES.get(l.code, None) and LANGUAGES[l.code].asr_supported]
-        bl = self.backlog_by_lang()
-        # weight by config weight and inverse backlog share
-        weights = []
-        for l in langs:
-            have = bl.get(l.code, 0)
-            weights.append(l.weight / (1.0 + have / 25.0))
-        return random.choices(langs, weights=weights, k=1)[0].code
+        ew = self.effective_weights()
+        if not ew:
+            langs = [l for l in self.cfg.enabled_languages() if LANGUAGES.get(l.code, None) and LANGUAGES[l.code].asr_supported]
+            return random.choice(langs).code if langs else "hi"
+        deficits = dict(self.language_deficits())
+        # favour languages whose backlog is short of their deficit share, then draw by corpus need
+        pool = list(ew)
+        weights = [ew[c] * (2.0 if c in deficits else 1.0) for c in pool]
+        return random.choices(pool, weights=weights, k=1)[0]
 
     def pending_queries(self, lang: str, limit: int) -> list:
         return self.conn.execute("SELECT * FROM queries WHERE lang=? AND runs=0 ORDER BY created_at LIMIT ?", (lang, limit)).fetchall()
@@ -220,22 +218,46 @@ class DiscoverWorker(Worker):
         log.warning("rate limited: cooling down %ds", cd)
 
     # ------------------------------------------------------------------ main step
-    def language_deficits(self) -> list[tuple[str, int]]:
-        """Languages whose queued backlog is below their weight-proportional share (min 8), worst first.
-        Languages under an exhaustion cooldown are skipped."""
-        langs = [l for l in self.cfg.enabled_languages() if l.code in LANGUAGES and LANGUAGES[l.code].asr_supported
-                 and not self.exhausted(l.code)]
+    def effective_weights(self) -> dict[str, float]:
+        """Discovery effort per language, driven by the CORPUS deficit rather than the configured weight alone.
+
+        target share comes from the config weight; the actual share from accepted hours. A language already
+        over its share collapses to a small floor; one under it is favoured; one still below
+        `low_resource_hours` of audio gets a further 4x boost — so most query generation goes to the
+        languages with the least data, which is the point of the corpus.
+        """
+        langs = [l for l in self.cfg.enabled_languages() if l.weight > 0 and l.code in LANGUAGES
+                 and LANGUAGES[l.code].asr_supported and not self.exhausted(l.code)]
+        if not langs:
+            return {}
+        have = {r["lang"]: (r["s"] or 0) / 3600.0 for r in self.conn.execute(
+            "SELECT lang, SUM(dur_ms)/1000.0 s FROM chunks WHERE status='accepted' GROUP BY lang")}
+        total_have = sum(have.values()) or 1.0
         tw = sum(l.weight for l in langs) or 1.0
+        lr = self.cfg.discovery.low_resource_hours
+        out: dict[str, float] = {}
+        for l in langs:
+            deficit = (l.weight / tw) - (have.get(l.code, 0.0) / total_have)
+            w = max(0.02, deficit + 0.02) * l.weight
+            if have.get(l.code, 0.0) < lr:
+                w *= 4.0
+            out[l.code] = w
+        return out
+
+    def language_deficits(self) -> list[tuple[str, int]]:
+        """Languages whose queued backlog is below their deficit-proportional share, worst first."""
+        ew = self.effective_weights()
+        if not ew:
+            return []
+        tw = sum(ew.values())
         bl = self.backlog_by_lang()
         target = self.cfg.discovery.target_backlog_videos
         out = []
-        for l in langs:
-            # the floor scales with intent: a de-prioritised language keeps only a token backlog
-            floor = 8 if l.weight >= 1.0 else 2
-            want = max(floor, int(target * l.weight / tw))
-            have = bl.get(l.code, 0)
+        for code, w in ew.items():
+            want = max(2, int(target * w / tw))
+            have = bl.get(code, 0)
             if have < want:
-                out.append((l.code, want - have))
+                out.append((code, want - have))
         return sorted(out, key=lambda t: -t[1])
 
     def step(self) -> bool:
