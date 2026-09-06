@@ -85,9 +85,12 @@ class DownloadWorker(Worker):
             if queued.get(l.code, 0) <= 0:
                 continue
             deficit = (l.weight / total_w) - (have.get(l.code, 0.0) / total_have)
-            w = max(0.02, deficit + 0.02) * l.weight
-            if have.get(l.code, 0.0) < lr:
-                w *= 2.5                          # a language with almost no audio yet is worth chasing
+            if deficit <= 0:
+                w = 0.004                         # already at/over its target share: a bare trickle, NOT scaled by weight
+            else:
+                w = (deficit + 0.01) * l.weight
+                if have.get(l.code, 0.0) < lr:
+                    w *= 4.0                       # still almost no audio: chase it hard
             pool.append(l.code)
             weights.append(w)
         if not pool:

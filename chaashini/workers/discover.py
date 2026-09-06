@@ -238,9 +238,12 @@ class DiscoverWorker(Worker):
         out: dict[str, float] = {}
         for l in langs:
             deficit = (l.weight / tw) - (have.get(l.code, 0.0) / total_have)
-            w = max(0.02, deficit + 0.02) * l.weight
-            if have.get(l.code, 0.0) < lr:
-                w *= 4.0
+            if deficit <= 0:
+                w = 0.004                         # already at/over its share: a bare trickle, independent of config weight
+            else:
+                w = (deficit + 0.01) * l.weight
+                if have.get(l.code, 0.0) < lr:
+                    w *= 4.0
             out[l.code] = w
         return out
 
